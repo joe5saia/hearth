@@ -158,7 +158,6 @@ export function App() {
   const [week, setWeek] = useState(weekStart());
   const [modal, setModal] = useState<Modal | null>(null);
   const [search, setSearch] = useState("");
-  const [category, setCategory] = useState("All recipes");
   const [start, setStart] = useState(weekStart());
   const [end, setEnd] = useState(addDays(weekStart(), 6));
   const [extra, setExtra] = useState("");
@@ -266,12 +265,10 @@ export function App() {
 
   const weekMeals = data.meals.filter((meal) => meal.date >= week && meal.date <= addDays(week, 6));
 
-  const matchingRecipes = data.recipes.filter(
-    (recipe) =>
-      (category === "All recipes" || recipe.category === category) &&
-      `${recipe.title} ${recipe.ingredients.map((item) => item.name).join(" ")}`
-        .toLowerCase()
-        .includes(search.toLowerCase()),
+  const matchingRecipes = data.recipes.filter((recipe) =>
+    `${recipe.title} ${recipe.ingredients.map((item) => item.name).join(" ")}`
+      .toLowerCase()
+      .includes(search.toLowerCase()),
   );
 
   const items = shoppingList(data.recipes, data.meals, start, end);
@@ -382,16 +379,12 @@ export function App() {
                   {page === "plan"
                     ? "Your week, well fed."
                     : page === "recipes"
-                      ? "Recipes worth coming back to."
-                      : "A list. A shop. A week well fed."}
+                      ? "Recipes"
+                      : "Shopping list"}
                 </h1>
-                <p>
-                  {page === "plan"
-                    ? "Make room for the meals you love, and the people you share them with."
-                    : page === "recipes"
-                      ? "The tried-and-loved, the weeknight staples, and the next thing to try."
-                      : "Everything for your planned meals, with room for the little extras."}
-                </p>
+                {page === "plan" && (
+                  <p>Make room for the meals you love, and the people you share them with.</p>
+                )}
               </div>
               {page === "plan" ? (
                 <button className="primary" onClick={() => (data.recipes.length ? addMeal() : newRecipe())}>
@@ -623,18 +616,6 @@ export function App() {
                   </label>
                   <span className="muted small">{matchingRecipes.length} recipes in your collection</span>
                 </div>
-                <div className="filters">
-                  {["All recipes", ...categories].map((value) => (
-                    <button
-                      key={value}
-                      className={category === value ? "selected" : ""}
-                      onClick={() => setCategory(value)}
-                    >
-                      {value === "Vegetarian" && <Leaf size={14} />}
-                      {value}
-                    </button>
-                  ))}
-                </div>
                 <div className="recipe-list">
                   {matchingRecipes.map((recipe) => (
                     <article className="recipe-row" key={recipe.id}>
@@ -672,11 +653,7 @@ export function App() {
                 {matchingRecipes.length === 0 && (
                   <div className="empty-state">
                     <BookOpen size={32} />
-                    <h2>
-                      {search || category !== "All recipes"
-                        ? "No recipes found"
-                        : "Your collection starts here"}
-                    </h2>
+                    <h2>{search ? "No recipes found" : "Your collection starts here"}</h2>
                     <p>{search ? "Try another name or ingredient." : "Add a recipe you love to cook."}</p>
                   </div>
                 )}
@@ -1101,18 +1078,21 @@ function MealForm({
           </p>
         </div>
         <div className="scale-input">
-          <input
+          <select
             id="meal-scale"
             aria-label="Recipe scale"
-            type="number"
-            min="0.01"
-            max="100"
-            step="any"
             required
             value={draft.scale}
-            onChange={(event) => setDraft({ ...draft, scale: event.target.valueAsNumber })}
-          />
-          <span>×</span>
+            onChange={(event) => setDraft({ ...draft, scale: Number(event.target.value) })}
+          >
+            {[...new Set([meal.scale, ...Array.from({ length: 400 }, (_, index) => (index + 1) / 4)])]
+              .sort((a, b) => a - b)
+              .map((value) => (
+                <option key={value} value={value}>
+                  {value}×
+                </option>
+              ))}
+          </select>
         </div>
       </div>
       <label>
@@ -1124,9 +1104,6 @@ function MealForm({
           onChange={(event) => setDraft({ ...draft, note: event.target.value })}
         />
       </label>
-      <p className="field-hint">
-        Notes are reminders. Add extra ingredients to your shopping list separately.
-      </p>
       {error && (
         <p className="error" role="alert">
           {error}
