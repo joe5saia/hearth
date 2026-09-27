@@ -19,7 +19,7 @@ Task is installed as a pinned npm development dependency, so `npx task` works wi
 
 Alchemy beta.79 currently resolves a cloud profile even for local resources. `dev:worker` supplies deliberately invalid local-only credential placeholders to satisfy that configuration check. Both resources run in **local** mode; these placeholders cannot access a Cloudflare account and are not used by the deployment task. Alchemy's native Vite bridge has a local WebSocket startup problem in this environment, so development uses Vite's standard HTTP proxy. Deployment still uses one Worker serving both assets and API, with D1 provisioned and bound by Alchemy.
 
-In an Amp orb, after `npm ci`, use `amp orb services ensure`. The checked-in service manifest starts both processes and creates the Hearth portal. Do not expose either unauthenticated development port directly to the public internet.
+In an Amp orb, `.agents/setup` installs the pinned Node version and dependencies. Use `amp orb services ensure` to start both local processes and create the Hearth portal. Setup never authenticates, deploys, or applies remote migrations. Do not expose either unauthenticated development port directly to the public internet.
 
 ## Daily use
 
@@ -50,14 +50,17 @@ All generic [anti-slop](https://github.com/dmmulroy/anti-slop) rules are enabled
 
 Deployment is **not performed** as part of local setup. Review it before running: this provisions shared infrastructure and applies migrations.
 
-1. Configure your Cloudflare credentials with `npx alchemy profile edit --profile default --add Cloudflare`, with Worker and D1 permissions.
-2. Set `HOUSEHOLD_PASSWORD` to a strong, unique password of at least 16 characters in your private environment or ignored `.env` file. If using `.env`, export the value into the deployment process: the stack reads `process.env.HOUSEHOLD_PASSWORD`. Never commit it. Alchemy publishes it as a Worker secret, not a plain-text binding.
-3. Run `npx task deploy`. It builds React, then Alchemy deploys the Worker, binds D1, and applies pending numbered SQL migrations. Production uses a separate `production` stage from local development.
-4. Open the returned HTTPS Worker URL. Sign in through the browser's authentication prompt with username **hearth** and your household password.
+1. In the Amp project's Secrets & Env Vars, set `CLOUDFLARE_ACCOUNT_ID` as an environment variable and `CLOUDFLARE_API_TOKEN` as a secret. Scope the token to the intended account with **Workers Scripts: Edit**, **D1: Edit**, and **Secrets Store: Edit**. No interactive profile is needed. Outside Amp, export these variables in your private environment.
+2. Set `HOUSEHOLD_PASSWORD` as a secret: use a strong, unique password of at least 16 characters. The stack reads it from `process.env` and publishes it as a Worker secret, not a plain-text binding. Never commit credentials or copy them into orb setup scripts or snapshots. Refresh an existing orb with `amp orb restart-processes` after changing Amp secrets.
+3. Run `npx task cloud:check` to validate credential configuration. This checks presence and format, not live authorization or all required permissions.
+4. After explicit approval, run `npx task cloud:bootstrap` once per Cloudflare account to provision Alchemy's shared state Worker, Durable Objects, and Secrets Store secrets. Do not delete its encryption key. If an older version of this project has already deployed from local state, preserve that `.alchemy/` directory and migrate its production state before switching backends; do not assume existing resources will be adopted safely.
+5. Run `npx task plan` to build assets and preview the `production` stage against the bootstrapped state store. Cloud tasks use `CI=true`, so missing credentials or a missing/outdated state store fail instead of prompting to set them up. Do not run a plan with an unfinished local bootstrap: Alchemy may resume it during state initialization.
+6. After reviewing the plan and approving deployment, run `npx task deploy`. It builds React, then deploys the Worker, binds D1, and applies pending SQL migrations. Serialize deployments to the same stage across orbs. Production access is account-scoped: stage names are not an authorization boundary.
+7. Open the returned HTTPS Worker URL. Sign in through the browser's authentication prompt with username **hearth** and your household password.
 
-All production requests, including assets and API, pass through the password gate. Missing/short passwords fail closed. Keep the HTTPS endpoint, use a high-entropy password, and use Cloudflare Access if you later want per-person identity and access policies. Basic authentication intentionally has no in-app sign-out or password recovery. No cloud deployment, Cloudflare integration, or production credentials have been tested in this orb.
+All production requests, including assets and API, pass through the password gate. Missing/short passwords fail closed. Keep the HTTPS endpoint, use a high-entropy password, and use Cloudflare Access if you later want per-person identity and access policies. Basic authentication intentionally has no in-app sign-out or password recovery. Credential configuration and read access do not establish deployment permissions; verify cloud writes only during an approved bootstrap or deployment.
 
-`alchemy.run.ts` is the infrastructure source of truth. Its inferred environment types are used directly by `src/server.ts`; there is no parallel Wrangler binding configuration to drift. Alchemy state is local: preserve `.alchemy/` for future deployments from this machine. Never run destructive infrastructure commands casually.
+`alchemy.run.ts` is the infrastructure source of truth. Its inferred environment types are used directly by `src/server.ts`; there is no parallel Wrangler binding configuration to drift. `alchemy dev` keeps its state and SQLite data locally in `.alchemy/`; cloud operations use `Cloudflare.state()` so separate orbs share deployment state. Never run destructive infrastructure commands casually. Keep production bootstrap, deployment, and migrations out of orb setup, resume, and preview services.
 
 ## Photo credits
 

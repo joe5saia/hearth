@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+node_version="$(cat .node-version)"
+if [[ "$(node --version)" != "v${node_version}" ]]; then
+  echo "Installing Node ${node_version}"
+  npm install --global --prefix /usr/local "node@${node_version}"
+fi
+
+echo "Installing pinned dependencies"
+time npm ci --no-audit --no-fund

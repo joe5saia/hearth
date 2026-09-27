@@ -2,6 +2,7 @@ import * as Alchemy from "alchemy";
 import * as Cloudflare from "alchemy/Cloudflare";
 import { AlchemyContext } from "alchemy/AlchemyContext";
 import * as Effect from "effect/Effect";
+import * as Layer from "effect/Layer";
 import * as Redacted from "effect/Redacted";
 
 export const Database = Cloudflare.D1.Database("Database", {
@@ -38,7 +39,12 @@ export type WebsiteEnv = Cloudflare.InferEnv<typeof Website>;
 
 export default Alchemy.Stack(
   "hearth",
-  { providers: Cloudflare.providers(), state: Alchemy.localState() },
+  {
+    providers: Cloudflare.providers(),
+    state: Layer.unwrap(
+      Effect.map(AlchemyContext, ({ dev }) => (dev ? Alchemy.localState() : Cloudflare.state())),
+    ),
+  },
   Effect.gen(function* () {
     const website = yield* Website;
 
