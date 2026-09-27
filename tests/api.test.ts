@@ -8,7 +8,7 @@ let worker: Miniflare;
 
 let script = "";
 
-function options(local: string, password: string) {
+function options(local: string, email?: string) {
   return convertV4MiniflareOptions({
     workers: [
       {
@@ -17,7 +17,8 @@ function options(local: string, password: string) {
         script,
         compatibilityDate: "2026-09-08",
         d1Databases: ["DB"],
-        bindings: { LOCAL_DEV: local, HOUSEHOLD_PASSWORD: password },
+        bindings: { LOCAL_DEV: local },
+        access: email ? { aud: "test-hearth", identity: { email } } : undefined,
       },
     ],
   });
@@ -31,7 +32,7 @@ beforeAll(async () => {
 
   if (!entry || entry.type !== "chunk") throw new Error("Worker bundle missing.");
   script = entry.code;
-  worker = new Miniflare(options("true", ""));
+  worker = new Miniflare(options("true"));
   const db = await worker.getD1Database("DB");
   const sql = await readFile("migrations/0001_initial.sql", "utf8");
   const statements = sql.split(";").flatMap((statement) => (statement.trim() ? [db.prepare(statement)] : []));
@@ -164,34 +165,31 @@ describe("real Worker with disposable SQLite D1", () => {
     expect(await db.prepare("SELECT count(*) AS count FROM recipes").first()).toEqual({ count: 6 });
     expect(await db.prepare("SELECT count(*) AS count FROM meals").first()).toEqual({ count: 5 });
   });
-  it("fails closed in production and requires the correct household credentials", async () => {
-    await worker.setOptions(options("false", ""));
-    expect((await worker.dispatchFetch("http://localhost/api/household")).status).toBe(503);
-    await worker.setOptions(options("false", "123456789"));
-    expect(
-      (
-        await worker.dispatchFetch("http://localhost/api/household", {
-          headers: { Authorization: "Basic " + btoa("hearth:123456789") },
-        })
-      ).status,
-    ).toBe(503);
-    await worker.setOptions(options("false", "1234567890"));
-    const unauthorized = await worker.dispatchFetch("http://localhost/api/household");
-    expect(unauthorized.status).toBe(401);
-    expect(unauthorized.headers.get("WWW-Authenticate")).toContain("Basic");
-    expect(
-      (
-        await worker.dispatchFetch("http://localhost/api/household", {
-          headers: { Authorization: "Basic " + btoa("hearth:wrong") },
-        })
-      ).status,
-    ).toBe(401);
-    expect(
-      (
-        await worker.dispatchFetch("http://localhost/api/household", {
-          headers: { Authorization: "Basic " + btoa("hearth:1234567890") },
-        })
-      ).status,
-    ).toBe(200);
+  it("requires runtime Access authentication, not caller-supplied headers", async () => {
+    await worker.setOptions(options("false"));
+    for (const path of ["/", "/api/household"]) {
+      const denied = await worker.dispatchFetch(`http://localhost${path}`);
+      expect(denied.status).toBe(403);
+      expect(denied.headers.get("WWW-Authenticate")).toBeNull();
+      const forged = await worker.dispatchFetch(`http://localhost${path}`, {
+        headers: {
+          "Cf-Access-Authenticated-User-Email": "joe5saia@gmail.com",
+          "Cf-Access-Jwt-Assertion": "forged-token",
+          Authorization: "Basic " + btoa("hearth:old-password"),
+        },
+      });
+      expect(forged.status).toBe(403);
+    }
+    // Miniflare injects trusted runtime context; Cloudflare's deployed policy
+    // is responsible for checking these emails and the Google login method.
+    for (const email of ["joe5saia@gmail.com", "shannonnitroy@gmail.com"]) {
+      await worker.setOptions(options("false", email));
+      const authorized = await worker.dispatchFetch("http://localhost/api/household");
+      expect(authorized.status).toBe(200);
+      expect(authorized.headers.get("WWW-Authenticate")).toBeNull();
+      const household = (await authorized.json()) as { recipes: unknown[]; meals: unknown[] };
+      expect(household.recipes).toHaveLength(6);
+      expect(household.meals).toHaveLength(5);
+    }
   });
 });

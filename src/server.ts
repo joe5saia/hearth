@@ -299,49 +299,12 @@ function api(request: Request, env: WebsiteEnv) {
 }
 
 export default {
-  async fetch(request: Request, env: WebsiteEnv): Promise<Response> {
-    if (env.LOCAL_DEV !== "true") {
-      if (env.HOUSEHOLD_PASSWORD.length < 10) {
-        return new Response("Household access is not configured.", { status: 503 });
-      }
-
-      let supplied = "";
-
-      try {
-        const header = request.headers.get("Authorization") ?? "";
-
-        if (header.startsWith("Basic ")) {
-          supplied = new TextDecoder().decode(
-            Uint8Array.from(atob(header.slice(6)), (character) => character.charCodeAt(0)),
-          );
-        }
-      } catch {
-        supplied = "";
-      }
-
-      const encoder = new TextEncoder();
-
-      const [actual, expected] = await Promise.all([
-        crypto.subtle.digest("SHA-256", encoder.encode(supplied)),
-        crypto.subtle.digest("SHA-256", encoder.encode(`hearth:${env.HOUSEHOLD_PASSWORD}`)),
-      ]);
-
-      const actualBytes = new Uint8Array(actual);
-      const expectedBytes = new Uint8Array(expected);
-      let difference = 0;
-
-      for (let index = 0; index < actualBytes.length; index++)
-        difference |= actualBytes[index] ^ expectedBytes[index];
-
-      if (difference !== 0) {
-        return new Response("Sign in to your household.", {
-          status: 401,
-          headers: {
-            "WWW-Authenticate": 'Basic realm="Hearth", charset="UTF-8"',
-            "Cache-Control": "no-store",
-          },
-        });
-      }
+  async fetch(request: Request, env: WebsiteEnv, ctx: ExecutionContext): Promise<Response> {
+    if (env.LOCAL_DEV !== "true" && !ctx.access) {
+      return new Response("Cloudflare Access sign-in is required.", {
+        status: 403,
+        headers: { "Cache-Control": "no-store" },
+      });
     }
 
     if (request.headers.get("Sec-Fetch-Site") === "cross-site" && !["GET", "HEAD"].includes(request.method)) {
