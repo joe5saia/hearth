@@ -1,0 +1,39 @@
+{
+  "name": "hearth",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "task dev",
+    "build": "vite build",
+    "check": "tsc --noEmit",
+    "lint": "oxlint",
+    "format": "oxfmt",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@fontsource-variable/dm-sans": "5.3.0",
+    "@fontsource-variable/lora": "5.3.0",
+    "effect": "4.0.0-rc.117",
+    "lucide-react": "1.48.0",
+    "react": "19.3.0",
+    "react-dom": "19.3.0"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "5.20260927.1",
+    "@effect/platform-node": "4.0.0-rc.117",
+    "@go-task/cli": "3.53.1",
+    "@oxlint/plugins": "1.85.0",
+    "@types/node": "26.6.3",
+    "@types/react": "19.3.0",
+    "@types/react-dom": "19.3.0",
+    "@vitejs/plugin-react": "6.1.1",
+    "alchemy": "2.0.0-beta.79",
+    "miniflare": "5.20260925.0-alpha",
+    "oxfmt": "0.70.0",
+    "oxlint": "1.85.0",
+    "rolldown": "1.2.11",
+    "typescript": "7.0.2",
+    "vite": "8.3.1",
+    "vitest": "5.0.2"
+  }
+}

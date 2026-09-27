@@ -1,0 +1,378 @@
+import { Data, Effect, Schema } from "effect";
+import type { WebsiteEnv } from "../alchemy.run";
+import {
+  IngredientSchema,
+  MealSchema,
+  RecipeSchema,
+  categories,
+  units,
+  validDate,
+  type Recipe,
+  type Meal,
+  type Extra,
+} from "./domain";
+import { sampleRecipes, sampleMeals } from "./seed";
+
+class ApiError extends Data.TaggedError("ApiError")<{ status: number; message: string }> {}
+
+const invalid = (message: string) => new ApiError({ status: 400, message });
+
+const database = <A>(run: () => Promise<A>) =>
+  Effect.tryPromise({
+    try: run,
+    catch: () => new ApiError({ status: 500, message: "We couldn’t save that change. Please try again." }),
+  });
+
+const readJson = (request: Request) =>
+  Effect.tryPromise({ try: () => request.json(), catch: () => invalid("Please send valid JSON.") });
+
+const ExtraSchema = Schema.Struct({ id: Schema.String, name: Schema.String, checked: Schema.Number });
+
+const CheckSchema = Schema.Struct({ key: Schema.String, checked: Schema.Number });
+
+type RecipeRow = Omit<Recipe, "ingredients" | "instructions"> & { ingredients: string; instructions: string };
+
+function recipeStatement(db: WebsiteEnv["DB"], recipe: Recipe) {
+  return db
+    .prepare(`INSERT INTO recipes (id,title,description,servings,minutes,category,photo,source,ingredients,instructions)
+    VALUES (?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET title=excluded.title,description=excluded.description,
+    servings=excluded.servings,minutes=excluded.minutes,category=excluded.category,photo=excluded.photo,
+    source=excluded.source,ingredients=excluded.ingredients,instructions=excluded.instructions`)
+    .bind(
+      recipe.id,
+      recipe.title.trim(),
+      recipe.description,
+      recipe.servings,
+      recipe.minutes,
+      recipe.category,
+      recipe.photo,
+      recipe.source,
+      JSON.stringify(recipe.ingredients),
+      JSON.stringify(recipe.instructions),
+    );
+}
+
+function mealStatement(db: WebsiteEnv["DB"], meal: Meal) {
+  return db
+    .prepare(`INSERT INTO meals (id,recipeId,date,slot,scale,note) VALUES (?,?,?,?,?,?)
+    ON CONFLICT(id) DO UPDATE SET recipeId=excluded.recipeId,date=excluded.date,slot=excluded.slot,scale=excluded.scale,note=excluded.note`)
+    .bind(meal.id, meal.recipeId, meal.date, meal.slot, meal.scale, meal.note);
+}
+
+function safeUrl(value: string): boolean {
+  if (!value) return true;
+
+  try {
+    const url = new URL(value);
+
+    return url.protocol === "https:" || url.protocol === "http:";
+  } catch {
+    return false;
+  }
+}
+
+function validateRecipe(recipe: Recipe): boolean {
+  return (
+    !!recipe.id &&
+    recipe.id.length <= 100 &&
+    !!recipe.title.trim() &&
+    recipe.title.length <= 150 &&
+    recipe.description.length <= 2000 &&
+    recipe.servings > 0 &&
+    recipe.servings <= 100 &&
+    Number.isInteger(recipe.minutes) &&
+    recipe.minutes > 0 &&
+    recipe.minutes <= 10000 &&
+    categories.includes(recipe.category) &&
+    safeUrl(recipe.source) &&
+    (safeUrl(recipe.photo) ||
+      /^\/photos\/[a-z-]+\.jpg$/.test(recipe.photo) ||
+      /^data:image\/(jpeg|png|webp);base64,[A-Za-z0-9+/=]+$/.test(recipe.photo)) &&
+    new TextEncoder().encode(JSON.stringify(recipe)).length < 1_900_000 &&
+    recipe.ingredients.length > 0 &&
+    recipe.ingredients.length <= 100 &&
+    recipe.ingredients.every(
+      (i) =>
+        !!i.name.trim() &&
+        i.name.length <= 150 &&
+        i.quantity > 0 &&
+        i.quantity <= 1_000_000 &&
+        units.includes(i.unit),
+    ) &&
+    recipe.instructions.length > 0 &&
+    recipe.instructions.length <= 100 &&
+    recipe.instructions.every((i) => !!i.trim() && i.length <= 10000)
+  );
+}
+
+function api(request: Request, env: WebsiteEnv) {
+  return Effect.gen(function* () {
+    const url = new URL(request.url);
+    const path = url.pathname;
+    const method = request.method;
+    const db = env.DB;
+
+    if (method === "GET" && path === "/api/household") {
+      const [recipes, meals, extras, checks] = yield* database(() =>
+        Promise.all([
+          db.prepare("SELECT * FROM recipes ORDER BY title").all<RecipeRow>(),
+          db.prepare("SELECT * FROM meals ORDER BY date,slot,id").all<Meal>(),
+          db.prepare("SELECT * FROM extras ORDER BY rowid").all<Extra>(),
+          db.prepare("SELECT * FROM checks WHERE checked=1").all<{ key: string; checked: number }>(),
+        ]),
+      );
+
+      const parsed = recipes.results.map((row) => ({
+        ...row,
+        ingredients: Schema.decodeUnknownSync(Schema.Array(IngredientSchema))(JSON.parse(row.ingredients)),
+        instructions: Schema.decodeUnknownSync(Schema.Array(Schema.String))(JSON.parse(row.instructions)),
+      }));
+
+      return Response.json({
+        recipes: parsed,
+        meals: meals.results,
+        extras: extras.results,
+        checks: checks.results,
+      });
+    }
+
+    if (method === "PUT" && path === "/api/recipes") {
+      const body = yield* readJson(request);
+
+      const recipe = yield* Schema.decodeUnknownEffect(RecipeSchema)(body).pipe(
+        Effect.mapError(() => invalid("The recipe is missing required fields.")),
+      );
+
+      if (!validateRecipe(recipe))
+        return yield* Effect.fail(
+          invalid(
+            "Check your recipe: add a title, positive quantities, ingredients, instructions, and valid URLs.",
+          ),
+        );
+      yield* database(() => recipeStatement(db, recipe).run());
+
+      return Response.json({ ok: true });
+    }
+
+    if (method === "DELETE" && path.startsWith("/api/recipes/")) {
+      const id = decodeURIComponent(path.slice("/api/recipes/".length));
+
+      // The conditional delete and FK restriction both protect planned recipes.
+      const result = yield* database(() =>
+        db
+          .prepare("DELETE FROM recipes WHERE id=? AND NOT EXISTS (SELECT 1 FROM meals WHERE recipeId=?)")
+          .bind(id, id)
+          .run(),
+      );
+
+      if (!result.meta.changes)
+        return yield* Effect.fail(
+          new ApiError({
+            status: 409,
+            message: "Remove this recipe from your meal plan before deleting it.",
+          }),
+        );
+
+      return Response.json({ ok: true });
+    }
+
+    if (method === "PUT" && path === "/api/meals") {
+      const body = yield* readJson(request);
+
+      const meal = yield* Schema.decodeUnknownEffect(MealSchema)(body).pipe(
+        Effect.mapError(() => invalid("The meal is missing required fields.")),
+      );
+
+      if (
+        !meal.id ||
+        meal.id.length > 100 ||
+        !validDate(meal.date) ||
+        meal.scale <= 0 ||
+        meal.scale > 100 ||
+        meal.note.length > 2000
+      )
+        return yield* Effect.fail(invalid("Choose a valid date and a recipe scale between 0 and 100."));
+
+      const recipe = yield* database(() =>
+        db.prepare("SELECT id FROM recipes WHERE id=?").bind(meal.recipeId).first(),
+      );
+
+      if (!recipe) return yield* Effect.fail(invalid("That recipe no longer exists. Choose another recipe."));
+      yield* database(() => mealStatement(db, meal).run());
+
+      return Response.json({ ok: true });
+    }
+
+    if (method === "DELETE" && path.startsWith("/api/meals/")) {
+      yield* database(() =>
+        db
+          .prepare("DELETE FROM meals WHERE id=?")
+          .bind(decodeURIComponent(path.slice(11)))
+          .run(),
+      );
+
+      return Response.json({ ok: true });
+    }
+
+    if (method === "PUT" && path === "/api/extras") {
+      const body = yield* readJson(request);
+
+      const extra = yield* Schema.decodeUnknownEffect(ExtraSchema)(body).pipe(
+        Effect.mapError(() => invalid("The item is missing required fields.")),
+      );
+
+      if (
+        !extra.id ||
+        extra.id.length > 100 ||
+        !extra.name.trim() ||
+        extra.name.length > 200 ||
+        ![0, 1].includes(extra.checked)
+      )
+        return yield* Effect.fail(invalid("Add an item name of 200 characters or less."));
+      yield* database(() =>
+        db
+          .prepare(
+            "INSERT INTO extras(id,name,checked) VALUES(?,?,?) ON CONFLICT(id) DO UPDATE SET name=excluded.name,checked=excluded.checked",
+          )
+          .bind(extra.id, extra.name.trim(), extra.checked)
+          .run(),
+      );
+
+      return Response.json({ ok: true });
+    }
+
+    if (method === "DELETE" && path.startsWith("/api/extras/")) {
+      yield* database(() =>
+        db
+          .prepare("DELETE FROM extras WHERE id=?")
+          .bind(decodeURIComponent(path.slice(12)))
+          .run(),
+      );
+
+      return Response.json({ ok: true });
+    }
+
+    if (method === "PUT" && path === "/api/checks") {
+      const body = yield* readJson(request);
+
+      const check = yield* Schema.decodeUnknownEffect(CheckSchema)(body).pipe(
+        Effect.mapError(() => invalid("Invalid shopping item.")),
+      );
+
+      if (check.key.length > 1000 || ![0, 1].includes(check.checked))
+        return yield* Effect.fail(invalid("Invalid shopping item."));
+      yield* database(() =>
+        db
+          .prepare(
+            "INSERT INTO checks(key,checked) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET checked=excluded.checked",
+          )
+          .bind(check.key, check.checked)
+          .run(),
+      );
+
+      return Response.json({ ok: true });
+    }
+
+    if (method === "POST" && path === "/api/demo") {
+      const today = url.searchParams.get("today") ?? "";
+
+      if (!validDate(today)) return yield* Effect.fail(invalid("Choose a valid sample week."));
+      const existing = yield* database(() => db.prepare("SELECT id FROM recipes LIMIT 1").first());
+
+      if (existing)
+        return yield* Effect.fail(
+          new ApiError({ status: 409, message: "Sample recipes are only added to an empty household." }),
+        );
+      yield* database(() =>
+        db.batch([
+          ...sampleRecipes.map((recipe) => recipeStatement(db, recipe)),
+          ...sampleMeals(today).map((meal) => mealStatement(db, meal)),
+          db.prepare("INSERT INTO extras(id,name,checked) VALUES('sample-extra','Greek yogurt',0)"),
+        ]),
+      );
+
+      return Response.json({ ok: true });
+    }
+
+    return yield* Effect.fail(new ApiError({ status: 404, message: "That page couldn’t be found." }));
+  });
+}
+
+export default {
+  async fetch(request: Request, env: WebsiteEnv): Promise<Response> {
+    if (env.LOCAL_DEV !== "true") {
+      if (env.HOUSEHOLD_PASSWORD.length < 16) {
+        return new Response("Household access is not configured.", { status: 503 });
+      }
+
+      let supplied = "";
+
+      try {
+        const header = request.headers.get("Authorization") ?? "";
+
+        if (header.startsWith("Basic ")) {
+          supplied = new TextDecoder().decode(
+            Uint8Array.from(atob(header.slice(6)), (character) => character.charCodeAt(0)),
+          );
+        }
+      } catch {
+        supplied = "";
+      }
+
+      const encoder = new TextEncoder();
+
+      const [actual, expected] = await Promise.all([
+        crypto.subtle.digest("SHA-256", encoder.encode(supplied)),
+        crypto.subtle.digest("SHA-256", encoder.encode(`hearth:${env.HOUSEHOLD_PASSWORD}`)),
+      ]);
+
+      const actualBytes = new Uint8Array(actual);
+      const expectedBytes = new Uint8Array(expected);
+      let difference = 0;
+
+      for (let index = 0; index < actualBytes.length; index++)
+        difference |= actualBytes[index] ^ expectedBytes[index];
+
+      if (difference !== 0) {
+        return new Response("Sign in to your household.", {
+          status: 401,
+          headers: {
+            "WWW-Authenticate": 'Basic realm="Hearth", charset="UTF-8"',
+            "Cache-Control": "no-store",
+          },
+        });
+      }
+    }
+
+    if (request.headers.get("Sec-Fetch-Site") === "cross-site" && !["GET", "HEAD"].includes(request.method)) {
+      return Response.json({ error: "Cross-site changes are not allowed." }, { status: 403 });
+    }
+
+    if (!new URL(request.url).pathname.startsWith("/api/")) return env.ASSETS.fetch(request);
+
+    if (
+      !["GET", "HEAD"].includes(request.method) &&
+      !request.headers.get("content-type")?.startsWith("application/json")
+    ) {
+      return Response.json({ error: "Use application/json." }, { status: 415 });
+    }
+
+    return Effect.runPromise(
+      api(request, env).pipe(
+        Effect.catchTag("ApiError", (error) =>
+          Effect.succeed(Response.json({ error: error.message }, { status: error.status })),
+        ),
+        Effect.catchCause(() =>
+          Effect.succeed(
+            Response.json({ error: "Something went wrong. Please try again." }, { status: 500 }),
+          ),
+        ),
+        Effect.map((response) => {
+          response.headers.set("Cache-Control", "no-store");
+
+          return response;
+        }),
+      ),
+    );
+  },
+};

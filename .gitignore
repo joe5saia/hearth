@@ -1,0 +1,8 @@
+node_modules/
+dist/
+.alchemy/
+.wrangler/
+.amp/in/
+.amp/portals/
+.env*
+!.env.example

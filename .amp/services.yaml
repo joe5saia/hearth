@@ -1,0 +1,12 @@
+services:
+  hearth:
+    command: npx task build && npx task dev:worker
+    port: 8787
+    health: /api/household
+  hearth-web:
+    command: npx task dev:web
+    port: 5173
+    health: /api/household
+    portal:
+      title: Hearth
+      description: Household meal planning with a local SQLite database. Sample recipes are disposable demo content.

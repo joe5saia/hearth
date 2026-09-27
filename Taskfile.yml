@@ -1,0 +1,25 @@
+version: "3"
+tasks:
+  install:
+    desc: Install the pinned toolchain
+    cmds: [npm ci]
+  dev:
+    desc: Start React, the local Worker, and persistent local SQLite through Alchemy
+    cmds: [npx vite build, npx task --parallel dev:worker dev:web]
+  dev:worker:
+    desc: Local-only Alchemy Worker and SQLite; these placeholders cannot access Cloudflare
+    env:
+      CLOUDFLARE_ACCOUNT_ID: "00000000000000000000000000000000"
+      CLOUDFLARE_API_TOKEN: "local-development-only"
+    cmds: [npx alchemy dev]
+  dev:web:
+    cmds: [npx vite]
+  build:
+    cmds: [npx vite build]
+  check:
+    cmds: [npx tsc --noEmit, npx oxlint, npx oxfmt --check, npx vitest run]
+  format:
+    cmds: [npx oxfmt]
+  deploy:
+    desc: Deploy Worker, assets, and D1 migrations (requires Cloudflare credentials)
+    cmds: [npx vite build, npx alchemy deploy --stage production]
