@@ -92,6 +92,26 @@ describe("shopping totals", () => {
     expect(recipe.ingredients[0].quantity).toBe(125);
     expect(shoppingList([recipe], [], meal.date, meal.date)).toEqual([]);
   });
+  it("keeps distinct contributing titles in meal order and isolates aggregation between calls", () => {
+    const other = { ...recipe, id: "two", title: "Two" };
+    const sameTitle = { ...recipe, id: "three" };
+
+    const meals = [
+      { ...meal, recipeId: "two", scale: 2 },
+      meal,
+      { ...meal, recipeId: "three", scale: 0.5 },
+      { ...meal, recipeId: "missing", scale: 99 },
+    ];
+
+    const result = shoppingList([recipe, other, sameTitle], meals, meal.date, meal.date);
+    expect(result[1].quantity).toBe(500);
+    expect(result[1].recipes).toEqual(["Two", "One"]);
+    result[1].recipes.push("Not a recipe");
+    const next = shoppingList([recipe], [meal], meal.date, meal.date);
+    expect(next[1].quantity).toBe(187.5);
+    expect(next[1].recipes).toEqual(["One"]);
+    expect(other.ingredients[0].quantity).toBe(125);
+  });
 });
 
 describe("calendar and quantity boundaries", () => {

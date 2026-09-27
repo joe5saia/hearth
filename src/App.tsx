@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Option, Schema } from "effect";
 import {
   ArrowDownToLine,
@@ -254,7 +254,11 @@ export function App() {
       .includes(search.toLowerCase()),
   );
 
-  const items = shoppingList(data.recipes, data.meals, start, end);
+  const items = useMemo(
+    () => shoppingList(data.recipes, data.meals, start, end),
+    [data.recipes, data.meals, start, end],
+  );
+
   const isChecked = (key: string) => data.checks.some((entry) => entry.key === key && entry.checked === 1);
   const completed = items.filter((item) => isChecked(checkKey(item, start, end))).length;
   const totalItems = items.length + data.extras.length;

@@ -47,6 +47,47 @@ All generic [anti-slop](https://github.com/dmmulroy/anti-slop) rules are enabled
 
 Use `npm audit --omit=dev` to check production dependencies and `npm audit` to include the development toolchain.
 
+## Repeatable performance benchmark
+
+```sh
+npx task benchmark                         # Build production assets and print measurements
+npx task benchmark -- /tmp/hearth-perf.json # Also save a machine-readable report
+```
+
+Run before and after changes on the same idle machine and Node version. The benchmark uses the actual
+Worker and disposable Miniflare D1, never the development household or Cloudflare. It validates seeded
+data and shopping totals before timing. No additional dependencies or running dev server are required.
+
+The fixed fixtures cover 50 recipes / 100 meals, 500 recipes / 2,000 meals, and 50 recipes / 100 meals
+with 32 KiB of synthetic base64 photo data per recipe. Every recipe has 12 ingredients; meal scales
+vary and dates span September 2026. Synthetic photo bytes approximate transfer size, not image decoding.
+Each workload gets five warmups and 25 timed samples. CPU samples average ten calls; API samples cover
+one request through JSON body consumption. Output includes median and p95 milliseconds per operation,
+raw/gzipped response and production JS/CSS sizes, and Node/CPU metadata. Gzip sizes use Node's default
+compression settings, which can differ from Vite's size report. Setup, migration, and build time are excluded.
+
+Initial September 2026 pass, same orb (warm-run medians, milliseconds):
+
+| Workload                               | Before | After |
+| -------------------------------------- | -----: | ----: |
+| Large household, weekly shopping       |  12.28 |  2.72 |
+| Large household, monthly shopping      |  98.36 | 10.81 |
+| Large household, formatting 60 amounts |  1.179 | 0.021 |
+| Large household, household API         |  34.37 | 32.52 |
+| Household with photos, household API   |  56.77 | 58.69 |
+
+The main improvements are indexed recipe lookup, one mutable accumulation set per ingredient instead
+of repeatedly copying provenance, and reused number formatters/decoders. React also retains shopping
+totals until recipes, meals, or dates change; the CPU benchmark measures recomputation, not this cache benefit.
+Small weekly workloads and API timings are noisy; repeat runs rather than treating these figures as thresholds.
+Production JS is essentially unchanged (102,200 → 102,210 gzip bytes).
+
+**Remaining costs:** every mutation reloads the whole household, including inline photos. The photo
+fixture still transfers 1,691,051 bytes (1,252,227 gzipped). Separating image delivery is a future API/storage
+change, not addressed by these CPU optimizations. These are local warm-process measurements, not production
+latency, cold starts, Access authentication, browser rendering, Core Web Vitals, or mobile-device results.
+There are no hardware-dependent pass/fail timing thresholds; correctness failures still fail the command.
+
 ## Deploy to Cloudflare
 
 Deployment is **not performed** as part of local setup. Review it before running: this provisions shared infrastructure and applies migrations.

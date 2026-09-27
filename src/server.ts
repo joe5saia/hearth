@@ -37,6 +37,10 @@ const decodeId = (path: string, prefix: string) =>
     catch: () => invalid("Invalid item ID."),
   });
 
+const decodeIngredients = Schema.decodeUnknownSync(Schema.Array(IngredientSchema));
+
+const decodeInstructions = Schema.decodeUnknownSync(Schema.Array(Schema.String));
+
 type RecipeRow = Omit<Recipe, "ingredients" | "instructions"> & { ingredients: string; instructions: string };
 
 function recipeStatement(db: WebsiteEnv["DB"], recipe: Recipe) {
@@ -131,8 +135,8 @@ function api(request: Request, env: WebsiteEnv) {
 
       const parsed = recipes.results.map((row) => ({
         ...row,
-        ingredients: Schema.decodeUnknownSync(Schema.Array(IngredientSchema))(JSON.parse(row.ingredients)),
-        instructions: Schema.decodeUnknownSync(Schema.Array(Schema.String))(JSON.parse(row.instructions)),
+        ingredients: decodeIngredients(JSON.parse(row.ingredients)),
+        instructions: decodeInstructions(JSON.parse(row.instructions)),
       }));
 
       return Response.json({

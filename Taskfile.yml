@@ -16,6 +16,11 @@ tasks:
     cmds: [npx vite]
   build:
     cmds: [npx vite build]
+  benchmark:
+    desc: Measure local API, shopping CPU, and production bundle sizes (optional -- report.json)
+    cmds:
+      - npx vite build
+      - node tests/benchmark.ts {{.CLI_ARGS}}
   check:
     cmds: [npx tsc --noEmit, npx oxlint, npx oxfmt --check, npx vitest run]
   format:

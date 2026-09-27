@@ -105,8 +105,10 @@ export function validDate(value: string): boolean {
   );
 }
 
+const quantityFormatter = new Intl.NumberFormat("en-US", { maximumFractionDigits: 2 });
+
 export function quantity(value: number): string {
-  return new Intl.NumberFormat("en-US", { maximumFractionDigits: 2 }).format(value);
+  return quantityFormatter.format(value);
 }
 
 // Convert only compatible units; a can or a clove cannot be inferred as grams.
@@ -126,11 +128,16 @@ export function shoppingList(
   start: string,
   end: string,
 ): ShoppingItem[] {
-  const items = new Map<string, ShoppingItem>();
+  const recipesById = new Map(recipes.map((recipe) => [recipe.id, recipe]));
+
+  const items = new Map<
+    string,
+    { key: string; name: string; unit: string; quantity: number; recipes: Set<string> }
+  >();
 
   for (const meal of meals) {
     if (meal.date < start || meal.date > end) continue;
-    const recipe = recipes.find((entry) => entry.id === meal.recipeId);
+    const recipe = recipesById.get(meal.recipeId);
 
     if (!recipe) continue;
 
@@ -143,18 +150,17 @@ export function shoppingList(
       const existing = items.get(key);
 
       if (existing) {
-        items.set(key, {
-          ...existing,
-          quantity: existing.quantity + amount,
-          recipes: [...new Set([...existing.recipes, recipe.title])],
-        });
+        existing.quantity += amount;
+        existing.recipes.add(recipe.title);
       } else {
-        items.set(key, { key, name, unit, quantity: amount, recipes: [recipe.title] });
+        items.set(key, { key, name, unit, quantity: amount, recipes: new Set([recipe.title]) });
       }
     }
   }
 
-  return [...items.values()].sort((a, b) => a.name.localeCompare(b.name));
+  return [...items.values()]
+    .map((item) => ({ ...item, recipes: [...item.recipes] }))
+    .sort((a, b) => a.name.localeCompare(b.name));
 }
 
 export function displayAmount(item: Ingredient): string {
