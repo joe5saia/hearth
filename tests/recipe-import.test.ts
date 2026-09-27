@@ -55,12 +55,23 @@ describe("NYT Cooking import", () => {
     expect(parseIngredient("1 3/4 cups flour").ingredient.quantity).toBe(1.75);
     expect(parseIngredient("⅓ cup milk").ingredient.quantity).toBeCloseTo(1 / 3);
 
-    for (const line of ["Salt to taste", "2–3 onions", "2 to 3 onions"]) {
+    for (const line of ["Salt to taste", "2–3 onions", "2 to 3 onions", "1/0 cup milk", "0 cups flour"]) {
       expect(parseIngredient(line)).toEqual({
         ingredient: { name: line, quantity: 1, unit: "each" },
         review: true,
       });
     }
+  });
+
+  it.each([
+    ["P2D", 2880],
+    ["P1DT2H3M4S", 1564],
+    ["PT45S", 1],
+  ])("converts duration %s to %i minutes", async (duration, minutes) => {
+    const html = await readFile("tests/fixtures/nyt-coq-au-vin.html", "utf8");
+    const result = parseRecipeHtml(html.replace('"PT2H"', JSON.stringify(duration)), source);
+
+    expect(result.recipe.minutes).toBe(minutes);
   });
 
   it("preserves compound and alternative measurements with a recipe review warning", async () => {

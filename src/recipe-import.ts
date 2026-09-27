@@ -113,6 +113,8 @@ export function parseIngredient(line: string) {
   // Ranges, arithmetic and alternative measures need review rather than a guessed amount.
   // Match numeric additions, not notes such as "plus more for serving".
   if (
+    !Number.isFinite(amount) ||
+    amount <= 0 ||
     /^(?:to\s|[-–])/i.test(rest) ||
     /\b(?:plus|minus)\s+\d/i.test(normalized) ||
     /^[a-z.]+\s*\/\s*\d/i.test(match[2])
@@ -176,7 +178,7 @@ export function parseRecipeHtml(html: string, source: string) {
 
       if (Option.isNone(parsed) || !parsed.value["@type"].includes("Recipe")) continue;
       const data = parsed.value;
-      const duration = data.totalTime.match(/^P(?:(\d+)D)?T(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?$/);
+      const duration = data.totalTime.match(/^P(?:(\d+)D)?(?:T(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?)?$/);
 
       const minutes = duration
         ? Math.ceil(

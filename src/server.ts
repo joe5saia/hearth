@@ -5,12 +5,15 @@ import {
   IngredientSchema,
   MealSchema,
   RecipeSchema,
+  ExtraSchema,
+  CheckSchema,
   categories,
   units,
   validDate,
   type Recipe,
   type Meal,
   type Extra,
+  type Household,
 } from "./domain";
 import { sampleRecipes, sampleMeals } from "./seed";
 import { importRecipe } from "./recipe-import";
@@ -28,9 +31,11 @@ const database = <A>(run: () => Promise<A>) =>
 const readJson = (request: Request) =>
   Effect.tryPromise({ try: () => request.json(), catch: () => invalid("Please send valid JSON.") });
 
-const ExtraSchema = Schema.Struct({ id: Schema.String, name: Schema.String, checked: Schema.Number });
-
-const CheckSchema = Schema.Struct({ key: Schema.String, checked: Schema.Number });
+const decodeId = (path: string, prefix: string) =>
+  Effect.try({
+    try: () => decodeURIComponent(path.slice(prefix.length)),
+    catch: () => invalid("Invalid item ID."),
+  });
 
 type RecipeRow = Omit<Recipe, "ingredients" | "instructions"> & { ingredients: string; instructions: string };
 
@@ -135,7 +140,7 @@ function api(request: Request, env: WebsiteEnv) {
         meals: meals.results,
         extras: extras.results,
         checks: checks.results,
-      });
+      } satisfies Household);
     }
 
     if (method === "POST" && path === "/api/recipes/import") {
@@ -182,7 +187,7 @@ function api(request: Request, env: WebsiteEnv) {
     }
 
     if (method === "DELETE" && path.startsWith("/api/recipes/")) {
-      const id = decodeURIComponent(path.slice("/api/recipes/".length));
+      const id = yield* decodeId(path, "/api/recipes/");
 
       // The conditional delete and FK restriction both protect planned recipes.
       const result = yield* database(() =>
@@ -231,12 +236,8 @@ function api(request: Request, env: WebsiteEnv) {
     }
 
     if (method === "DELETE" && path.startsWith("/api/meals/")) {
-      yield* database(() =>
-        db
-          .prepare("DELETE FROM meals WHERE id=?")
-          .bind(decodeURIComponent(path.slice(11)))
-          .run(),
-      );
+      const id = yield* decodeId(path, "/api/meals/");
+      yield* database(() => db.prepare("DELETE FROM meals WHERE id=?").bind(id).run());
 
       return Response.json({ ok: true });
     }
@@ -269,12 +270,8 @@ function api(request: Request, env: WebsiteEnv) {
     }
 
     if (method === "DELETE" && path.startsWith("/api/extras/")) {
-      yield* database(() =>
-        db
-          .prepare("DELETE FROM extras WHERE id=?")
-          .bind(decodeURIComponent(path.slice(12)))
-          .run(),
-      );
+      const id = yield* decodeId(path, "/api/extras/");
+      yield* database(() => db.prepare("DELETE FROM extras WHERE id=?").bind(id).run());
 
       return Response.json({ ok: true });
     }
@@ -289,12 +286,12 @@ function api(request: Request, env: WebsiteEnv) {
       if (check.key.length > 1000 || ![0, 1].includes(check.checked))
         return yield* Effect.fail(invalid("Invalid shopping item."));
       yield* database(() =>
-        db
-          .prepare(
-            "INSERT INTO checks(key,checked) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET checked=excluded.checked",
-          )
-          .bind(check.key, check.checked)
-          .run(),
+        check.checked
+          ? db
+              .prepare("INSERT INTO checks(key,checked) VALUES(?,1) ON CONFLICT(key) DO UPDATE SET checked=1")
+              .bind(check.key)
+              .run()
+          : db.prepare("DELETE FROM checks WHERE key=?").bind(check.key).run(),
       );
 
       return Response.json({ ok: true });

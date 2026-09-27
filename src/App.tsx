@@ -36,7 +36,7 @@ import {
   nextDinnerDate,
   validDate,
   RecipeSchema,
-  MealSchema,
+  HouseholdSchema,
   type Household,
   type Ingredient,
   type Meal,
@@ -166,24 +166,7 @@ export function App() {
 
   const refresh = useCallback(async () => {
     const response = await api("household");
-
-    const household = Schema.decodeUnknownSync(
-      Schema.Struct({
-        recipes: Schema.Array(RecipeSchema),
-        meals: Schema.Array(MealSchema),
-        extras: Schema.Array(
-          Schema.Struct({ id: Schema.String, name: Schema.String, checked: Schema.Number }),
-        ),
-        checks: Schema.Array(Schema.Struct({ key: Schema.String, checked: Schema.Number })),
-      }),
-    )(await response.json());
-
-    setData({
-      recipes: [...household.recipes],
-      meals: [...household.meals],
-      extras: [...household.extras],
-      checks: [...household.checks],
-    });
+    setData(Schema.decodeUnknownSync(HouseholdSchema)(await response.json()));
     setLoaded(true);
   }, []);
 
@@ -993,7 +976,7 @@ function MealForm({
   viewRecipe,
 }: {
   meal: Meal;
-  recipes: Recipe[];
+  recipes: readonly Recipe[];
   busy: boolean;
   error: string;
   save: (meal: Meal) => Promise<boolean>;

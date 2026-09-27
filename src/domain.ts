@@ -34,14 +34,20 @@ export type Recipe = typeof RecipeSchema.Type;
 
 export type Meal = typeof MealSchema.Type;
 
-export type Extra = { id: string; name: string; checked: number };
+export const ExtraSchema = Schema.Struct({ id: Schema.String, name: Schema.String, checked: Schema.Number });
 
-export type Household = {
-  recipes: Recipe[];
-  meals: Meal[];
-  extras: Extra[];
-  checks: { key: string; checked: number }[];
-};
+export const CheckSchema = Schema.Struct({ key: Schema.String, checked: Schema.Number });
+
+export const HouseholdSchema = Schema.Struct({
+  recipes: Schema.Array(RecipeSchema),
+  meals: Schema.Array(MealSchema),
+  extras: Schema.Array(ExtraSchema),
+  checks: Schema.Array(CheckSchema),
+});
+
+export type Extra = typeof ExtraSchema.Type;
+
+export type Household = typeof HouseholdSchema.Type;
 
 export const units = [
   "g",

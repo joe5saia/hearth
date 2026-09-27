@@ -1,11 +1,11 @@
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { Miniflare, convertV4MiniflareOptions } from "miniflare";
 import { rolldown } from "rolldown";
 import { readFile } from "node:fs/promises";
 import { exportJWK, generateKeyPair, SignJWT, type JSONWebKeySet, type JWTPayload } from "jose";
 import { sampleRecipes } from "../src/seed";
 import { Schema } from "effect";
-import { RecipeSchema } from "../src/domain";
+import { HouseholdSchema, RecipeSchema, type Meal } from "../src/domain";
 
 let worker: Miniflare;
 
@@ -14,6 +14,15 @@ let script = "";
 let signingKey: CryptoKey;
 
 let publicKeys: JSONWebKeySet;
+
+const meal: Meal = {
+  id: "test-meal",
+  recipeId: sampleRecipes[0].id,
+  date: "2026-09-21",
+  slot: "Dinner",
+  scale: 1.5,
+  note: "Leftovers for lunch",
+};
 
 function options(local: string, audience = "test-hearth") {
   return convertV4MiniflareOptions({
@@ -68,6 +77,17 @@ beforeAll(async () => {
   await db.batch(statements);
 }, 30000);
 
+beforeEach(async () => {
+  await worker.setOptions(options("true"));
+  const db = await worker.getD1Database("DB");
+  await db.batch([
+    db.prepare("DELETE FROM meals"),
+    db.prepare("DELETE FROM recipes"),
+    db.prepare("DELETE FROM extras"),
+    db.prepare("DELETE FROM checks"),
+  ]);
+});
+
 afterAll(async () => {
   await worker?.dispose();
 });
@@ -96,6 +116,7 @@ describe("real Worker with disposable SQLite D1", () => {
     expect(JSON.parse(stored?.ingredients ?? "[]")).toEqual(sampleRecipes[0].ingredients);
   });
   it("rejects malformed JSON, invalid URLs, quantities, empty ingredients, and invalid dates", async () => {
+    expect((await send("recipes", "PUT", JSON.stringify(sampleRecipes[0]))).status).toBe(200);
     expect((await send("recipes", "PUT", "{")).status).toBe(400);
 
     for (const patch of [
@@ -110,15 +131,6 @@ describe("real Worker with disposable SQLite D1", () => {
       );
     }
 
-    const meal = {
-      id: "test-meal",
-      recipeId: sampleRecipes[0].id,
-      date: "2026-09-21",
-      slot: "Dinner",
-      scale: 1.5,
-      note: "Leftovers for lunch",
-    };
-
     for (const patch of [{ date: "2026-02-30" }, { scale: 0 }, { scale: 101 }, { recipeId: "missing" }]) {
       expect((await send("meals", "PUT", JSON.stringify({ ...meal, ...patch }))).status).toBe(400);
     }
@@ -132,6 +144,8 @@ describe("real Worker with disposable SQLite D1", () => {
     });
   });
   it("updates rather than duplicates and protects planned recipes from deletion", async () => {
+    expect((await send("recipes", "PUT", JSON.stringify(sampleRecipes[0]))).status).toBe(200);
+    expect((await send("meals", "PUT", JSON.stringify(meal))).status).toBe(200);
     expect((await send(`recipes/${sampleRecipes[0].id}`, "DELETE", "{}")).status).toBe(409);
     expect(
       (await send("recipes", "PUT", JSON.stringify({ ...sampleRecipes[0], title: "Updated chicken" })))
@@ -163,7 +177,7 @@ describe("real Worker with disposable SQLite D1", () => {
       (await send("checks", "PUT", JSON.stringify({ key: "range-ingredient-total", checked: 1 }))).status,
     ).toBe(200);
     const state = await worker.dispatchFetch("http://localhost/api/household");
-    expect(await state.json()).toEqual({
+    expect(Schema.decodeUnknownSync(HouseholdSchema)(await state.json())).toEqual({
       recipes: [],
       meals: [],
       extras: [{ id: "snack", name: "Apples & peanut butter", checked: 1 }],
@@ -172,6 +186,42 @@ describe("real Worker with disposable SQLite D1", () => {
     expect((await send("extras/snack", "DELETE", "{}")).status).toBe(200);
     const db = await worker.getD1Database("DB");
     expect(await db.prepare("SELECT count(*) AS count FROM extras").first()).toEqual({ count: 0 });
+  });
+  it("removes unchecked identities without changing other checked items", async () => {
+    expect(
+      (await send("checks", "PUT", JSON.stringify({ key: "range-ingredient-total", checked: 1 }))).status,
+    ).toBe(200);
+    expect((await send("checks", "PUT", JSON.stringify({ key: "keep-checked", checked: 1 }))).status).toBe(
+      200,
+    );
+
+    for (const key of ["range-ingredient-total", "never-checked"]) {
+      expect((await send("checks", "PUT", JSON.stringify({ key, checked: 0 }))).status).toBe(200);
+    }
+
+    const db = await worker.getD1Database("DB");
+    expect((await db.prepare("SELECT * FROM checks").all()).results).toEqual([
+      { key: "keep-checked", checked: 1 },
+    ]);
+    expect(
+      (await send("checks", "PUT", JSON.stringify({ key: "range-ingredient-total", checked: 1 }))).status,
+    ).toBe(200);
+    expect(await db.prepare("SELECT count(*) AS count FROM checks").first()).toEqual({ count: 2 });
+  });
+  it("rejects malformed encoded IDs as client errors and decodes valid IDs once", async () => {
+    for (const resource of ["recipes", "meals", "extras"]) {
+      for (const id of ["%", "%E0%A4%A"]) {
+        const response = await send(`${resource}/${id}`, "DELETE", "{}");
+        expect(response.status).toBe(400);
+        expect(await response.json()).toEqual({ error: "Invalid item ID." });
+      }
+    }
+
+    const id = "extra/%20?";
+    expect((await send("extras", "PUT", JSON.stringify({ id, name: "Milk", checked: 0 }))).status).toBe(200);
+    expect((await send(`extras/${encodeURIComponent(id)}`, "DELETE", "{}")).status).toBe(200);
+    const db = await worker.getD1Database("DB");
+    expect(await db.prepare("SELECT id FROM extras WHERE id=?").bind(id).first()).toBeNull();
   });
   it("rejects cross-site writes and non-JSON requests", async () => {
     expect(
@@ -208,7 +258,7 @@ describe("real Worker with disposable SQLite D1", () => {
 
     const db = await worker.getD1Database("DB");
 
-    expect(await db.prepare("SELECT count(*) AS count FROM recipes").first()).toEqual({ count: 6 });
+    expect(await db.prepare("SELECT count(*) AS count FROM recipes").first()).toEqual({ count: 0 });
     expect(result.recipe).toMatchObject({ title: "Coq au Vin", source, minutes: 120, servings: 4 });
     expect(result.recipe.ingredients).toHaveLength(20);
     expect(result.recipe.instructions).toHaveLength(9);
@@ -242,6 +292,7 @@ describe("real Worker with disposable SQLite D1", () => {
     expect((await send("recipes/import", "POST", "{}")).status).toBe(400);
   });
   it("requires a signed Access token even when the assets router omits runtime context", async () => {
+    expect((await send("demo?today=2026-09-27", "POST", "{}")).status).toBe(200);
     await worker.setOptions(options("false"));
 
     for (const path of ["/", "/api/household"]) {
@@ -279,7 +330,7 @@ describe("real Worker with disposable SQLite D1", () => {
 
       expect(authorized.status).toBe(200);
       expect(authorized.headers.get("WWW-Authenticate")).toBeNull();
-      const household = await authorized.json();
+      const household = Schema.decodeUnknownSync(HouseholdSchema)(await authorized.json());
       expect(household).toHaveProperty("recipes.length", 6);
       expect(household).toHaveProperty("meals.length", 5);
     }
