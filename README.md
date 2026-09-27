@@ -50,6 +50,10 @@ All generic [anti-slop](https://github.com/dmmulroy/anti-slop) rules are enabled
 
 Deployment is **not performed** as part of local setup. Review it before running: this provisions shared infrastructure and applies migrations.
 
+Production is protected by Cloudflare Access for the `saiaai` team. Alchemy manages the Google identity provider and Worker-level Access application, including preview URLs. Only `joe5saia@gmail.com` and `shannonnitroy@gmail.com` may sign in, using Google, with seven-day sessions. Set `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET` in the deployment environment; mark the client secret as a secret in Amp. The Google OAuth callback is `https://saiaai.cloudflareaccess.com/cdn-cgi/access/callback`. The Cloudflare token also needs permission to manage Access applications/policies and identity providers. Local development does not provision or require Access.
+
+During the login transition, the shared-password gate remains behind Access until Google sign-in has been verified by a household member. Do not remove it before that verification. The database remains one shared household.
+
 1. In the Amp project's Secrets & Env Vars, set `CLOUDFLARE_ACCOUNT_ID` as an environment variable and `CLOUDFLARE_API_TOKEN` as a secret. Scope the token to the intended account with **Workers Scripts: Edit**, **D1: Edit**, and **Secrets Store: Edit**. No interactive profile is needed. Outside Amp, export these variables in your private environment.
 2. Set `HOUSEHOLD_PASSWORD` as a secret: use a strong, unique password of at least 10 characters. The stack reads it from `process.env` and publishes it as a Worker secret, not a plain-text binding. Never commit credentials or copy them into orb setup scripts or snapshots. Refresh an existing orb with `amp orb restart-processes` after changing Amp secrets.
 3. Run `npx task cloud:check` to validate credential configuration. This checks presence and format, not live authorization or all required permissions.
