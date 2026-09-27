@@ -1,6 +1,7 @@
 import * as Alchemy from "alchemy";
 import * as Cloudflare from "alchemy/Cloudflare";
 import { AlchemyContext } from "alchemy/AlchemyContext";
+import * as Namespace from "alchemy/Namespace";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 
@@ -13,7 +14,7 @@ export const Website = Cloudflare.Worker(
   Effect.gen(function* () {
     const { dev } = yield* AlchemyContext;
 
-    let access: Alchemy.Input<Cloudflare.WorkerAccessApplication> | undefined;
+    let access: Cloudflare.Access.Application | undefined;
     if (!dev) {
       const clientId = process.env.GOOGLE_CLIENT_ID;
       const clientSecret = process.env.GOOGLE_CLIENT_SECRET;
@@ -28,12 +29,13 @@ export const Website = Cloudflare.Worker(
         config: { clientId, clientSecret },
       });
       const googleId = google.identityProviderId;
-      access = {
+      // Preserve the existing Website/Access resource and its audience tag.
+      access = yield* Cloudflare.Access.Application("Access", {
+        type: "self_hosted",
         name: "Hearth",
         sessionDuration: "168h",
         allowedIdps: [googleId],
         autoRedirectToIdentity: true,
-        previews: true,
         policies: [
           {
             name: "Household",
@@ -42,7 +44,7 @@ export const Website = Cloudflare.Worker(
             require: [{ loginMethod: googleId }],
           },
         ],
-      };
+      }).pipe(Namespace.push("Website"));
     }
 
     return {
@@ -55,6 +57,7 @@ export const Website = Cloudflare.Worker(
       env: {
         DB: Database,
         LOCAL_DEV: dev ? "true" : "false",
+        ACCESS_AUD: access?.aud ?? "",
       },
     } as const;
   }),

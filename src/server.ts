@@ -1,4 +1,5 @@
 import { Data, Effect, Schema } from "effect";
+import { createRemoteJWKSet, jwtVerify } from "jose";
 import type { WebsiteEnv } from "../alchemy.run";
 import {
   IngredientSchema,
@@ -298,13 +299,29 @@ function api(request: Request, env: WebsiteEnv) {
   });
 }
 
+const accessIssuer = "https://saiaai.cloudflareaccess.com";
+const accessKeys = createRemoteJWKSet(new URL(`${accessIssuer}/cdn-cgi/access/certs`));
+
 export default {
-  async fetch(request: Request, env: WebsiteEnv, ctx: ExecutionContext): Promise<Response> {
-    if (env.LOCAL_DEV !== "true" && !ctx.access) {
-      return new Response("Cloudflare Access sign-in is required.", {
-        status: 403,
-        headers: { "Cache-Control": "no-store" },
-      });
+  async fetch(request: Request, env: WebsiteEnv): Promise<Response> {
+    // Static Assets' internal router does not forward ctx.access. Verify the
+    // signed assertion instead, including this application's audience tag.
+    if (env.LOCAL_DEV !== "true") {
+      try {
+        const token = request.headers.get("Cf-Access-Jwt-Assertion");
+        if (!token || !env.ACCESS_AUD) throw new Error("Missing Access credentials.");
+        await jwtVerify(token, accessKeys, {
+          issuer: accessIssuer,
+          audience: env.ACCESS_AUD,
+          algorithms: ["RS256"],
+          requiredClaims: ["exp", "sub"],
+        });
+      } catch {
+        return new Response("Cloudflare Access sign-in is required.", {
+          status: 403,
+          headers: { "Cache-Control": "no-store" },
+        });
+      }
     }
 
     if (request.headers.get("Sec-Fetch-Site") === "cross-site" && !["GET", "HEAD"].includes(request.method)) {
