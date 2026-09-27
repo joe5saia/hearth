@@ -2,14 +2,16 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { Miniflare, convertV4MiniflareOptions } from "miniflare";
 import { rolldown } from "rolldown";
 import { readFile } from "node:fs/promises";
-import { exportJWK, generateKeyPair, SignJWT, type JWTPayload } from "jose";
+import { exportJWK, generateKeyPair, SignJWT, type JSONWebKeySet, type JWTPayload } from "jose";
 import { sampleRecipes } from "../src/seed";
 
 let worker: Miniflare;
 
 let script = "";
+
 let signingKey: CryptoKey;
-let publicKeys: { keys: object[] };
+
+let publicKeys: JSONWebKeySet;
 
 function options(local: string, audience = "test-hearth") {
   return convertV4MiniflareOptions({
@@ -23,6 +25,7 @@ function options(local: string, audience = "test-hearth") {
         bindings: { LOCAL_DEV: local, ACCESS_AUD: audience },
         outboundService: async (request) => {
           expect(request.url).toBe("https://saiaai.cloudflareaccess.com/cdn-cgi/access/certs");
+
           return Response.json(publicKeys);
         },
       },
@@ -176,10 +179,12 @@ describe("real Worker with disposable SQLite D1", () => {
   });
   it("requires a signed Access token even when the assets router omits runtime context", async () => {
     await worker.setOptions(options("false"));
+
     for (const path of ["/", "/api/household"]) {
       const denied = await worker.dispatchFetch(`http://localhost${path}`);
       expect(denied.status).toBe(403);
       expect(denied.headers.get("WWW-Authenticate")).toBeNull();
+
       const forged = await worker.dispatchFetch(`http://localhost${path}`, {
         headers: {
           "Cf-Access-Authenticated-User-Email": "joe5saia@gmail.com",
@@ -187,8 +192,10 @@ describe("real Worker with disposable SQLite D1", () => {
           Authorization: "Basic " + btoa("hearth:old-password"),
         },
       });
+
       expect(forged.status).toBe(403);
     }
+
     const sign = (claims: JWTPayload, key = signingKey) =>
       new SignJWT({
         iss: "https://saiaai.cloudflareaccess.com",
@@ -205,14 +212,16 @@ describe("real Worker with disposable SQLite D1", () => {
       const authorized = await worker.dispatchFetch("http://localhost/api/household", {
         headers: { "Cf-Access-Jwt-Assertion": await sign({ email }) },
       });
+
       expect(authorized.status).toBe(200);
       expect(authorized.headers.get("WWW-Authenticate")).toBeNull();
-      const household = (await authorized.json()) as { recipes: unknown[]; meals: unknown[] };
-      expect(household.recipes).toHaveLength(6);
-      expect(household.meals).toHaveLength(5);
+      const household = await authorized.json();
+      expect(household).toHaveProperty("recipes.length", 6);
+      expect(household).toHaveProperty("meals.length", 5);
     }
 
     const wrongKey = (await generateKeyPair("RS256")).privateKey;
+
     const invalidTokens = [
       await sign({ aud: ["another-application"] }),
       await sign({ iss: "https://another-team.cloudflareaccess.com" }),
@@ -221,16 +230,21 @@ describe("real Worker with disposable SQLite D1", () => {
       await sign({ nbf: Math.floor(Date.now() / 1000) + 300 }),
       await sign({}, wrongKey),
     ];
+
     for (const token of invalidTokens) {
       const denied = await worker.dispatchFetch("http://localhost/api/household", {
         headers: { "Cf-Access-Jwt-Assertion": token },
       });
+
       expect(denied.status).toBe(403);
     }
+
     await worker.setOptions(options("false", ""));
+
     const unconfigured = await worker.dispatchFetch("http://localhost/api/household", {
       headers: { "Cf-Access-Jwt-Assertion": await sign({}) },
     });
+
     expect(unconfigured.status).toBe(403);
   });
 });

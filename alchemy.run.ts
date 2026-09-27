@@ -15,19 +15,23 @@ export const Website = Cloudflare.Worker(
     const { dev } = yield* AlchemyContext;
 
     let access: Cloudflare.Access.Application | undefined;
+
     if (!dev) {
       const clientId = process.env.GOOGLE_CLIENT_ID;
       const clientSecret = process.env.GOOGLE_CLIENT_SECRET;
+
       if (!clientId || !clientSecret) {
         return yield* Effect.die(
           new Error("Set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET before deploying."),
         );
       }
+
       const google = yield* Cloudflare.Access.IdentityProvider("Google", {
         name: "Hearth Google",
         type: "google",
         config: { clientId, clientSecret },
       });
+
       const googleId = google.identityProviderId;
       // Preserve the existing Website/Access resource and its audience tag.
       access = yield* Cloudflare.Access.Application("Access", {

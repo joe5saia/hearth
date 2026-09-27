@@ -300,6 +300,7 @@ function api(request: Request, env: WebsiteEnv) {
 }
 
 const accessIssuer = "https://saiaai.cloudflareaccess.com";
+
 const accessKeys = createRemoteJWKSet(new URL(`${accessIssuer}/cdn-cgi/access/certs`));
 
 export default {
@@ -309,6 +310,7 @@ export default {
     if (env.LOCAL_DEV !== "true") {
       try {
         const token = request.headers.get("Cf-Access-Jwt-Assertion");
+
         if (!token || !env.ACCESS_AUD) throw new Error("Missing Access credentials.");
         await jwtVerify(token, accessKeys, {
           issuer: accessIssuer,
