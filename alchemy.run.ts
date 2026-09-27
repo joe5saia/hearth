@@ -48,6 +48,7 @@ export const Website = Cloudflare.Worker(
     return {
       main: "src/server.ts",
       access,
+      domain: dev ? undefined : "hearth.joesaia.trade",
       compatibility: { date: "2026-09-08" },
       dev: { port: 8787 },
       assets: { directory: "./dist", notFoundHandling: "single-page-application", runWorkerFirst: true },

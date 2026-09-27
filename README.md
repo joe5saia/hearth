@@ -50,6 +50,8 @@ All generic [anti-slop](https://github.com/dmmulroy/anti-slop) rules are enabled
 
 Deployment is **not performed** as part of local setup. Review it before running: this provisions shared infrastructure and applies migrations.
 
+Production is served at **https://hearth.joesaia.trade**. Alchemy manages the Worker's custom domain, with DNS and TLS provisioned by Cloudflare. The original `workers.dev` address remains available; both addresses use the same Worker-level Access policy and household database.
+
 Production is protected by Cloudflare Access for the `saiaai` team. Alchemy manages the Google identity provider and Worker-level Access application, including preview URLs. Only `joe5saia@gmail.com` and `shannonnitroy@gmail.com` may sign in, using Google, with seven-day sessions. Set `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET` in the deployment environment; mark the client secret as a secret in Amp. The Google OAuth callback is `https://saiaai.cloudflareaccess.com/cdn-cgi/access/callback`. The Cloudflare token also needs permission to manage Access applications/policies and identity providers. Local development does not provision or require Access.
 
 Google sign-in replaces the old shared-password login. The Worker requires Cloudflare's trusted `ctx.access` context in production and rejects direct requests without it; caller-supplied email or JWT headers do not bypass this check. The database remains one shared household, with no per-person app accounts. `HOUSEHOLD_PASSWORD` is no longer used.
