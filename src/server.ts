@@ -301,7 +301,7 @@ function api(request: Request, env: WebsiteEnv) {
 export default {
   async fetch(request: Request, env: WebsiteEnv): Promise<Response> {
     if (env.LOCAL_DEV !== "true") {
-      if (env.HOUSEHOLD_PASSWORD.length < 16) {
+      if (env.HOUSEHOLD_PASSWORD.length < 10) {
         return new Response("Household access is not configured.", { status: 503 });
       }
 

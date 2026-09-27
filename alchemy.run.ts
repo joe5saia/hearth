@@ -15,9 +15,9 @@ export const Website = Cloudflare.Worker(
     const { dev } = yield* AlchemyContext;
     const password = process.env.HOUSEHOLD_PASSWORD ?? "";
 
-    if (!dev && password.length < 16) {
+    if (!dev && password.length < 10) {
       return yield* Effect.die(
-        new Error("Set HOUSEHOLD_PASSWORD to at least 16 characters before deploying."),
+        new Error("Set HOUSEHOLD_PASSWORD to at least 10 characters before deploying."),
       );
     }
 

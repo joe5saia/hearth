@@ -167,7 +167,15 @@ describe("real Worker with disposable SQLite D1", () => {
   it("fails closed in production and requires the correct household credentials", async () => {
     await worker.setOptions(options("false", ""));
     expect((await worker.dispatchFetch("http://localhost/api/household")).status).toBe(503);
-    await worker.setOptions(options("false", "test-only-household-password"));
+    await worker.setOptions(options("false", "123456789"));
+    expect(
+      (
+        await worker.dispatchFetch("http://localhost/api/household", {
+          headers: { Authorization: "Basic " + btoa("hearth:123456789") },
+        })
+      ).status,
+    ).toBe(503);
+    await worker.setOptions(options("false", "1234567890"));
     const unauthorized = await worker.dispatchFetch("http://localhost/api/household");
     expect(unauthorized.status).toBe(401);
     expect(unauthorized.headers.get("WWW-Authenticate")).toContain("Basic");
@@ -181,7 +189,7 @@ describe("real Worker with disposable SQLite D1", () => {
     expect(
       (
         await worker.dispatchFetch("http://localhost/api/household", {
-          headers: { Authorization: "Basic " + btoa("hearth:test-only-household-password") },
+          headers: { Authorization: "Basic " + btoa("hearth:1234567890") },
         })
       ).status,
     ).toBe(200);
