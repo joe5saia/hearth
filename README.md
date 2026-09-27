@@ -11,13 +11,13 @@ npm ci
 npx task dev
 ```
 
-Open http://localhost:5173 on your own machine. `task dev` builds the initial static assets, then starts Vite with React HMR and Alchemy's local Worker on port 8787. Vite proxies `/api` to that Worker. Alchemy applies the SQL migrations and persists the local SQLite database beneath `.alchemy/`. Restarting the app preserves your household. **Deleting `.alchemy/` deletes local data and infrastructure state.** Keep that directory private and backed up.
+Open http://localhost:5173 on your own machine. `task dev` builds the initial static assets, then starts Vite with React HMR and Alchemy's local Worker on port 8787. Vite proxies `/api` to that Worker. Alchemy applies the SQL migrations and persists the local SQLite database beneath `.alchemy/`. Restarting the app preserves your local household. **Deleting `.alchemy/` deletes local data and development infrastructure state.** Production data and deployment state are stored in Cloudflare. Keep the local directory private and backed up.
 
 The empty app offers **Try a sample week**. This adds six editable recipes and five meals in the browser's current week. It never runs automatically in production. You can also start with your own recipe. Example recipes are original demonstration content; source links point to related recipe collections, and bundled photos are illustrative.
 
 Task is installed as a pinned npm development dependency, so `npx task` works without a global install. `npm run dev` is an alias.
 
-Alchemy beta.79 currently resolves a cloud profile even for local resources. `dev:worker` supplies deliberately invalid local-only credential placeholders to satisfy that configuration check. Both resources run in **local** mode; these placeholders cannot access a Cloudflare account and are not used by the deployment task. Alchemy's native Vite bridge has a local WebSocket startup problem in this environment, so development uses Vite's standard HTTP proxy. Deployment still uses one Worker serving both assets and API, with D1 provisioned and bound by Alchemy.
+Alchemy beta.79 resolves cloud credential configuration even for local resources. `dev:worker` supplies deliberately invalid local-only credential placeholders to satisfy that configuration check. Both resources run in **local** mode; these placeholders cannot access a Cloudflare account and are not used by the deployment task. Development uses Vite's standard HTTP proxy. Production uses one Worker serving both assets and API, with D1 provisioned and bound by Alchemy.
 
 In an Amp orb, `.agents/setup` installs the pinned Node version and dependencies. Use `amp orb services ensure` to start both local processes and create the Hearth portal. Setup never authenticates, deploys, or applies remote migrations. Do not expose either unauthenticated development port directly to the public internet.
 
@@ -29,7 +29,7 @@ In an Amp orb, `.agents/setup` installs the pinned Node version and dependencies
 
 Ingredient names match after trimming, whitespace normalization, and case folding. Use consistent names (`Cherry tomatoes`, not sometimes `Tomatoes`). Compatible units convert within their families: kg/g, l/ml, lb/oz, and cup/tbsp/tsp (US measures). Different families stay separate; a can, clove, or bunch cannot be converted to weight without information the app doesn't have. Notes such as “add chicken” are shown on the shopping page but **do not invent ingredient quantities**; add that chicken as a manual item or recipe ingredient. Instruction text stays as written when scaling.
 
-This version uses one shared household, no user roles. Changes are saved to the server, not browser local storage. Reload to see another household member's latest edits; simultaneous edits use last-write-wins. Browser calendar dates are used without UTC conversion. Local development is network-independent after dependencies are installed; this is not an offline-sync PWA.
+The app uses one shared household, with no per-person app accounts or roles. Changes are saved to the server, not browser local storage. Reload to see another household member's latest edits; simultaneous edits use last-write-wins. Browser calendar dates are used without UTC conversion. Local development is network-independent after dependencies are installed; this is not an offline-sync PWA.
 
 ## Check the app
 
@@ -38,30 +38,30 @@ npx task check  # TypeScript, Oxlint + vendored rules, Oxfmt, and tests
 npx task build
 ```
 
-Tests bundle the actual Worker with Rolldown and exercise disposable local D1 via Miniflare. They cover CRUD, SQL persistence, validation, delete protection, seeding, production authentication, CSRF rejection, fractional scaling, date boundaries, compatible-unit conversion, and checkmark invalidation. They do not use the development household database.
+Tests bundle the actual Worker with Rolldown and exercise disposable local D1 via Miniflare. They cover CRUD, SQL persistence, validation, delete protection, seeding, signed Access tokens, CSRF rejection, fractional scaling, date boundaries, compatible-unit conversion, and checkmark invalidation. Authentication tests verify valid tokens and reject forged signatures, incorrect issuers or audiences, expired or not-yet-valid tokens, and missing expiry or audience configuration. Tests do not use the development household database.
 
 All generic [anti-slop](https://github.com/dmmulroy/anti-slop) rules are enabled in `oxlint.config.ts`. Their source, tests, license, and upstream revision are vendored under `tools/oxlint/anti-slop`. Do not modify the vendored snapshot during formatting.
 
-**Known sandbox limitation:** Oxlint 1.85's JS plugin allocator crashes on small E2B instances before linting ([upstream issue](https://github.com/oxc-project/oxc/issues/20331)). The normal check task deliberately reports that failure rather than bypassing rules. During development here, native Oxlint checks and all anti-slop rules were checked separately, the latter using their official ESLint-compatible interface. Run `task check` on a machine that supports the plugin allocator before deployment. Oxfmt, TypeScript, tests, and builds run in this orb.
+**Known sandbox limitation:** Oxlint 1.85's JS plugin allocator can crash on small E2B instances before linting ([upstream issue](https://github.com/oxc-project/oxc/issues/20331)). The check task reports that failure rather than bypassing rules. If affected, run `npx task check` on a machine that supports the plugin allocator before deployment.
 
-`npm audit --omit=dev` reports no production dependency vulnerabilities at implementation time. Full audit reports 10 advisories in Alchemy's development-only transitive dependencies; no unsafe forced downgrade or experimental package substitution was applied.
+Use `npm audit --omit=dev` to check production dependencies and `npm audit` to include the development toolchain.
 
 ## Deploy to Cloudflare
 
 Deployment is **not performed** as part of local setup. Review it before running: this provisions shared infrastructure and applies migrations.
 
-Production is served at **https://hearth.joesaia.trade**. Alchemy manages the Worker's custom domain, with DNS and TLS provisioned by Cloudflare. The original `workers.dev` address remains available; both addresses use the same Worker-level Access policy and household database.
+Production is served at **https://hearth.joesaia.trade**. Alchemy manages the Worker's custom domain, with DNS and TLS provisioned by Cloudflare. The `workers.dev` address is also enabled; both addresses use the same Worker-level Access policy and household database.
 
 Production is protected by Cloudflare Access for the `saiaai` team. Alchemy manages the Google identity provider and Worker-level Access application, including preview URLs. Only `joe5saia@gmail.com` and `shannonnitroy@gmail.com` may sign in, using Google, with seven-day sessions. Set `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET` in the deployment environment; mark the client secret as a secret in Amp. The Google OAuth callback is `https://saiaai.cloudflareaccess.com/cdn-cgi/access/callback`. The Cloudflare token also needs permission to manage Access applications/policies and identity providers. Local development does not provision or require Access.
 
-Google sign-in replaces the old shared-password login. Cloudflare's Static Assets router does not forward `ctx.access`, so the Worker verifies `Cf-Access-Jwt-Assertion` using the team's public signing keys instead. It requires an RS256 signature, the exact team issuer, the application's audience tag (bound by Alchemy as `ACCESS_AUD`), and a valid expiry. Missing or forged assertions fail closed; an email header alone never grants access. The database remains one shared household, with no per-person app accounts. `HOUSEHOLD_PASSWORD` is no longer used.
+The Worker verifies `Cf-Access-Jwt-Assertion` using the team's public signing keys. It requires an RS256 signature, the exact team issuer, the application's audience tag (bound by Alchemy as `ACCESS_AUD`), a subject, and a valid expiry. Missing or forged assertions fail closed; an email header alone never grants access. This works with Cloudflare's Static Assets router, which does not forward `ctx.access` to the app Worker.
 
 1. In the Amp project's Secrets & Env Vars, set `CLOUDFLARE_ACCOUNT_ID` as an environment variable and `CLOUDFLARE_API_TOKEN` as a secret. Scope the token to the intended account with **Workers Scripts: Edit**, **D1: Edit**, and **Secrets Store: Edit**. No interactive profile is needed. Outside Amp, export these variables in your private environment.
 2. Set the Google client credentials described above. Never commit credentials or copy them into orb setup scripts or snapshots. Refresh an existing orb with `amp orb restart-processes` after changing Amp secrets.
 3. Run `npx task cloud:check` to validate credential configuration. This checks presence and format, not live authorization or all required permissions.
-4. After explicit approval, run `npx task cloud:bootstrap` once per Cloudflare account to provision Alchemy's shared state Worker, Durable Objects, and Secrets Store secrets. Do not delete its encryption key. If an older version of this project has already deployed from local state, preserve that `.alchemy/` directory and migrate its production state before switching backends; do not assume existing resources will be adopted safely.
+4. The current account has Alchemy's shared state store provisioned. When setting up a new account, obtain approval and run `npx task cloud:bootstrap` to provision its state Worker, Durable Objects, and Secrets Store secrets. Do not delete the state store's encryption key.
 5. Run `npx task plan` to build assets and preview the `production` stage against the bootstrapped state store. Cloud tasks use `CI=true`, so missing credentials or a missing/outdated state store fail instead of prompting to set them up. Do not run a plan with an unfinished local bootstrap: Alchemy may resume it during state initialization.
-6. After reviewing the plan and approving deployment, run `npx task deploy` in an interactive terminal. In an orb, use `npx task build` followed by `CI=true npx alchemy deploy --stage production --yes` after approval. Deployment updates the Worker, binds D1, and applies pending SQL migrations. Serialize deployments to the same stage across orbs. Production access is account-scoped: stage names are not an authorization boundary.
+6. After reviewing the plan and approving deployment, run `npx task build` followed by `CI=true npx alchemy deploy --stage production --yes`. Deployment updates the Worker, binds D1, and applies pending SQL migrations. Serialize deployments to the same stage across orbs. Production access is account-scoped: stage names are not an authorization boundary.
 7. Open the returned HTTPS Worker URL and sign in with one of the two allowed Google accounts.
 
 All production requests, including assets and API, pass through Cloudflare Access. Keep the Worker-level allowlist in place; do not add bypass or account-wide policies as a workaround. Credential configuration and read access do not establish deployment permissions; verify cloud writes only during an approved bootstrap or deployment.
