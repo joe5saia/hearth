@@ -4,6 +4,8 @@ import { rolldown } from "rolldown";
 import { readFile } from "node:fs/promises";
 import { exportJWK, generateKeyPair, SignJWT, type JSONWebKeySet, type JWTPayload } from "jose";
 import { sampleRecipes } from "../src/seed";
+import { Schema } from "effect";
+import { RecipeSchema } from "../src/domain";
 
 let worker: Miniflare;
 
@@ -24,6 +26,21 @@ function options(local: string, audience = "test-hearth") {
         d1Databases: ["DB"],
         bindings: { LOCAL_DEV: local, ACCESS_AUD: audience },
         outboundService: async (request) => {
+          const url = new URL(request.url);
+
+          if (url.hostname === "cooking.nytimes.com") {
+            if (url.pathname === "/recipes/2") return new Response("Denied", { status: 403 });
+
+            if (url.pathname === "/recipes/3")
+              return new Response("", { status: 302, headers: { Location: "http://localhost/secret" } });
+
+            if (url.pathname === "/recipes/4") return new Response("<html>Sign in</html>");
+
+            if (url.pathname === "/recipes/5") return new Response("x".repeat(5_000_001));
+
+            return new Response(await readFile("tests/fixtures/nyt-coq-au-vin.html", "utf8"));
+          }
+
           expect(request.url).toBe("https://saiaai.cloudflareaccess.com/cdn-cgi/access/certs");
 
           return Response.json(publicKeys);
@@ -176,6 +193,53 @@ describe("real Worker with disposable SQLite D1", () => {
     const db = await worker.getD1Database("DB");
     expect(await db.prepare("SELECT count(*) AS count FROM recipes").first()).toEqual({ count: 6 });
     expect(await db.prepare("SELECT count(*) AS count FROM meals").first()).toEqual({ count: 5 });
+  });
+  it("imports a draft without writing, then persists reviewed fields and the exact source URL", async () => {
+    const source =
+      "https://cooking.nytimes.com/recipes/1018529-coq-au-vin?unlocked_article_code=test&smid=share";
+
+    const response = await send("recipes/import", "POST", JSON.stringify({ url: source }));
+
+    expect(response.status).toBe(200);
+
+    const result = Schema.decodeUnknownSync(
+      Schema.Struct({ recipe: RecipeSchema, warnings: Schema.Array(Schema.String) }),
+    )(await response.json());
+
+    const db = await worker.getD1Database("DB");
+
+    expect(await db.prepare("SELECT count(*) AS count FROM recipes").first()).toEqual({ count: 6 });
+    expect(result.recipe).toMatchObject({ title: "Coq au Vin", source, minutes: 120, servings: 4 });
+    expect(result.recipe.ingredients).toHaveLength(20);
+    expect(result.recipe.instructions).toHaveLength(9);
+    expect((await send("recipes", "PUT", JSON.stringify(result.recipe))).status).toBe(200);
+
+    const stored = await db
+      .prepare("SELECT source,ingredients,instructions FROM recipes WHERE id=?")
+      .bind(result.recipe.id)
+      .first<{ source: string; ingredients: string; instructions: string }>();
+
+    expect(stored?.source).toBe(source);
+    expect(JSON.parse(stored?.ingredients ?? "[]")).toEqual(result.recipe.ingredients);
+    expect(JSON.parse(stored?.instructions ?? "[]")).toEqual(result.recipe.instructions);
+    expect((await send(`recipes/${result.recipe.id}`, "DELETE", "{}")).status).toBe(200);
+  });
+  it("rejects unsupported URLs, blocked pages, redirects, missing recipe data, and oversized pages", async () => {
+    for (const url of [
+      "http://localhost/",
+      "https://cooking.nytimes.com.evil.test/recipes/1",
+      "https://cooking.nytimes.com/recipes/2",
+      "https://cooking.nytimes.com/recipes/3",
+      "https://cooking.nytimes.com/recipes/4",
+      "https://cooking.nytimes.com/recipes/5",
+    ]) {
+      const response = await send("recipes/import", "POST", JSON.stringify({ url }));
+
+      expect(response.status).toBe(400);
+      expect(await response.json()).toHaveProperty("error");
+    }
+
+    expect((await send("recipes/import", "POST", "{}")).status).toBe(400);
   });
   it("requires a signed Access token even when the assets router omits runtime context", async () => {
     await worker.setOptions(options("false"));

@@ -235,6 +235,10 @@ main {
   max-width: 1800px;
 }
 .topbar {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  background: #faf9f5;
   height: 72px;
   border-bottom: 1px solid var(--line);
   display: flex;

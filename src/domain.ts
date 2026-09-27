@@ -58,6 +58,7 @@ export const units = [
   "bunch",
   "can",
   "pinch",
+  "slice",
 ];
 
 export const categories = ["Weeknight favorites", "Vegetarian", "Comfort food", "Something special"];

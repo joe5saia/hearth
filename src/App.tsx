@@ -48,7 +48,8 @@ type Page = "plan" | "recipes" | "shopping";
 type Modal =
   | { kind: "meal"; meal: Meal }
   | { kind: "recipe"; recipe: Recipe; meal?: Meal }
-  | { kind: "editor"; recipe: Recipe };
+  | { kind: "import" }
+  | { kind: "editor"; recipe: Recipe; warnings?: readonly string[] };
 
 const emptyHousehold: Household = { recipes: [], meals: [], extras: [], checks: [] };
 
@@ -63,7 +64,12 @@ const pageFromHash = (): Page =>
 async function api(
   path: string,
   method = "GET",
-  body?: Recipe | Meal | { id: string; name: string; checked: number } | { key: string; checked: number },
+  body?:
+    | Recipe
+    | Meal
+    | { url: string }
+    | { id: string; name: string; checked: number }
+    | { key: string; checked: number },
 ) {
   const init: RequestInit = {
     method,
@@ -339,9 +345,15 @@ export function App() {
           <span>
             <span className="status-dot" /> Made for our household
           </span>
-          <span>
-            {readableDate(dateKey(new Date()), { weekday: "long", month: "short", day: "numeric" })}
-          </span>
+          <button
+            className="primary"
+            onClick={() => {
+              setError("");
+              setModal({ kind: "import" });
+            }}
+          >
+            <ArrowDownToLine size={16} /> Import recipe
+          </button>
         </div>
         {error && !modal && (
           <div className="error" role="alert">
@@ -958,6 +970,11 @@ export function App() {
           />
         </Dialog>
       )}
+      {modal?.kind === "import" && (
+        <Dialog title="Import a recipe" close={() => setModal(null)}>
+          <RecipeImport imported={(recipe, warnings) => setModal({ kind: "editor", recipe, warnings })} />
+        </Dialog>
+      )}
       {modal?.kind === "editor" && (
         <Dialog
           title={
@@ -973,6 +990,7 @@ export function App() {
         >
           <RecipeForm
             recipe={modal.recipe}
+            warnings={modal.warnings}
             busy={busy}
             error={error}
             save={(recipe) => mutate("recipes", "PUT", recipe, "Recipe saved to your collection", true)}
@@ -1224,14 +1242,88 @@ function RecipeDetail({
   );
 }
 
+function RecipeImport({ imported }: { imported: (recipe: Recipe, warnings: readonly string[]) => void }) {
+  const [url, setUrl] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+  const active = useRef(true);
+
+  useEffect(() => {
+    active.current = true;
+
+    return () => {
+      active.current = false;
+    };
+  }, []);
+
+  const submit = async () => {
+    setLoading(true);
+    setError("");
+
+    try {
+      const response = await api("recipes/import", "POST", { url });
+
+      const result = Schema.decodeUnknownSync(
+        Schema.Struct({ recipe: RecipeSchema, warnings: Schema.Array(Schema.String) }),
+      )(await response.json());
+
+      if (active.current) imported(result.recipe, result.warnings);
+    } catch (failure) {
+      if (active.current) setError(failure instanceof Error ? failure.message : "Please try again.");
+    } finally {
+      if (active.current) setLoading(false);
+    }
+  };
+
+  return (
+    <form
+      className="modal-form"
+      onSubmit={(event) => {
+        event.preventDefault();
+        submit();
+      }}
+    >
+      <p>Paste a NYT Cooking recipe link. We’ll fill in the recipe for you to review and save.</p>
+      <label>
+        Recipe URL
+        <input
+          type="url"
+          required
+          autoFocus
+          maxLength={4000}
+          placeholder="https://cooking.nytimes.com/recipes/…"
+          value={url}
+          disabled={loading}
+          onChange={(event) => setUrl(event.target.value)}
+        />
+      </label>
+      <p className="field-hint">
+        Unlocked share links are supported. Your original link is kept with the recipe.
+      </p>
+      {error && (
+        <p className="error" role="alert">
+          {error}
+        </p>
+      )}
+      <button className="primary" disabled={loading || !url.trim()}>
+        {loading ? "Importing…" : "Import and review"}
+        <ArrowRight size={16} />
+      </button>
+      {loading && <p role="status">Reading the recipe. This can take up to 20 seconds.</p>}
+    </form>
+  );
+}
+
 function RecipeForm({
   recipe,
+  warnings,
   busy,
   error,
   save,
   remove,
 }: {
   recipe: Recipe;
+  warnings?: readonly string[];
   busy: boolean;
   error: string;
   save: (recipe: Recipe) => Promise<boolean>;
@@ -1275,6 +1367,15 @@ function RecipeForm({
         save(draft);
       }}
     >
+      {warnings && (
+        <div className="field-hint" role="status">
+          Review the imported recipe, quantities, and collection before saving. Timing follows the source;
+          marinating or resting may be additional.
+          {warnings.map((warning) => (
+            <p key={warning}>{warning}</p>
+          ))}
+        </div>
+      )}
       <label>
         Recipe name
         <input
@@ -1382,7 +1483,7 @@ function RecipeForm({
               type="number"
               min="0.01"
               max="1000000"
-              step="0.01"
+              step="any"
               required
               value={item.quantity}
               onChange={(event) => updateIngredient(index, { ...item, quantity: event.target.valueAsNumber })}

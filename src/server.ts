@@ -13,6 +13,7 @@ import {
   type Extra,
 } from "./domain";
 import { sampleRecipes, sampleMeals } from "./seed";
+import { importRecipe } from "./recipe-import";
 
 class ApiError extends Data.TaggedError("ApiError")<{ status: number; message: string }> {}
 
@@ -135,6 +136,31 @@ function api(request: Request, env: WebsiteEnv) {
         extras: extras.results,
         checks: checks.results,
       });
+    }
+
+    if (method === "POST" && path === "/api/recipes/import") {
+      const body = yield* readJson(request);
+
+      const input = yield* Schema.decodeUnknownEffect(Schema.Struct({ url: Schema.String }))(body).pipe(
+        Effect.mapError(() => invalid("Paste a NYT Cooking recipe URL.")),
+      );
+
+      if (input.url.length > 4000) return yield* Effect.fail(invalid("That URL is too long."));
+
+      const result = yield* Effect.tryPromise({
+        try: () => importRecipe(input.url.trim()),
+        catch: (error) =>
+          invalid(
+            error instanceof Error ? error.message : "The recipe couldn’t be imported. Please try again.",
+          ),
+      });
+
+      if (!validateRecipe(result.recipe))
+        return yield* Effect.fail(
+          invalid("This recipe contains missing or unsupported fields. Please add it manually."),
+        );
+
+      return Response.json(result);
     }
 
     if (method === "PUT" && path === "/api/recipes") {
