@@ -29,6 +29,7 @@ function options(
   audience = "test-hearth",
   smokeClientId = "smoke-test.access",
   previewClientId = "",
+  jwksResponse = () => Response.json(publicKeys),
 ) {
   return convertV4MiniflareOptions({
     workers: [
@@ -62,7 +63,7 @@ function options(
 
           expect(request.url).toBe("https://saiaai.cloudflareaccess.com/cdn-cgi/access/certs");
 
-          return Response.json(publicKeys);
+          return jwksResponse();
         },
       },
     ],
@@ -405,6 +406,45 @@ describe("real Worker with disposable SQLite D1", () => {
     });
 
     expect(unconfigured.status).toBe(403);
+  });
+
+  it("recovers in the Worker runtime after a cold JWKS fetch fails without changing the assertion", async () => {
+    let fetches = 0;
+    await worker.setOptions(
+      options("false", "test-hearth", "smoke-test.access", "", () => {
+        fetches++;
+
+        return fetches === 1 ? new Response("Unavailable", { status: 503 }) : Response.json(publicKeys);
+      }),
+    );
+
+    const token = await new SignJWT({
+      iss: "https://saiaai.cloudflareaccess.com",
+      aud: ["test-hearth"],
+      sub: "",
+      common_name: "smoke-test.access",
+      exp: Math.floor(Date.now() / 1000) + 300,
+    })
+      .setProtectedHeader({ alg: "RS256", kid: "test-key" })
+      .sign(signingKey);
+
+    const read = () =>
+      worker.dispatchFetch("http://localhost/api/household", {
+        headers: { "Cf-Access-Jwt-Assertion": token },
+      });
+
+    const failed = await read();
+    expect(failed.status).toBe(403);
+    expect(await failed.text()).toBe("Cloudflare Access sign-in is required.");
+    expect(failed.headers.get("Cache-Control")).toBe("no-store");
+
+    for (let i = 0; i < 2; i++) {
+      const response = await read();
+      expect(response.status).toBe(200);
+      expect(await response.json()).toEqual({ recipes: [], meals: [], extras: [], checks: [] });
+    }
+
+    expect(fetches).toBe(2);
   });
 
   it("limits the configured service identity to reads without changing household access", async () => {

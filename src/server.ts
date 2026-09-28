@@ -1,5 +1,5 @@
 import { Data, Effect, Schema } from "effect";
-import { createRemoteJWKSet, jwtVerify } from "jose";
+import { createRemoteJWKSet, errors, jwtVerify } from "jose";
 import type { WebsiteEnv } from "../alchemy.run";
 import {
   IngredientSchema,
@@ -353,10 +353,15 @@ export default {
     // Static Assets' internal router does not forward ctx.access. Verify the
     // signed assertion instead, including this application's audience tag.
     if (env.LOCAL_DEV !== "true") {
-      try {
-        const token = request.headers.get("Cf-Access-Jwt-Assertion");
+      const token = request.headers.get("Cf-Access-Jwt-Assertion");
+      let reason = "missing_assertion";
 
-        if (!token || !env.ACCESS_AUD) throw new Error("Missing Access credentials.");
+      try {
+        if (!token) throw new Error("Missing Access assertion.");
+        reason = "missing_audience";
+
+        if (!env.ACCESS_AUD) throw new Error("Missing Access audience.");
+        reason = "verification_failed";
 
         const { payload } = await jwtVerify(token, accessKeys, {
           issuer: accessIssuer,
@@ -373,10 +378,31 @@ export default {
               return Response.json({ error: "Smoke-test access is read-only." }, { status: 403 });
             }
           } else if (!env.PREVIEW_CLIENT_ID || payload.common_name !== env.PREVIEW_CLIENT_ID) {
+            reason = "unrecognized_service_identity";
             throw new Error("Unrecognized service identity.");
           }
         }
-      } catch {
+      } catch (error) {
+        // Never log assertions, claims, cookies, credentials, or raw exceptions.
+        // Keep dependency failures distinguishable from missing/invalid identity.
+        const ray = request.headers.get("Cf-Ray");
+        console.warn(
+          JSON.stringify({
+            event: "access_verification_failed",
+            reason,
+            code:
+              error instanceof errors.JOSEError
+                ? error.code
+                : error instanceof TypeError
+                  ? "TypeError"
+                  : null,
+            assertionPresent: !!token,
+            audienceConfigured: !!env.ACCESS_AUD,
+            jwksFresh: accessKeys.fresh,
+            cfRay: ray && /^[a-f0-9]{16}-[A-Z]{3}$/.test(ray) ? ray : null,
+          }),
+        );
+
         return new Response("Cloudflare Access sign-in is required.", {
           status: 403,
           headers: { "Cache-Control": "no-store" },
