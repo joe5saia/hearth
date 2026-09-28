@@ -50,6 +50,7 @@ for (const [name, recipeCount, mealCount, photoBytes] of [
     minutes: 30,
     category: "Vegetarian",
     source: "",
+    rating: "neutral",
     // Incompressible synthetic bytes approximate encoded photo transfer, not image decoding.
     photo: photoBytes
       ? `data:image/jpeg;base64,${createHash("shake256", { outputLength: (photoBytes * 3) / 4 })

@@ -190,6 +190,24 @@ function api(request: Request, env: WebsiteEnv) {
       return Response.json({ ok: true });
     }
 
+    if (method === "PUT" && path.startsWith("/api/recipes/rating/")) {
+      const id = yield* decodeId(path, "/api/recipes/rating/");
+      const body = yield* readJson(request);
+
+      const { rating } = yield* Schema.decodeUnknownEffect(
+        Schema.Struct({ rating: RecipeSchema.fields.rating }),
+      )(body).pipe(Effect.mapError(() => invalid("Choose a valid recipe rating.")));
+
+      const result = yield* database(() =>
+        db.prepare("UPDATE recipes SET rating=? WHERE id=?").bind(rating, id).run(),
+      );
+
+      if (!result.meta.changes)
+        return yield* Effect.fail(new ApiError({ status: 404, message: "That recipe no longer exists." }));
+
+      return Response.json({ ok: true });
+    }
+
     if (method === "DELETE" && path.startsWith("/api/recipes/")) {
       const id = yield* decodeId(path, "/api/recipes/");
 

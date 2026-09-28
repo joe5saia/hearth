@@ -10,6 +10,7 @@ export const sampleRecipes: Recipe[] = [
     category: "Weeknight favorites",
     photo: "/photos/chicken.jpg",
     source: "https://www.bbcgoodfood.com/recipes/collection/roast-chicken-recipes",
+    rating: "neutral",
     ingredients: [
       { name: "Chicken thighs", quantity: 800, unit: "g" },
       { name: "Lemon", quantity: 2, unit: "each" },
@@ -33,6 +34,7 @@ export const sampleRecipes: Recipe[] = [
     category: "Vegetarian",
     photo: "/photos/pasta.jpg",
     source: "https://www.bbcgoodfood.com/recipes/collection/tomato-pasta-recipes",
+    rating: "neutral",
     ingredients: [
       { name: "Pasta", quantity: 400, unit: "g" },
       { name: "Cherry tomatoes", quantity: 600, unit: "g" },
@@ -57,6 +59,7 @@ export const sampleRecipes: Recipe[] = [
     category: "Vegetarian",
     photo: "/photos/bowl.jpg",
     source: "https://www.bbcgoodfood.com/recipes/collection/grain-bowl-recipes",
+    rating: "neutral",
     ingredients: [
       { name: "Quinoa", quantity: 150, unit: "g" },
       { name: "Chickpeas", quantity: 1, unit: "can" },
@@ -81,6 +84,7 @@ export const sampleRecipes: Recipe[] = [
     category: "Weeknight favorites",
     photo: "/photos/salmon.jpg",
     source: "https://www.bbcgoodfood.com/recipes/collection/salmon-recipes",
+    rating: "neutral",
     ingredients: [
       { name: "Salmon", quantity: 600, unit: "g" },
       { name: "Honey", quantity: 2, unit: "tbsp" },
@@ -105,6 +109,7 @@ export const sampleRecipes: Recipe[] = [
     category: "Comfort food",
     photo: "/photos/soup.jpg",
     source: "https://www.bbcgoodfood.com/recipes/collection/tomato-soup-recipes",
+    rating: "neutral",
     ingredients: [
       { name: "Cherry tomatoes", quantity: 800, unit: "g" },
       { name: "Onion", quantity: 1, unit: "each" },
@@ -130,6 +135,7 @@ export const sampleRecipes: Recipe[] = [
     category: "Vegetarian",
     photo: "/photos/tacos.jpg",
     source: "https://www.bbcgoodfood.com/recipes/collection/vegetarian-taco-recipes",
+    rating: "neutral",
     ingredients: [
       { name: "Sweet potato", quantity: 600, unit: "g" },
       { name: "Black beans", quantity: 1, unit: "can" },

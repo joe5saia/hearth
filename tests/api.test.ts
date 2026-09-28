@@ -75,6 +75,7 @@ beforeAll(async () => {
   const sql = await readFile("migrations/0001_initial.sql", "utf8");
   const statements = sql.split(";").flatMap((statement) => (statement.trim() ? [db.prepare(statement)] : []));
   await db.batch(statements);
+  await db.prepare(await readFile("migrations/0002_recipe_rating.sql", "utf8")).run();
 }, 30000);
 
 beforeEach(async () => {
@@ -159,6 +160,39 @@ describe("real Worker with disposable SQLite D1", () => {
     expect((await send("meals/test-meal", "DELETE", "{}")).status).toBe(200);
     expect((await send(`recipes/${sampleRecipes[0].id}`, "DELETE", "{}")).status).toBe(200);
     expect(await db.prepare("SELECT count(*) AS count FROM recipes").first()).toEqual({ count: 0 });
+  });
+  it("defaults recipes to neutral and persists each rating without rewriting recipe fields", async () => {
+    const recipe = sampleRecipes[0];
+    expect((await send("recipes", "PUT", JSON.stringify(recipe))).status).toBe(200);
+    const db = await worker.getD1Database("DB");
+    expect(await db.prepare("SELECT rating FROM recipes WHERE id=?").bind(recipe.id).first()).toEqual({
+      rating: "neutral",
+    });
+
+    for (const rating of ["up", "down", "neutral"] as const) {
+      expect((await send(`recipes/rating/${recipe.id}`, "PUT", JSON.stringify({ rating }))).status).toBe(200);
+      const response = await worker.dispatchFetch("http://localhost/api/household");
+      const household = Schema.decodeUnknownSync(HouseholdSchema)(await response.json());
+      expect(household.recipes[0]).toMatchObject({ id: recipe.id, title: recipe.title, rating });
+    }
+
+    expect((await send(`recipes/rating/${recipe.id}`, "PUT", '{"rating":"up"}')).status).toBe(200);
+    expect((await send("recipes", "PUT", JSON.stringify({ ...recipe, title: "New title" }))).status).toBe(
+      200,
+    );
+    expect(await db.prepare("SELECT title,rating FROM recipes WHERE id=?").bind(recipe.id).first()).toEqual({
+      title: "New title",
+      rating: "up",
+    });
+
+    for (const rating of ["liked", 1, null]) {
+      expect((await send(`recipes/rating/${recipe.id}`, "PUT", JSON.stringify({ rating }))).status).toBe(400);
+    }
+
+    expect((await send("recipes/rating/missing", "PUT", '{"rating":"down"}')).status).toBe(404);
+    expect(await db.prepare("SELECT rating FROM recipes WHERE id=?").bind(recipe.id).first()).toEqual({
+      rating: "up",
+    });
   });
   it("persists independent extras and ingredient checks, and deletes only the requested extra", async () => {
     expect(

@@ -20,6 +20,7 @@ const recipe: Recipe = {
   category: "Vegetarian",
   photo: "",
   source: "",
+  rating: "neutral",
   instructions: ["Cook."],
   ingredients: [
     { name: " Tomatoes ", quantity: 125, unit: "g" },

@@ -15,6 +15,7 @@ export const RecipeSchema = Schema.Struct({
   category: Schema.String,
   photo: Schema.String,
   source: Schema.String,
+  rating: Schema.Literals(["up", "down", "neutral"]),
   ingredients: Schema.Array(IngredientSchema),
   instructions: Schema.Array(Schema.String),
 });
@@ -31,6 +32,8 @@ export const MealSchema = Schema.Struct({
 export type Ingredient = typeof IngredientSchema.Type;
 
 export type Recipe = typeof RecipeSchema.Type;
+
+export type Rating = Recipe["rating"];
 
 export type Meal = typeof MealSchema.Type;
 

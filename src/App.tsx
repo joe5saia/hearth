@@ -17,6 +17,9 @@ import {
   SlidersHorizontal,
   Sprout,
   Trash2,
+  ThumbsDown,
+  ThumbsUp,
+  Minus,
   Users,
   X,
   ExternalLink,
@@ -41,6 +44,7 @@ import {
   type Ingredient,
   type Meal,
   type Recipe,
+  type Rating,
 } from "./domain";
 
 type Page = "plan" | "recipes" | "shopping";
@@ -69,7 +73,8 @@ async function api(
     | Meal
     | { url: string }
     | { id: string; name: string; checked: number }
-    | { key: string; checked: number },
+    | { key: string; checked: number }
+    | { rating: Rating },
 ) {
   const init: RequestInit = {
     method,
@@ -241,6 +246,7 @@ export function App() {
         category: "Weeknight favorites",
         photo: "",
         source: "",
+        rating: "neutral",
         ingredients: [{ name: "", quantity: 1, unit: "each" }],
         instructions: [""],
       },
@@ -628,12 +634,37 @@ export function App() {
                           </div>
                         </div>
                       </button>
-                      <button
-                        className="secondary small-button"
-                        onClick={() => addMeal(undefined, recipe.id)}
-                      >
-                        <Plus size={15} /> Add to plan
-                      </button>
+                      <div className="recipe-row-actions">
+                        <div className="recipe-rating" role="group" aria-label={`Rate ${recipe.title}`}>
+                          {(["up", "neutral", "down"] as const).map((rating) => (
+                            <button
+                              key={rating}
+                              type="button"
+                              className={`rating-${rating}`}
+                              aria-label={`${rating === "up" ? "Thumbs up" : rating === "down" ? "Thumbs down" : "Neutral"} for ${recipe.title}`}
+                              aria-pressed={recipe.rating === rating}
+                              disabled={busy}
+                              onClick={() =>
+                                mutate(`recipes/rating/${encodeURIComponent(recipe.id)}`, "PUT", { rating })
+                              }
+                            >
+                              {rating === "up" ? (
+                                <ThumbsUp size={16} />
+                              ) : rating === "down" ? (
+                                <ThumbsDown size={16} />
+                              ) : (
+                                <Minus size={16} />
+                              )}
+                            </button>
+                          ))}
+                        </div>
+                        <button
+                          className="secondary small-button"
+                          onClick={() => addMeal(undefined, recipe.id)}
+                        >
+                          <Plus size={15} /> Add to plan
+                        </button>
+                      </div>
                     </article>
                   ))}
                 </div>
