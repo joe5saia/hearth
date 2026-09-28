@@ -21,6 +21,7 @@
     "react-dom": "19.3.0"
   },
   "devDependencies": {
+    "@ampcode/plugin": "0.0.0-20260928002026-g40f3f5f",
     "@cloudflare/workers-types": "5.20260927.1",
     "@effect/platform-node": "4.0.0-rc.117",
     "@go-task/cli": "3.53.1",

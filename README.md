@@ -104,6 +104,12 @@ Production is protected by Cloudflare Access for the `saiaai` team. Alchemy mana
 
 The Worker verifies `Cf-Access-Jwt-Assertion` using the team's public signing keys. It requires an RS256 signature, the exact team issuer, the application's audience tag (bound by Alchemy as `ACCESS_AUD`), a subject, and a valid expiry. Missing or forged assertions fail closed; an email header alone never grants access. This works with Cloudflare's Static Assets router, which does not forward `ctx.access` to the app Worker.
 
+Alchemy also manages a 30-day **Hearth deployment smoke test** service token and a Hearth-only
+Service Auth policy. Provisioning it requires **Access: Service Tokens Write**. Its signed
+`common_name` must match the `SMOKE_CLIENT_ID` binding; the Worker permits only GET/HEAD for this
+identity and rejects mutations. Cloudflare uses an empty `sub` for service tokens. Other service
+identities fail closed. This does not change the household Google policy or expose an Access bypass.
+
 1. In the Amp project's Secrets & Env Vars, set `CLOUDFLARE_ACCOUNT_ID` as an environment variable and `CLOUDFLARE_API_TOKEN` as a secret. Scope the token to the intended account with **Workers Scripts: Edit**, **D1: Edit**, and **Secrets Store: Edit**. No interactive profile is needed. Outside Amp, export these variables in your private environment.
 2. Set the Google client credentials described above. Never commit credentials or copy them into orb setup scripts or snapshots. Refresh an existing orb with `amp orb restart-processes` after changing Amp secrets.
 3. Run `npx task cloud:check` to validate credential configuration. This checks presence and format, not live authorization or all required permissions.
@@ -115,6 +121,26 @@ The Worker verifies `Cf-Access-Jwt-Assertion` using the team's public signing ke
 All production requests, including assets and API, pass through Cloudflare Access. Keep the Worker-level allowlist in place; do not add bypass or account-wide policies as a workaround. Credential configuration and read access do not establish deployment permissions; verify cloud writes only during an approved bootstrap or deployment.
 
 `alchemy.run.ts` is the infrastructure source of truth. Its inferred environment types are used directly by `src/server.ts`; there is no parallel Wrangler binding configuration to drift. `alchemy dev` keeps its state and SQLite data locally in `.alchemy/`; cloud operations use `Cloudflare.state()` so separate orbs share deployment state. Never run destructive infrastructure commands casually. Keep production bootstrap, deployment, and migrations out of orb setup, resume, and preview services.
+
+### Amp push-to-deploy automation
+
+The project-local `hearth-deploy` plugin can connect this Amp-hosted repository's **Post-receive
+Webhook** to one persistent deployment orb. It is disabled in ordinary coding orbs. Installation,
+authorization boundaries, live verification, and recovery are documented in
+[`tools/deploy/WORKFLOW.md`](tools/deploy/WORKFLOW.md).
+
+The owner reads the real `origin/main`, deduplicates commits, and serializes deployment, browser
+smoke testing, and Worker log review. Push bursts deploy the newest main tip; intermediate commits
+may be superseded. An observed failure starts a separate investigation orb with reproduction
+evidence; fixes require review before shipping. Missing credentials or log access is reported as
+blocked, never successful. The browser supplies the read-only service token only to Hearth's exact
+HTTPS origin; Google sign-in is not required. Renew or rotate the token before its 30-day expiry
+and securely refresh the owner's private credential file. See the workflow for lifecycle details.
+
+Keep the owner thread unarchived and do not deploy production concurrently from another orb.
+Its webhook URL and deployment ledger live in private, gitignored `.amp/deploy-state/` files.
+Run `npx vitest run tests/deploy.test.ts` for dispatch, interruption, and deduplication tests.
+These tests do not deploy or replace the required live end-to-end test.
 
 ## Photo credits
 

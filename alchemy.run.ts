@@ -15,6 +15,7 @@ export const Website = Cloudflare.Worker(
     const { dev } = yield* AlchemyContext;
 
     let access: Cloudflare.Access.Application | undefined;
+    let smoke: Cloudflare.Access.ServiceToken | undefined;
 
     if (!dev) {
       const clientId = process.env.GOOGLE_CLIENT_ID;
@@ -32,6 +33,11 @@ export const Website = Cloudflare.Worker(
         config: { clientId, clientSecret },
       });
 
+      smoke = yield* Cloudflare.Access.ServiceToken("SmokeTest", {
+        name: "Hearth deployment smoke test",
+        duration: "720h",
+      });
+
       const googleId = google.identityProviderId;
       // Preserve the existing Website/Access resource and its audience tag.
       access = yield* Cloudflare.Access.Application("Access", {
@@ -41,6 +47,11 @@ export const Website = Cloudflare.Worker(
         allowedIdps: [googleId],
         autoRedirectToIdentity: true,
         policies: [
+          {
+            name: "Deployment smoke test",
+            decision: "non_identity",
+            include: [{ serviceToken: smoke.serviceTokenId }],
+          },
           {
             name: "Household",
             decision: "allow",
@@ -62,6 +73,7 @@ export const Website = Cloudflare.Worker(
         DB: Database,
         LOCAL_DEV: dev ? "true" : "false",
         ACCESS_AUD: access?.aud ?? "",
+        SMOKE_CLIENT_ID: smoke?.clientId ?? "",
       },
     } as const;
   }),

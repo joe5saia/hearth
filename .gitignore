@@ -4,5 +4,6 @@ dist/
 .wrangler/
 .amp/in/
 .amp/portals/
+.amp/deploy-state/
 .env*
 !.env.example

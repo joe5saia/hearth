@@ -24,7 +24,7 @@ const meal: Meal = {
   note: "Leftovers for lunch",
 };
 
-function options(local: string, audience = "test-hearth") {
+function options(local: string, audience = "test-hearth", smokeClientId = "smoke-test.access") {
   return convertV4MiniflareOptions({
     workers: [
       {
@@ -33,7 +33,7 @@ function options(local: string, audience = "test-hearth") {
         script,
         compatibilityDate: "2026-09-08",
         d1Databases: ["DB"],
-        bindings: { LOCAL_DEV: local, ACCESS_AUD: audience },
+        bindings: { LOCAL_DEV: local, ACCESS_AUD: audience, SMOKE_CLIENT_ID: smokeClientId },
         outboundService: async (request) => {
           const url = new URL(request.url);
 
@@ -395,5 +395,67 @@ describe("real Worker with disposable SQLite D1", () => {
     });
 
     expect(unconfigured.status).toBe(403);
+  });
+
+  it("limits the configured service identity to reads without changing household access", async () => {
+    await worker.setOptions(options("false"));
+
+    const sign = (claims: JWTPayload) =>
+      new SignJWT({
+        iss: "https://saiaai.cloudflareaccess.com",
+        aud: ["test-hearth"],
+        sub: "",
+        common_name: "smoke-test.access",
+        exp: Math.floor(Date.now() / 1000) + 300,
+        ...claims,
+      })
+        .setProtectedHeader({ alg: "RS256", kid: "test-key" })
+        .sign(signingKey);
+
+    const token = await sign({});
+    const headers = { "Cf-Access-Jwt-Assertion": token, "Content-Type": "application/json" };
+    const read = await worker.dispatchFetch("http://localhost/api/household", { headers });
+    expect(read.status).toBe(200);
+    expect(await read.json()).toHaveProperty("extras.length", 0);
+
+    for (const method of ["PUT", "POST", "PATCH", "DELETE"]) {
+      const denied = await worker.dispatchFetch("http://localhost/api/extras", {
+        method,
+        headers,
+        body: JSON.stringify({ id: "smoke-item", name: "Must not be saved", checked: 0 }),
+      });
+
+      expect(denied.status).toBe(403);
+      expect(await denied.json()).toEqual({ error: "Smoke-test access is read-only." });
+    }
+
+    for (const claims of [
+      { common_name: "other-service.access" },
+      { common_name: undefined },
+      { aud: ["other-app"] },
+      { exp: Math.floor(Date.now() / 1000) - 1 },
+    ]) {
+      const denied = await worker.dispatchFetch("http://localhost/api/household", {
+        headers: { "Cf-Access-Jwt-Assertion": await sign(claims) },
+      });
+
+      expect(denied.status).toBe(403);
+    }
+
+    const human = await worker.dispatchFetch("http://localhost/api/extras", {
+      method: "PUT",
+      headers: {
+        ...headers,
+        "Cf-Access-Jwt-Assertion": await sign({ sub: "household-user", common_name: undefined }),
+      },
+      body: JSON.stringify({ id: "human-item", name: "Human shopping item", checked: 0 }),
+    });
+
+    expect(human.status).toBe(200);
+    const household = await worker.dispatchFetch("http://localhost/api/household", { headers });
+    expect(await household.json()).toHaveProperty("extras.length", 1);
+
+    await worker.setOptions(options("false", "test-hearth", ""));
+    expect((await worker.dispatchFetch("http://localhost/api/household", { headers })).status).toBe(403);
   });
 });

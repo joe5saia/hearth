@@ -357,12 +357,25 @@ export default {
         const token = request.headers.get("Cf-Access-Jwt-Assertion");
 
         if (!token || !env.ACCESS_AUD) throw new Error("Missing Access credentials.");
-        await jwtVerify(token, accessKeys, {
+
+        const { payload } = await jwtVerify(token, accessKeys, {
           issuer: accessIssuer,
           audience: env.ACCESS_AUD,
           algorithms: ["RS256"],
           requiredClaims: ["exp", "sub"],
         });
+
+        // Access service tokens use common_name and an empty sub. Trust only the
+        // configured smoke identity, and never allow it to mutate household data.
+        if (payload.common_name !== undefined || payload.sub === "") {
+          if (!env.SMOKE_CLIENT_ID || payload.common_name !== env.SMOKE_CLIENT_ID) {
+            throw new Error("Unrecognized service identity.");
+          }
+
+          if (!["GET", "HEAD"].includes(request.method)) {
+            return Response.json({ error: "Smoke-test access is read-only." }, { status: 403 });
+          }
+        }
       } catch {
         return new Response("Cloudflare Access sign-in is required.", {
           status: 403,
