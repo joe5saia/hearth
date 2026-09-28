@@ -4,7 +4,7 @@
   "type": "module",
   "scripts": {
     "dev": "task dev",
-    "build": "vite build",
+    "build": "node node_modules/vite/bin/vite.js build",
     "check": "tsc --noEmit",
     "lint": "oxlint",
     "format": "oxfmt",
@@ -36,6 +36,12 @@
     "rolldown": "1.2.11",
     "typescript": "7.0.2",
     "vite": "8.3.1",
+    "vite-dev": "npm:vite@8.3.1",
     "vitest": "5.0.2"
+  },
+  "overrides": {
+    "vite-dev": {
+      "rolldown": "1.2.9"
+    }
   }
 }

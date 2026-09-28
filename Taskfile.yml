@@ -5,7 +5,7 @@ tasks:
     cmds: [npm ci]
   dev:
     desc: Start React, the local Worker, and persistent local SQLite through Alchemy
-    cmds: [npx vite build, npx task --parallel dev:worker dev:web]
+    cmds: [npm run build, npx task --parallel dev:worker dev:web]
   dev:worker:
     desc: Local-only Alchemy Worker and SQLite; these placeholders cannot access Cloudflare
     env:
@@ -13,13 +13,14 @@ tasks:
       CLOUDFLARE_API_TOKEN: "local-development-only"
     cmds: [npx alchemy dev]
   dev:web:
-    cmds: [npx vite]
+    # Bundled dev's HMR runtime needs Rolldown 1.2.9; leave production Vite unchanged.
+    cmds: [node node_modules/vite-dev/bin/vite.js --experimental-bundle]
   build:
-    cmds: [npx vite build]
+    cmds: [npm run build]
   benchmark:
     desc: Measure local API, shopping CPU, and production bundle sizes (optional -- report.json)
     cmds:
-      - npx vite build
+      - npm run build
       - node tests/benchmark.ts {{.CLI_ARGS}}
   check:
     cmds: [npx tsc --noEmit, npx oxlint, npx oxfmt --check, npx vitest run]
@@ -39,9 +40,9 @@ tasks:
     desc: Preview production changes; bootstrap remote state separately first
     env:
       CI: "true"
-    cmds: [npx vite build, npx alchemy plan --stage production]
+    cmds: [npm run build, npx alchemy plan --stage production]
   deploy:
     desc: Deploy Worker, assets, and D1 migrations (requires Cloudflare credentials)
     env:
       CI: "true"
-    cmds: [npx vite build, npx alchemy deploy --stage production]
+    cmds: [npm run build, npx alchemy deploy --stage production]

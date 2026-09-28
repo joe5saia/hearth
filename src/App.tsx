@@ -6,6 +6,7 @@ import {
   BookOpen,
   CalendarDays,
   Check,
+  ChevronDown,
   ChevronLeft,
   ChevronRight,
   Clock3,
@@ -98,17 +99,24 @@ async function api(
 
 function Photo({ recipe, className = "" }: { recipe: Recipe; className?: string }) {
   const [failed, setFailed] = useState("");
+  const [loaded, setLoaded] = useState("");
 
-  return recipe.photo && failed !== recipe.photo ? (
-    <img
-      className={className}
-      src={recipe.photo}
-      alt={recipe.title}
-      onError={() => setFailed(recipe.photo)}
-    />
-  ) : (
+  return (
     <div className={`photo-placeholder ${className}`}>
-      <CookingPot size={32} />
+      <CookingPot size={32} aria-hidden="true" />
+      {recipe.photo && failed !== recipe.photo && (
+        <img
+          key={recipe.photo}
+          className={loaded === recipe.photo ? "photo-loaded" : ""}
+          src={recipe.photo}
+          alt={recipe.title}
+          loading="lazy"
+          decoding="async"
+          fetchPriority="low"
+          onLoad={() => setLoaded(recipe.photo)}
+          onError={() => setFailed(recipe.photo)}
+        />
+      )}
     </div>
   );
 }
@@ -118,28 +126,50 @@ function Dialog({
   close,
   children,
   wide = false,
+  fullScreen = false,
 }: {
   title: string;
   close: () => void;
   children: ReactNode;
   wide?: boolean;
+  fullScreen?: boolean;
 }) {
   const ref = useRef<HTMLDialogElement>(null);
   useEffect(() => {
-    ref.current?.showModal();
-  }, []);
+    const dialog = ref.current;
+    const scrollY = window.scrollY;
+    const bodyStyle = document.body.style.cssText;
+
+    if (fullScreen) {
+      document.body.style.position = "fixed";
+      document.body.style.top = `-${scrollY}px`;
+      document.body.style.width = "100%";
+      document.body.style.overflow = "hidden";
+    }
+
+    dialog?.showModal();
+
+    return () => {
+      dialog?.close();
+
+      if (fullScreen) {
+        document.body.style.cssText = bodyStyle;
+        window.scrollTo({ top: scrollY, behavior: "instant" });
+      }
+    };
+  }, [fullScreen]);
 
   return (
     <dialog
       ref={ref}
       aria-label={title}
-      className={wide ? "modal wide" : "modal"}
+      className={`modal${wide ? " wide" : ""}${fullScreen ? " fullscreen" : ""}`}
       onCancel={(event) => {
         event.preventDefault();
         close();
       }}
       onClick={(event) => {
-        if (event.target === event.currentTarget) close();
+        if (!fullScreen && event.target === event.currentTarget) close();
       }}
     >
       <div className="modal-heading">
@@ -306,13 +336,25 @@ export function App() {
         </a>
         <p className="brand-caption">Our everyday table</p>
         <nav aria-label="Main navigation">
-          <a href="#plan" className={page === "plan" ? "active" : ""}>
+          <a
+            href="#plan"
+            aria-current={page === "plan" ? "page" : undefined}
+            className={page === "plan" ? "active" : ""}
+          >
             <CalendarDays size={19} /> Meal plan <span className="nav-dot" />
           </a>
-          <a href="#recipes" className={page === "recipes" ? "active" : ""}>
-            <BookOpen size={19} /> Saved recipes <span className="nav-count">{data.recipes.length}</span>
+          <a
+            href="#recipes"
+            aria-current={page === "recipes" ? "page" : undefined}
+            className={page === "recipes" ? "active" : ""}
+          >
+            <BookOpen size={19} /> Recipes <span className="nav-count">{data.recipes.length}</span>
           </a>
-          <a href="#shopping" className={page === "shopping" ? "active" : ""}>
+          <a
+            href="#shopping"
+            aria-current={page === "shopping" ? "page" : undefined}
+            className={page === "shopping" ? "active" : ""}
+          >
             <ShoppingBasket size={19} /> Shopping list
           </a>
         </nav>
@@ -332,11 +374,14 @@ export function App() {
       </aside>
       <main>
         <div className="topbar">
-          <span>
+          <a className="mobile-brand" href="#plan" aria-label="Hearth meal plan">
+            hearth.
+          </a>
+          <span className="household-caption">
             <span className="status-dot" /> Made for our household
           </span>
           <button
-            className="primary"
+            className="secondary"
             onClick={() => {
               setError("");
               setModal({ kind: "import" });
@@ -368,13 +413,7 @@ export function App() {
           <>
             <header className={`page-heading ${page === "plan" ? "plan-heading" : ""}`}>
               <div>
-                <h1>
-                  {page === "plan"
-                    ? "Your week, well fed."
-                    : page === "recipes"
-                      ? "Recipes"
-                      : "Shopping list"}
-                </h1>
+                <h1>{page === "plan" ? "Meal Plan" : page === "recipes" ? "Recipes" : "Shopping list"}</h1>
                 {page === "plan" && (
                   <p>Make room for the meals you love, and the people you share them with.</p>
                 )}
@@ -445,29 +484,34 @@ export function App() {
                     {new Set(weekMeals.map((meal) => meal.date)).size} of 7 days
                   </span>
                 </div>
-                <form
-                  className="week-jump"
-                  key={week}
-                  onSubmit={(event) => {
-                    event.preventDefault();
-                    const date = weekInput.current?.value;
+                <details className="date-disclosure">
+                  <summary>
+                    <CalendarDays size={16} /> Jump to date <ChevronDown size={16} />
+                  </summary>
+                  <form
+                    className="week-jump"
+                    key={week}
+                    onSubmit={(event) => {
+                      event.preventDefault();
+                      const date = weekInput.current?.value;
 
-                    if (date && validDate(date)) setWeek(weekStart(date));
-                  }}
-                >
-                  <label htmlFor="week-jump">
-                    <CalendarDays size={16} /> Jump to date
-                  </label>
-                  <input
-                    id="week-jump"
-                    ref={weekInput}
-                    type="date"
-                    required
-                    aria-label="Jump to week containing date"
-                    defaultValue={week}
-                  />
-                  <button className="today-button">Go</button>
-                </form>
+                      if (date && validDate(date)) setWeek(weekStart(date));
+                    }}
+                  >
+                    <label htmlFor="week-jump">
+                      <CalendarDays size={16} /> Jump to date
+                    </label>
+                    <input
+                      id="week-jump"
+                      ref={weekInput}
+                      type="date"
+                      required
+                      aria-label="Jump to week containing date"
+                      defaultValue={week}
+                    />
+                    <button className="today-button">Go</button>
+                  </form>
+                </details>
                 <div className="calendar">
                   {Array.from({ length: 7 }, (_, index) => {
                     const day = addDays(week, index);
@@ -544,9 +588,6 @@ export function App() {
                   })}
                 </div>
                 <div className="plan-footer">
-                  <span>
-                    <Leaf size={15} /> A plan is a starting point. There’s always room to change it.
-                  </span>
                   <button
                     className="text-button"
                     onClick={() => {
@@ -679,44 +720,63 @@ export function App() {
             )}
             {page === "shopping" && (
               <>
-                <div className="range-toolbar">
-                  <div className="date-range">
+                <details className="date-disclosure shopping-range">
+                  <summary>
                     <CalendarDays size={18} />
-                    <label>
-                      From
-                      <input
-                        type="date"
-                        aria-label="Shopping start date"
-                        value={start}
-                        max={end}
-                        onChange={(event) => setStart(event.target.value)}
-                      />
-                    </label>
-                    <span>—</span>
-                    <label>
-                      Through
-                      <input
-                        type="date"
-                        aria-label="Shopping end date"
-                        value={end}
-                        min={start}
-                        onChange={(event) => setEnd(event.target.value)}
-                      />
-                    </label>
+                    <span>
+                      {start && end ? (
+                        <>
+                          {readableDate(start, { month: "short", day: "numeric" })}
+                          {start.slice(0, 4) !== end.slice(0, 4) && `, ${start.slice(0, 4)}`}
+                          {" – "}
+                          {readableDate(end, { month: "short", day: "numeric", year: "numeric" })}
+                        </>
+                      ) : (
+                        "Choose a date range"
+                      )}
+                    </span>
+                    <span className="range-edit-label">Change dates</span>
+                    <ChevronDown size={16} />
+                  </summary>
+                  <div className="range-toolbar">
+                    <div className="date-range">
+                      <CalendarDays size={18} />
+                      <label>
+                        From
+                        <input
+                          type="date"
+                          aria-label="Shopping start date"
+                          value={start}
+                          max={end}
+                          onChange={(event) => setStart(event.target.value)}
+                        />
+                      </label>
+                      <span>—</span>
+                      <label>
+                        Through
+                        <input
+                          type="date"
+                          aria-label="Shopping end date"
+                          value={end}
+                          min={start}
+                          onChange={(event) => setEnd(event.target.value)}
+                        />
+                      </label>
+                    </div>
+                    <button
+                      className="today-button"
+                      onClick={() => {
+                        setStart(weekStart());
+                        setEnd(addDays(weekStart(), 6));
+                      }}
+                    >
+                      This week
+                    </button>
+                    <span className="range-count">
+                      {rangeMeals.length} planned meals <span>·</span> {items.length} ingredients
+                    </span>
                   </div>
-                  <button
-                    className="today-button"
-                    onClick={() => {
-                      setStart(weekStart());
-                      setEnd(addDays(weekStart(), 6));
-                    }}
-                  >
-                    This week
-                  </button>
-                  <span className="range-count">
-                    {rangeMeals.length} planned meals <span>·</span> {items.length} ingredients
-                  </span>
-                </div>
+                </details>
                 {start > end && <p className="error">The end date must come after the start date.</p>}
                 <div className="shopping-summary">
                   <div role="status">
@@ -777,10 +837,12 @@ export function App() {
                               <Check size={13} />
                             </span>
                             <span className="item-info">
-                              <strong>{item.name}</strong>
+                              <span className="item-heading">
+                                <strong>{item.name}</strong>
+                                <span className="item-amount">{displayAmount(item)}</span>
+                              </span>
                               <small>{item.recipes.join(" · ")}</small>
                             </span>
-                            <span className="item-amount">{displayAmount(item)}</span>
                           </label>
                         );
                       })}
@@ -921,11 +983,7 @@ export function App() {
       )}
       {modal?.kind === "meal" && (
         <Dialog
-          title={
-            data.meals.some((meal) => meal.id === modal.meal.id)
-              ? "Make it your meal"
-              : "Something good on the calendar"
-          }
+          title={data.meals.some((meal) => meal.id === modal.meal.id) ? "Edit meal" : "Add a meal"}
           close={() => {
             setModal(null);
             setError("");
@@ -948,12 +1006,12 @@ export function App() {
       )}
       {modal?.kind === "recipe" && (
         <Dialog
-          title="From our recipe book"
+          title="Recipe details"
           close={() => {
             setModal(modal.meal ? { kind: "meal", meal: modal.meal } : null);
             setError("");
           }}
-          wide
+          fullScreen
         >
           <RecipeDetail
             recipe={modal.recipe}
@@ -973,9 +1031,7 @@ export function App() {
       {modal?.kind === "editor" && (
         <Dialog
           title={
-            data.recipes.some((recipe) => recipe.id === modal.recipe.id)
-              ? "A little recipe update"
-              : "Save something delicious"
+            data.recipes.some((recipe) => recipe.id === modal.recipe.id) ? "Edit recipe" : "Add a recipe"
           }
           close={() => {
             setModal(null);
@@ -1156,7 +1212,7 @@ function RecipeDetail({
   const [scale, setScale] = useState(meal?.scale ?? 1);
 
   return (
-    <div className="recipe-detail">
+    <div className="recipe-detail" tabIndex={0} role="region" aria-label={`${recipe.title} recipe`}>
       <Photo recipe={recipe} className="detail-hero" />
       <div className="detail-title">
         <span className="category-label">{recipe.category}</span>
