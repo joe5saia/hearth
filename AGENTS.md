@@ -20,3 +20,13 @@ Follow this workflow when the user asks to ship. These instructions do not thems
 7. Report what shipped, test results, and whether local main is synchronized. If the active Ship prompt requests archiving or runner-worktree cleanup, do that only after shipping and synchronization succeed, with worktree removal last. Do not archive threads that are still needed or running.
 
 This workflow incorporates Amp's [default Ship flow](https://ampcode.com/docs/orbs/shipping): commit, fetch and rebase, run the full test suite, push, and retry if the base branch moves. Thread-specific branches and synchronizing local main are repository requirements in addition to that flow.
+
+## Cloudflare Previews
+
+- Use `npm run preview -- up` on the thread's working branch when real Cloudflare behavior needs testing or the user wants a remote preview. This project authorizes creating/updating the thread's disposable Preview resources for that purpose. Keep Amp portals for local iteration and review features.
+- Read the README's Preview section first. Never deploy production, reuse production D1, disable Access, or expose credentials to make a Preview work. Do not run preview commands in orb setup/resume or portal services.
+- `up` builds the current checkout, applies migrations to isolated D1, deploys a native Worker Preview, and smoke-tests it. Share its stable URL and cleanup deadline. Use `test` or `request` for authenticated checks without printing credentials. Only sample/test data belongs in Previews.
+- Serialize commands for one thread across orbs. Do not edit or delete another thread's unexpired Preview unless asked. `gc` is authorized to reclaim this workflow's resources past their seven-day cleanup deadline.
+- Run `npm run preview -- down` when the Preview is no longer needed, including before shipping/archiving unless the user explicitly asks to keep it for ongoing review. Do not remove a Preview while awaiting requested user testing. Verify cleanup with `npm run preview -- list` and report any failure.
+- For agent-only remote validation, use teardown in a `finally` block or shell trap. New provisioning failures attempt rollback; failed updates preserve the existing Preview for diagnosis. Cleanup must still be completed before concluding the task.
+- If an orb is lost, use `list` then `down <name>` from another orb. `up` and explicit `gc` collect expired resources, but no background timer runs. Orb deletion and Cloudflare Preview eviction do not clean up D1 or Access resources.

@@ -120,7 +120,79 @@ identities fail closed. This does not change the household Google policy or expo
 
 All production requests, including assets and API, pass through Cloudflare Access. Keep the Worker-level allowlist in place; do not add bypass or account-wide policies as a workaround. Credential configuration and read access do not establish deployment permissions; verify cloud writes only during an approved bootstrap or deployment.
 
-`alchemy.run.ts` is the infrastructure source of truth. Its inferred environment types are used directly by `src/server.ts`; there is no parallel Wrangler binding configuration to drift. `alchemy dev` keeps its state and SQLite data locally in `.alchemy/`; cloud operations use `Cloudflare.state()` so separate orbs share deployment state. Never run destructive infrastructure commands casually. Keep production bootstrap, deployment, and migrations out of orb setup, resume, and preview services.
+`alchemy.run.ts` is the production infrastructure source of truth. Its inferred environment types are used directly by `src/server.ts`. `cloudflare.config.ts` shares the entrypoint, compatibility date, and asset routing with the on-demand Preview workflow below. `alchemy dev` keeps its state and SQLite data locally in `.alchemy/`; cloud operations use `Cloudflare.state()` so separate orbs share deployment state. Never run destructive infrastructure commands casually. Keep production bootstrap, deployment, and migrations out of orb setup, resume, and preview services.
+
+## On-demand Cloudflare Previews
+
+Use these when testing real Workers, Static Assets, D1, Access, or network latency matters. Keep using
+Amp portals for local iteration and their review tools; a Cloudflare Preview is a complementary remote
+environment, not an Amp portal. This uses Cloudflare's **native Worker Previews**, not Alchemy stages,
+legacy version URLs, or a second production Worker. Requires the pinned Wrangler 4.142.0 (feature minimum: 4.135.0).
+
+From the thread's working branch, with `AMP_THREAD_ID` set to its full thread ID:
+
+```sh
+npm run preview -- up                 # Build, provision/update, migrate isolated D1, deploy, smoke-test
+npm run preview -- test               # Recheck Access/assets/API and D1 persistence; print latency samples
+npm run preview -- list               # Account-side inventory, including partially provisioned resources
+npm run preview -- down               # Delete this thread's Preview and ALL its supporting resources
+npm run preview -- gc                 # Delete managed previews past their cleanup deadline
+```
+
+`up` prints the stable HTTPS URL, deployment ID, and UTC cleanup deadline. Sign in with the same Google
+accounts allowed in production. Share **only this stable URL**: immutable deployment URLs retain the
+parent Worker's Access policy, whose audience the Preview intentionally does not accept. Each thread
+gets an empty D1 database; **Try a sample week** supplies disposable data. Production data is never copied.
+Repeated `up` preserves the Preview URL/database and applies new migrations. Serialize commands for a
+given thread across orbs. Separate threads use separate databases and credentials.
+
+The Cloudflare API token needs account-scoped **Workers Scripts: Edit**, **D1: Edit**,
+**Access: Apps and Policies: Edit**, and **Access: Service Tokens: Edit**. It must be able to read the
+existing Hearth Worker and Access policy. No Google client secret or Alchemy bootstrap is needed.
+The workflow discovers the production Worker through its Alchemy tags and refuses ambiguous targets.
+Its preview URL setting must already be enabled; the script never changes production settings or runs
+`wrangler deploy`. Permissions to create previews do not authorize production deployment.
+
+Each Preview has a hostname-specific Access application, copied household allow policy, and a seven-day
+service token restricted to that application. `LOCAL_DEV` remains `false`; the normal signed Access JWT
+checks run in the Worker. `PREVIEW_CLIENT_ID` binds that Preview's service identity for reads and writes
+to its isolated D1. Production leaves this binding unset and keeps its smoke identity read-only.
+No public bypass is installed. Automation credentials are saved mode `0600`
+under the gitignored `.wrangler/hearth-previews/<name>/` directory; never print, commit, or share them.
+A new orb running `up` rotates only that Preview's token if its one-time secret is unavailable locally.
+For additional API validation or performance fixtures, use the authenticated request helper:
+
+```sh
+npm run preview -- request <name-from-list> GET /api/household
+npm run preview -- request <name-from-list> POST '/api/demo?today=2026-09-28' '{}'
+```
+
+The built-in smoke test checks anonymous denial, authenticated HTML/JavaScript/API, and a disposable
+D1 write/read/delete cycle without clearing existing fixtures. Its ten warm API timings include Access
+and network latency from the orb, not Worker CPU or a load test. For performance comparisons use the
+same fixtures, client location, and multiple runs. Preview logs are enabled in Cloudflare's Preview
+Observability tab; `wrangler tail` does not yet support native Previews.
+
+**Cleanup is mandatory when testing/review ends.** `down` removes the Preview first, verifies its absence,
+then deletes its D1 database, Access application, service token, and local credential files. It refuses
+non-managed names and never deletes the parent Worker or production resources. It is safe to retry after
+a partial failure. A failed first `up` attempts rollback; a failed update preserves existing resources
+and data for diagnosis. If rollback fails, the error prints the exact cleanup command.
+
+Resources carry a UTC cleanup deadline in their names (six to seven days after creation). `up` runs
+`gc`, and `gc` discovers expired resources from Cloudflare, even after an orb is lost or Cloudflare evicts
+a Preview. **The deadline is not a Cloudflare TTL: no background janitor runs.** Do not rely on inactivity,
+orb deletion, or Cloudflare's Preview limits to remove D1/Access resources. For recovery from any orb:
+
+```sh
+npm run preview -- list
+npm run preview -- down <name-from-list>
+```
+
+References: [Previews](https://developers.cloudflare.com/workers/previews/),
+[configuration](https://developers.cloudflare.com/workers/previews/configuration/),
+[resource isolation](https://developers.cloudflare.com/workers/previews/resources/), and
+[Access precedence](https://developers.cloudflare.com/workers/configuration/cloudflare-access/#understand-access-hierarchy).
 
 ### Amp push-to-deploy automation
 

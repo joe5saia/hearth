@@ -4,6 +4,7 @@ import { AlchemyContext } from "alchemy/AlchemyContext";
 import * as Namespace from "alchemy/Namespace";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import { workerRuntime } from "./cloudflare.config";
 
 export const Database = Cloudflare.D1.Database("Database", {
   migrations: "./migrations",
@@ -63,12 +64,12 @@ export const Website = Cloudflare.Worker(
     }
 
     return {
-      main: "src/server.ts",
+      main: workerRuntime.main,
       access,
       domain: dev ? undefined : "hearth.joesaia.trade",
-      compatibility: { date: "2026-09-08" },
+      compatibility: { date: workerRuntime.compatibilityDate },
       dev: { port: 8787 },
-      assets: { directory: "./dist", notFoundHandling: "single-page-application", runWorkerFirst: true },
+      assets: workerRuntime.assets,
       env: {
         DB: Database,
         LOCAL_DEV: dev ? "true" : "false",

@@ -24,7 +24,12 @@ const meal: Meal = {
   note: "Leftovers for lunch",
 };
 
-function options(local: string, audience = "test-hearth", smokeClientId = "smoke-test.access") {
+function options(
+  local: string,
+  audience = "test-hearth",
+  smokeClientId = "smoke-test.access",
+  previewClientId = "",
+) {
   return convertV4MiniflareOptions({
     workers: [
       {
@@ -33,7 +38,12 @@ function options(local: string, audience = "test-hearth", smokeClientId = "smoke
         script,
         compatibilityDate: "2026-09-08",
         d1Databases: ["DB"],
-        bindings: { LOCAL_DEV: local, ACCESS_AUD: audience, SMOKE_CLIENT_ID: smokeClientId },
+        bindings: {
+          LOCAL_DEV: local,
+          ACCESS_AUD: audience,
+          SMOKE_CLIENT_ID: smokeClientId,
+          PREVIEW_CLIENT_ID: previewClientId,
+        },
         outboundService: async (request) => {
           const url = new URL(request.url);
 
@@ -457,5 +467,50 @@ describe("real Worker with disposable SQLite D1", () => {
 
     await worker.setOptions(options("false", "test-hearth", ""));
     expect((await worker.dispatchFetch("http://localhost/api/household", { headers })).status).toBe(403);
+  });
+
+  it("allows writes only for the explicitly bound preview identity and keeps smoke access read-only", async () => {
+    const sign = (clientId: string, audience = "test-hearth") =>
+      new SignJWT({
+        iss: "https://saiaai.cloudflareaccess.com",
+        aud: [audience],
+        sub: "",
+        common_name: clientId,
+        exp: Math.floor(Date.now() / 1000) + 300,
+      })
+        .setProtectedHeader({ alg: "RS256", kid: "test-key" })
+        .sign(signingKey);
+
+    const put = async (clientId: string, audience = "test-hearth") =>
+      worker.dispatchFetch("http://localhost/api/extras", {
+        method: "PUT",
+        headers: {
+          "Cf-Access-Jwt-Assertion": await sign(clientId, audience),
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ id: "preview-item", name: "Preview shopping item", checked: 0 }),
+      });
+
+    await worker.setOptions(options("false", "test-hearth", "smoke-test.access", "preview-test.access"));
+    expect((await put("preview-test.access")).status).toBe(200);
+
+    const read = await worker.dispatchFetch("http://localhost/api/household", {
+      headers: { "Cf-Access-Jwt-Assertion": await sign("preview-test.access") },
+    });
+
+    expect(await read.json()).toHaveProperty("extras", [
+      { id: "preview-item", name: "Preview shopping item", checked: 0 },
+    ]);
+    expect((await put("unknown.access")).status).toBe(403);
+    expect((await put("preview-test.access", "production-audience")).status).toBe(403);
+    expect(await (await put("smoke-test.access")).json()).toEqual({
+      error: "Smoke-test access is read-only.",
+    });
+    await worker.setOptions(options("false"));
+    expect((await put("preview-test.access")).status).toBe(403);
+    await worker.setOptions(options("false", "test-hearth", "smoke-test.access", "smoke-test.access"));
+    expect(await (await put("smoke-test.access")).json()).toEqual({
+      error: "Smoke-test access is read-only.",
+    });
   });
 });

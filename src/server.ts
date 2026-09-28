@@ -349,7 +349,7 @@ const accessIssuer = "https://saiaai.cloudflareaccess.com";
 const accessKeys = createRemoteJWKSet(new URL(`${accessIssuer}/cdn-cgi/access/certs`));
 
 export default {
-  async fetch(request: Request, env: WebsiteEnv): Promise<Response> {
+  async fetch(request: Request, env: WebsiteEnv & { PREVIEW_CLIENT_ID?: string }): Promise<Response> {
     // Static Assets' internal router does not forward ctx.access. Verify the
     // signed assertion instead, including this application's audience tag.
     if (env.LOCAL_DEV !== "true") {
@@ -365,15 +365,15 @@ export default {
           requiredClaims: ["exp", "sub"],
         });
 
-        // Access service tokens use common_name and an empty sub. Trust only the
-        // configured smoke identity, and never allow it to mutate household data.
+        // The production smoke identity stays read-only. Only native Previews
+        // bind a separate service identity allowed to mutate their isolated D1.
         if (payload.common_name !== undefined || payload.sub === "") {
-          if (!env.SMOKE_CLIENT_ID || payload.common_name !== env.SMOKE_CLIENT_ID) {
+          if (env.SMOKE_CLIENT_ID && payload.common_name === env.SMOKE_CLIENT_ID) {
+            if (!["GET", "HEAD"].includes(request.method)) {
+              return Response.json({ error: "Smoke-test access is read-only." }, { status: 403 });
+            }
+          } else if (!env.PREVIEW_CLIENT_ID || payload.common_name !== env.PREVIEW_CLIENT_ID) {
             throw new Error("Unrecognized service identity.");
-          }
-
-          if (!["GET", "HEAD"].includes(request.method)) {
-            return Response.json({ error: "Smoke-test access is read-only." }, { status: 403 });
           }
         }
       } catch {
