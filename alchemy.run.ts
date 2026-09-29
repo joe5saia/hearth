@@ -10,6 +10,22 @@ export const Database = Cloudflare.D1.Database("Database", {
   migrations: "./migrations",
 });
 
+// Keep the existing top-level Google resource identity when sharing it with MCP.
+const Google = Effect.gen(function* () {
+  const clientId = process.env.GOOGLE_CLIENT_ID;
+  const clientSecret = process.env.GOOGLE_CLIENT_SECRET;
+
+  if (!clientId || !clientSecret) {
+    return yield* Effect.die(new Error("Set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET before deploying."));
+  }
+
+  return yield* Cloudflare.Access.IdentityProvider("Google", {
+    name: "Hearth Google",
+    type: "google",
+    config: { clientId, clientSecret },
+  });
+});
+
 export const Website = Cloudflare.Worker(
   "Website",
   Effect.gen(function* () {
@@ -19,20 +35,7 @@ export const Website = Cloudflare.Worker(
     let smoke: Cloudflare.Access.ServiceToken | undefined;
 
     if (!dev) {
-      const clientId = process.env.GOOGLE_CLIENT_ID;
-      const clientSecret = process.env.GOOGLE_CLIENT_SECRET;
-
-      if (!clientId || !clientSecret) {
-        return yield* Effect.die(
-          new Error("Set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET before deploying."),
-        );
-      }
-
-      const google = yield* Cloudflare.Access.IdentityProvider("Google", {
-        name: "Hearth Google",
-        type: "google",
-        config: { clientId, clientSecret },
-      });
+      const google = yield* Google;
 
       smoke = yield* Cloudflare.Access.ServiceToken("SmokeTest", {
         name: "Hearth deployment smoke test",
@@ -82,6 +85,51 @@ export const Website = Cloudflare.Worker(
 
 export type WebsiteEnv = Cloudflare.InferEnv<typeof Website>;
 
+export const McpOAuth = Cloudflare.KV.Namespace("McpOAuth");
+
+export const Mcp = Cloudflare.Worker(
+  "Mcp",
+  Effect.gen(function* () {
+    const google = yield* Google;
+    const hostname = "hearth-mcp.joesaia.trade";
+
+    const access = yield* Cloudflare.Access.Application("McpAccess", {
+      type: "self_hosted",
+      name: "Hearth MCP authorization",
+      domain: `${hostname}/authorize`,
+      sessionDuration: "168h",
+      allowedIdps: [google.identityProviderId],
+      autoRedirectToIdentity: true,
+      appLauncherVisible: false,
+      policies: [
+        {
+          name: "Household",
+          decision: "allow",
+          include: [{ email: "joe5saia@gmail.com" }, { email: "shannonnitroy@gmail.com" }],
+          require: [{ loginMethod: google.identityProviderId }],
+        },
+      ],
+    });
+
+    return {
+      main: "src/mcp-worker.ts",
+      domain: hostname,
+      workersDev: false,
+      compatibility: {
+        date: workerRuntime.compatibilityDate,
+        flags: ["nodejs_compat", "global_fetch_strictly_public"],
+      },
+      // No Worker `access` enrollment: only /authorize belongs behind Access.
+      env: {
+        DB: Database,
+        OAUTH_KV: McpOAuth,
+        MCP_ORIGIN: `https://${hostname}`,
+        ACCESS_AUD: access.aud,
+      },
+    } as const;
+  }),
+);
+
 export default Alchemy.Stack(
   "hearth",
   {
@@ -91,8 +139,10 @@ export default Alchemy.Stack(
     ),
   },
   Effect.gen(function* () {
+    const { dev } = yield* AlchemyContext;
     const website = yield* Website;
+    const mcp = dev ? undefined : yield* Mcp;
 
-    return { url: website.url };
+    return { url: website.url, mcp: mcp ? "https://hearth-mcp.joesaia.trade/mcp" : undefined };
   }),
 );

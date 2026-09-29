@@ -124,7 +124,7 @@ identities fail closed. This does not change the household Google policy or expo
 6. After reviewing the plan and approving deployment, run `npx task deploy -- --yes`. This builds assets, updates the Worker, binds D1, and applies pending SQL migrations. Serialize deployments to the same stage across orbs. Production access is account-scoped: stage names are not an authorization boundary.
 7. Open the returned HTTPS Worker URL and sign in with one of the two allowed Google accounts.
 
-All production requests, including assets and API, pass through Cloudflare Access. Keep the Worker-level allowlist in place; do not add bypass or account-wide policies as a workaround. Credential configuration and read access do not establish deployment permissions; verify cloud writes only during an approved bootstrap or deployment.
+All production website requests, including assets and API, pass through Cloudflare Access. Keep the Worker-level allowlist in place; do not add bypass or account-wide policies as a workaround. The separate MCP Worker protects only consent with Access and uses OAuth for its API (see below). Credential configuration and read access do not establish deployment permissions; verify cloud writes only during an approved bootstrap or deployment.
 
 `alchemy.run.ts` is the production infrastructure source of truth. Its inferred environment types are used directly by `src/server.ts`. `cloudflare.config.ts` shares the entrypoint, compatibility date, and asset routing with the on-demand Preview workflow below. `alchemy dev` keeps its state and SQLite data locally in `.alchemy/`; cloud operations use `Cloudflare.state()` so separate orbs share deployment state. Never run destructive infrastructure commands casually. Keep production bootstrap, deployment, and migrations out of orb setup, resume, and preview services.
 
@@ -246,12 +246,26 @@ receive Access login redirects. The Worker validates Access JWTs for consent and
 tokens for MCP. `recipes:read` is required; `recipes:write` is separately consented.
 Production must omit `PREVIEW_CLIENT_ID`, which exists solely for isolated-preview automation.
 
+### Production MCP
+
+The stable endpoint is **https://hearth-mcp.joesaia.trade/mcp**. `alchemy.run.ts` provisions
+the separate `Mcp` Worker, dedicated `McpOAuth` KV, and `McpAccess` application scoped to
+`hearth-mcp.joesaia.trade/authorize`. It reuses the existing production `Database` and Google
+identity provider. Worker-wide Access enrollment is deliberately absent; workers.dev is disabled.
+The website's Access application and deployment smoke identity are not changed or reused for MCP.
+
+Use the existing `npx task plan` and authorized `npx task deploy -- --yes` for both Workers.
+`npx task mcp:smoke` checks public discovery, exact OAuth origin metadata, anonymous MCP 401,
+and the Access consent redirect without credentials or household writes. Household Google login
+is required to verify consent, token exchange, and authenticated recipe reads. Do not grant a
+machine identity or run the write-capable preview test against production to bypass that requirement.
+
 ### Isolated MCP preview
 
 ```sh
-node tools/mcp-preview.ts up
-node tools/mcp-preview-test.ts
-node tools/mcp-preview.ts down
+npx task mcp:preview -- up
+npx task mcp:preview:test
+npx task mcp:preview -- down
 ```
 
 Run on the owning thread's branch with `AMP_THREAD_ID` and Cloudflare credentials configured.
@@ -269,7 +283,7 @@ private, short-lived evaluation client settings in that state directory; never c
 those credentials publicly. The preview-only entrypoint serves a CIMD fixture at `/test-client.json`;
 the production entrypoint does not. The preview Access service identity is restricted to its own token.
 
-`npm test` includes real workerd/D1/KV integration tests with a synthetic Access signer and
+`npx task test` includes real workerd/D1/KV integration tests with a synthetic Access signer and
 CIMD document. Live preview deployment and agent usability evaluation are separate checks.
 
 ## Photo credits

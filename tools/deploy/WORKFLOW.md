@@ -7,6 +7,12 @@ stage, including its D1 migrations; read-only live smoke checks and logs; and cr
 separate orbs to investigate and fix observed errors. It does not authorize pushing fixes,
 changing Access policies, deleting data, rolling back migrations, or deploying other stages.
 
+The owner additionally authorized production MCP infrastructure in
+https://ampcode.com/threads/T-01a0e533-0089-730b-aac6-15be6ceb0fbe:
+the separate MCP Worker, OAuth KV, existing household D1 binding, and household Google
+Access application on `hearth-mcp.joesaia.trade/authorize` only. Preserve Website Access
+and never bind a preview identity or grant machine consent access in production.
+
 Keep this deployment thread unarchived. Only this orb has `.amp/deploy-state/owner.json`.
 Never copy its state or webhook URL into another orb or commit them. Other orbs must not
 deploy production concurrently. Keep all deployment commands in this one owning thread.
@@ -71,6 +77,13 @@ In **production** mode:
 7. Review deployment output and the captured Worker/browser logs for exceptions, failed
    requests and errors. Record the observation window and which logs were actually available.
    A sampled quiet tail is evidence for that window only, not proof that production has no errors.
+   Verify both Website and Mcp Worker versions (a no-op keeps its prior version). While a
+   bounded Mcp tail is active, run `npx task mcp:smoke` for public discovery, OAuth 401,
+   and the Access consent gate. Expected anonymous 401/302 responses are not app failures.
+   For initial MCP setup or auth changes, also check household consent, token exchange,
+   and read-only recipe access using an authorized human session; report these as blocked
+   if login is unavailable. Never use the website smoke token on MCP or run preview write
+   fixtures against household data. Close/delete both Workers' tail sessions afterward.
 8. On an actual build, deploy, smoke-test or log error, use `create_thread` with `executor: orb`
    in joe5saia/Meal-planning to investigate and fix it. Give it the exact deployed/failed SHA,
    URL and route, UTC time, expected versus observed behavior, reproduction clicks/commands,

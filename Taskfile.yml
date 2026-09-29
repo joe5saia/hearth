@@ -60,6 +60,15 @@ tasks:
   preview:
     desc: Manage disposable Cloudflare Previews (-- up, test, list, down, gc, or request; no args for help)
     cmds: ["npm run preview -- {{.CLI_ARGS}}"]
+  mcp:smoke:
+    desc: Check public production MCP discovery, OAuth denial, and Access consent gate (no credentials or writes)
+    cmds: [node tools/mcp-smoke.ts]
+  mcp:preview:
+    desc: Manage isolated MCP Preview (-- up or down; never production)
+    cmds: ["node tools/mcp-preview.ts {{.CLI_ARGS}}"]
+  mcp:preview:test:
+    desc: Exercise MCP OAuth and recipe writes in the isolated Preview only
+    cmds: [node tools/mcp-preview-test.ts]
   smoke:open:
     desc: Open the production smoke-test browser (deployment owner only; read-only credentials required)
     silent: true
