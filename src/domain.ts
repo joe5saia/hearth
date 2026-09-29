@@ -72,6 +72,12 @@ export const units = [
 
 export const categories = ["Weeknight favorites", "Vegetarian", "Comfort food", "Something special"];
 
+export function matchesRecipeSearch(recipe: Pick<Recipe, "title" | "ingredients">, search: string): boolean {
+  return `${recipe.title} ${recipe.ingredients.map((item) => item.name).join(" ")}`
+    .toLowerCase()
+    .includes(search.toLowerCase());
+}
+
 export function dateKey(date: Date): string {
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
 }

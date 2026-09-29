@@ -11,14 +11,17 @@
     "preview": "node tools/preview.ts"
   },
   "dependencies": {
+    "@cloudflare/workers-oauth-provider": "1.2.1",
     "@fontsource-variable/dm-sans": "5.3.0",
     "@fontsource-variable/lora": "5.3.0",
+    "@modelcontextprotocol/server": "2.2.0",
     "effect": "4.0.0-rc.117",
     "entities": "8.1.0",
     "jose": "6.2.12",
     "lucide-react": "1.48.0",
     "react": "19.3.0",
-    "react-dom": "19.3.0"
+    "react-dom": "19.3.0",
+    "zod": "4.6.5"
   },
   "devDependencies": {
     "@ampcode/plugin": "0.0.0-20260928002026-g40f3f5f",

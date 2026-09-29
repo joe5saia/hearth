@@ -220,6 +220,58 @@ Its webhook URL and deployment ledger live in private, gitignored `.amp/deploy-s
 Run `npx task test -- tests/deploy.test.ts` for dispatch, interruption, and deduplication tests.
 These tests do not deploy or replace the required live end-to-end test.
 
+## Recipe MCP server
+
+`src/mcp-worker.ts` is a separate OAuth-protected Worker entrypoint. It uses MCP SDK 2.2.0's
+stateless Streamable HTTP handler (MCP 2026-07-28), with legacy client compatibility supplied by
+the SDK. Recipe persistence and validation are shared with the website API in `src/recipes.ts`;
+search uses the same predicate as the app. The household is shared, not partitioned per user.
+
+| Tool             | Contract                                                                                                                                                                              |
+| ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `search_recipes` | Literal case-insensitive title/ingredient search. Returns IDs, titles, ingredients and pagination on every successful call. Default/max page size 25; follow `nextOffset` until null. |
+| `get_recipes`    | 1–25 unique IDs. Full recipes in requested order plus `missingIds`.                                                                                                                   |
+| `create_recipes` | 1–25 recipes; generated IDs, optional empty metadata defaults. Atomic batch. Retrying creates duplicates.                                                                             |
+| `update_recipes` | 1–25 `{id, changes}` entries. Omitted fields stay unchanged; arrays replace whole arrays. Invalid or missing recipes reject before writes.                                            |
+
+Every tool advertises JSON input/output schemas and returns `structuredContent` plus equivalent
+JSON text for code-mode and older clients. Read-only grants expose only search/get; write grants
+also expose create/update. Search pagination is a live view, not a snapshot across concurrent edits.
+Search currently reads recipe summaries into memory to preserve JavaScript's exact Unicode and
+substring behavior; this is intended for the household collection, not a large public catalog.
+
+Cloudflare's OAuth provider handles CIMD, discovery, PKCE, tokens and consent transactions.
+Only `/authorize` sits behind Cloudflare Access; discovery, token and `/mcp` endpoints must not
+receive Access login redirects. The Worker validates Access JWTs for consent and OAuth bearer
+tokens for MCP. `recipes:read` is required; `recipes:write` is separately consented.
+Production must omit `PREVIEW_CLIENT_ID`, which exists solely for isolated-preview automation.
+
+### Isolated MCP preview
+
+```sh
+node tools/mcp-preview.ts up
+node tools/mcp-preview-test.ts
+node tools/mcp-preview.ts down
+```
+
+Run on the owning thread's branch with `AMP_THREAD_ID` and Cloudflare credentials configured.
+In addition to the website-preview permissions above, the API token needs account-scoped
+**Workers KV Storage: Edit**. This creates a disposable parent Worker and native Preview with
+isolated D1 and OAuth KV, and an Access application protecting only `/authorize`. The separate
+parent avoids inheriting the website's blanket Access gate on public OAuth discovery. It never
+deploys production. Private state
+and preview credentials live under `.wrangler/mcp-preview/`; preserve that directory to resume
+a partial deployment or tear it down. `up` preserves its URL and data on subsequent runs.
+Run `down` when review ends; the name's date is a cleanup reminder, not an automatic TTL.
+`down` also removes the disposable parent, Access app/service token, D1 and KV.
+The live test exercises CIMD/PKCE consent and all four tools against disposable recipes. It writes
+private, short-lived evaluation client settings in that state directory; never commit or share
+those credentials publicly. The preview-only entrypoint serves a CIMD fixture at `/test-client.json`;
+the production entrypoint does not. The preview Access service identity is restricted to its own token.
+
+`npm test` includes real workerd/D1/KV integration tests with a synthetic Access signer and
+CIMD document. Live preview deployment and agent usability evaluation are separate checks.
+
 ## Photo credits
 
 Illustrative sample images are bundled for network-independent development:

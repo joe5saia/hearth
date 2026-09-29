@@ -39,6 +39,7 @@ import {
   weekStart,
   nextDinnerDate,
   validDate,
+  matchesRecipeSearch,
   RecipeSchema,
   HouseholdSchema,
   type Household,
@@ -284,11 +285,7 @@ export function App() {
 
   const weekMeals = data.meals.filter((meal) => meal.date >= week && meal.date <= addDays(week, 6));
 
-  const matchingRecipes = data.recipes.filter((recipe) =>
-    `${recipe.title} ${recipe.ingredients.map((item) => item.name).join(" ")}`
-      .toLowerCase()
-      .includes(search.toLowerCase()),
-  );
+  const matchingRecipes = data.recipes.filter((recipe) => matchesRecipeSearch(recipe, search));
 
   const items = useMemo(
     () => shoppingList(data.recipes, data.meals, start, end),

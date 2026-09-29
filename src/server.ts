@@ -2,21 +2,18 @@ import { Data, Effect, Schema } from "effect";
 import { createRemoteJWKSet, errors, jwtVerify } from "jose";
 import type { WebsiteEnv } from "../alchemy.run";
 import {
-  IngredientSchema,
   MealSchema,
   RecipeSchema,
   ExtraSchema,
   CheckSchema,
-  categories,
-  units,
   validDate,
-  type Recipe,
   type Meal,
   type Extra,
   type Household,
 } from "./domain";
 import { sampleRecipes, sampleMeals } from "./seed";
 import { importRecipe } from "./recipe-import";
+import { parseRecipe, recipeStatement, validateRecipe, type RecipeRow } from "./recipes";
 
 class ApiError extends Data.TaggedError("ApiError")<{ status: number; message: string }> {}
 
@@ -37,83 +34,11 @@ const decodeId = (path: string, prefix: string) =>
     catch: () => invalid("Invalid item ID."),
   });
 
-const decodeIngredients = Schema.decodeUnknownSync(Schema.Array(IngredientSchema));
-
-const decodeInstructions = Schema.decodeUnknownSync(Schema.Array(Schema.String));
-
-type RecipeRow = Omit<Recipe, "ingredients" | "instructions"> & { ingredients: string; instructions: string };
-
-function recipeStatement(db: WebsiteEnv["DB"], recipe: Recipe) {
-  return db
-    .prepare(`INSERT INTO recipes (id,title,description,servings,minutes,category,photo,source,ingredients,instructions)
-    VALUES (?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET title=excluded.title,description=excluded.description,
-    servings=excluded.servings,minutes=excluded.minutes,category=excluded.category,photo=excluded.photo,
-    source=excluded.source,ingredients=excluded.ingredients,instructions=excluded.instructions`)
-    .bind(
-      recipe.id,
-      recipe.title.trim(),
-      recipe.description,
-      recipe.servings,
-      recipe.minutes,
-      recipe.category,
-      recipe.photo,
-      recipe.source,
-      JSON.stringify(recipe.ingredients),
-      JSON.stringify(recipe.instructions),
-    );
-}
-
 function mealStatement(db: WebsiteEnv["DB"], meal: Meal) {
   return db
     .prepare(`INSERT INTO meals (id,recipeId,date,slot,scale,note) VALUES (?,?,?,?,?,?)
     ON CONFLICT(id) DO UPDATE SET recipeId=excluded.recipeId,date=excluded.date,slot=excluded.slot,scale=excluded.scale,note=excluded.note`)
     .bind(meal.id, meal.recipeId, meal.date, meal.slot, meal.scale, meal.note);
-}
-
-function safeUrl(value: string): boolean {
-  if (!value) return true;
-
-  try {
-    const url = new URL(value);
-
-    return url.protocol === "https:" || url.protocol === "http:";
-  } catch {
-    return false;
-  }
-}
-
-function validateRecipe(recipe: Recipe): boolean {
-  return (
-    !!recipe.id &&
-    recipe.id.length <= 100 &&
-    !!recipe.title.trim() &&
-    recipe.title.length <= 150 &&
-    recipe.description.length <= 2000 &&
-    recipe.servings > 0 &&
-    recipe.servings <= 100 &&
-    Number.isInteger(recipe.minutes) &&
-    recipe.minutes > 0 &&
-    recipe.minutes <= 10000 &&
-    categories.includes(recipe.category) &&
-    safeUrl(recipe.source) &&
-    (safeUrl(recipe.photo) ||
-      /^\/photos\/[a-z-]+\.jpg$/.test(recipe.photo) ||
-      /^data:image\/(jpeg|png|webp);base64,[A-Za-z0-9+/=]+$/.test(recipe.photo)) &&
-    new TextEncoder().encode(JSON.stringify(recipe)).length < 1_900_000 &&
-    recipe.ingredients.length > 0 &&
-    recipe.ingredients.length <= 100 &&
-    recipe.ingredients.every(
-      (i) =>
-        !!i.name.trim() &&
-        i.name.length <= 150 &&
-        i.quantity > 0 &&
-        i.quantity <= 1_000_000 &&
-        units.includes(i.unit),
-    ) &&
-    recipe.instructions.length > 0 &&
-    recipe.instructions.length <= 100 &&
-    recipe.instructions.every((i) => !!i.trim() && i.length <= 10000)
-  );
 }
 
 function api(request: Request, env: WebsiteEnv) {
@@ -133,11 +58,7 @@ function api(request: Request, env: WebsiteEnv) {
         ]),
       );
 
-      const parsed = recipes.results.map((row) => ({
-        ...row,
-        ingredients: decodeIngredients(JSON.parse(row.ingredients)),
-        instructions: decodeInstructions(JSON.parse(row.instructions)),
-      }));
+      const parsed = recipes.results.map(parseRecipe);
 
       return Response.json({
         recipes: parsed,
