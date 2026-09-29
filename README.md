@@ -235,15 +235,18 @@ search uses the same predicate as the app. The household is shared, not partitio
 | `update_recipes` | 1–25 `{id, changes}` entries. Omitted fields stay unchanged; arrays replace whole arrays. Invalid or missing recipes reject before writes.                                            |
 
 Every tool advertises JSON input/output schemas and returns `structuredContent` plus equivalent
-JSON text for code-mode and older clients. Read-only grants expose only search/get; write grants
-also expose create/update. Search pagination is a live view, not a snapshot across concurrent edits.
+JSON text for code-mode and older clients. The single `recipes` scope exposes all four tools.
+Search pagination is a live view, not a snapshot across concurrent edits.
 Search currently reads recipe summaries into memory to preserve JavaScript's exact Unicode and
 substring behavior; this is intended for the household collection, not a large public catalog.
 
 Cloudflare's OAuth provider handles CIMD, discovery, PKCE, tokens and consent transactions.
 Only `/authorize` sits behind Cloudflare Access; discovery, token and `/mcp` endpoints must not
 receive Access login redirects. The Worker validates Access JWTs for consent and OAuth bearer
-tokens for MCP. `recipes:read` is required; `recipes:write` is separately consented.
+tokens for MCP. Both discovery documents advertise the required `recipes` scope; consent grants
+search, view, create and edit access together. Existing read/write-scope connections must reconnect
+and approve the new scope, then refresh their client's tool inventory. Old tokens are not upgraded
+to broader access automatically.
 Production must omit `PREVIEW_CLIENT_ID`, which exists solely for isolated-preview automation.
 
 ### Production MCP

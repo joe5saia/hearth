@@ -11,12 +11,14 @@ assert.equal(metadata.issuer, origin);
 assert.equal(metadata.authorization_endpoint, `${origin}/authorize`);
 assert.equal(metadata.token_endpoint, `${origin}/oauth/token`);
 assert.equal(metadata.client_id_metadata_document_supported, true);
+assert.deepEqual(metadata.scopes_supported, ["recipes"]);
 
 const resource = await request("/.well-known/oauth-protected-resource/mcp");
 assert.equal(resource.status, 200, "Public protected-resource discovery");
 const protectedResource = await resource.json();
 assert.equal(protectedResource.resource, `${origin}/mcp`);
 assert.deepEqual(protectedResource.authorization_servers, [origin]);
+assert.deepEqual(protectedResource.scopes_supported, ["recipes"]);
 
 const mcp = await request("/mcp");
 assert.equal(mcp.status, 401, "Anonymous MCP must use OAuth, not an Access redirect");

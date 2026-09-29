@@ -110,9 +110,9 @@ export default {
           // SAFETY: OAuthProvider authenticates the token and supplies this resource context.
           const auth = (context as OAuthResourceContext<unknown>).auth;
 
-          if (!auth.scope.includes("recipes:read")) return insufficientScope(auth, ["recipes:read"]);
+          if (!auth.scope.includes("recipes")) return insufficientScope(auth, ["recipes"]);
 
-          return recipeMcp(env.DB, auth.scope).fetch(request, {
+          return recipeMcp(env.DB).fetch(request, {
             authInfo: {
               token: auth.token,
               clientId: auth.clientId ?? "",
@@ -130,8 +130,8 @@ export default {
       authorizeEndpoint: "/authorize",
       tokenEndpoint: "/oauth/token",
       clientRegistrationEndpoint: "/oauth/register",
-      scopesSupported: ["recipes:read", "recipes:write"],
-      requiredScopes: ["recipes:read"],
+      scopesSupported: ["recipes"],
+      requiredScopes: ["recipes"],
       resourceMetadata: {
         resource: `${env.MCP_ORIGIN}/mcp`,
         authorization_servers: [env.MCP_ORIGIN],

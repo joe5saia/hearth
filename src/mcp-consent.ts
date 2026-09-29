@@ -58,19 +58,12 @@ export function consentPage(details: ConsentDescription, handle: string) {
       <fieldset><legend>Choose what this app can do</legend>
         ${details.scope
           .map((scope) => {
-            const title =
-              scope === "recipes:read"
-                ? "Read and search recipes"
-                : scope === "recipes:write"
-                  ? "Create and edit recipes"
-                  : scope;
+            const title = scope === "recipes" ? "Manage household recipes" : scope;
 
             const description =
-              scope === "recipes:read"
-                ? "View recipes, ingredients and cooking instructions."
-                : scope === "recipes:write"
-                  ? "Add new recipes and make changes to existing ones."
-                  : "Allow this requested permission.";
+              scope === "recipes"
+                ? "Search, view, create and edit your household recipes."
+                : "Allow this requested permission.";
 
             return `<label class="permission"><input type="checkbox" name="scope" value="${escape(scope)}" checked><span><strong>${escape(title)}</strong><small>${description}</small></span></label>`;
           })

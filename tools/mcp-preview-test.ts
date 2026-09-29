@@ -14,7 +14,10 @@ async function request(path: string, init: RequestInit = {}) {
   return fetch(url, { ...init, redirect: "manual", signal: AbortSignal.timeout(30000) });
 }
 
-async function login(label: string, cimd: boolean, scopes = ["recipes:read", "recipes:write"]) {
+async function login(label: string, cimd: boolean) {
+  const resource = await request("/.well-known/oauth-protected-resource/mcp");
+  const scopes = (await resource.json()).scopes_supported as string[];
+  assert.deepEqual(scopes, ["recipes"], "Single household scope advertised");
   let clientId = `${origin}/test-client.json`;
   if (!cimd) {
     const response = await request("/oauth/register", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ client_name: label, redirect_uris: [redirectUri], token_endpoint_auth_method: "none", grant_types: ["authorization_code", "refresh_token"], response_types: ["code"] }) });
@@ -96,13 +99,9 @@ const updated = await call("update_recipes", { updates: [{ id: a.recipes[0].id, 
 assert.deepEqual(updated.recipes[0], { ...a.recipes[0], minutes: 73 });
 assert.deepEqual(updated.recipes[1], { ...a.recipes[1], rating: "up" });
 
-const readOnly = await login("Read-only evaluation", false, ["recipes:read"]);
-assert.deepEqual((await rpc(readOnly.token, "tools/list")).tools.map((tool: any) => tool.name), ["search_recipes", "get_recipes"]);
-await rpc(readOnly.token, "tools/call", { name: "create_recipes", arguments: { recipes: [fixture(99)] } }, -32602);
-
 for (const label of ["self", "low-a", "low-b"]) {
   const identity = await login(`Hearth ${label} evaluation`, false);
   await writeFile(`${root}/${label}-settings.json`, JSON.stringify({ "amp.mcpServers": { hearth_preview: { url: `${origin}/mcp`, headers: { Authorization: `Bearer ${identity.token}` } } } }), { mode: 0o600 });
 }
 await writeFile(`${root}/evaluation.json`, JSON.stringify({ tag, count: 28, url: `${origin}/mcp` }, null, 2));
-console.log(JSON.stringify({ checks: "Public discovery, Access-protected consent, live CIMD + PKCE exchange, four tools, structured/text parity, 25+3 pagination, empty pagination, ordered gets, missing IDs, field-preserving batch updates, read-only scope enforcement", evaluationTag: tag, fixtures: 28, credentials: "Separate evaluation credentials saved privately; no tokens logged" }, null, 2));
+console.log(JSON.stringify({ checks: "Public discovery, Access-protected consent, live CIMD + PKCE exchange, single household scope, four tools, structured/text parity, 25+3 pagination, empty pagination, ordered gets, missing IDs, field-preserving batch updates", evaluationTag: tag, fixtures: 28, credentials: "Separate evaluation credentials saved privately; no tokens logged" }, null, 2));

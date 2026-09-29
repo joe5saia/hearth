@@ -21,7 +21,7 @@ const clientId = "https://client.example.com/client.json";
 
 const redirectUri = "http://localhost:3456/callback";
 
-const scopes = ["recipes:read", "recipes:write"];
+const scopes = ["recipes"];
 
 const metadata = {
   "io.modelcontextprotocol/protocolVersion": "2026-07-28",
@@ -219,7 +219,7 @@ it("escapes consent metadata and renders only the requested permissions", () => 
       redirectUri,
       redirectHost: "client.example.com",
       redirectIsLoopback: false,
-      scope: ["recipes:read"],
+      scope: scopes,
     },
     'opaque"handle',
   );
@@ -227,7 +227,11 @@ it("escapes consent metadata and renders only the requested permissions", () => 
   expect(html).not.toContain("<img");
   expect(html).toContain("&#60;img");
   expect(html).toContain('value="opaque&#34;handle"');
-  expect(html).toContain('name="scope" value="recipes:read" checked');
+  expect(html).toContain('name="scope" value="recipes" checked');
+  expect(html).toContain("Manage household recipes");
+  expect(html).toContain("Search, view, create and edit your household recipes.");
+  expect(html.match(/type="checkbox"/g)).toHaveLength(1);
+  expect(html).not.toContain('value="recipes:read"');
   expect(html).not.toContain('value="recipes:write"');
   expect(html).not.toContain("(on this computer)");
   expect(html).toContain('name="decision" value="deny"');
@@ -286,9 +290,14 @@ it("advertises CIMD and resource discovery; denies anonymous and forged tokens",
   expect(await discovery.json()).toMatchObject({
     client_id_metadata_document_supported: true,
     code_challenge_methods_supported: ["S256"],
+    scopes_supported: ["recipes"],
   });
   const resource = await request("/.well-known/oauth-protected-resource/mcp");
-  expect(await resource.json()).toMatchObject({ resource: `${origin}/mcp`, authorization_servers: [origin] });
+  expect(await resource.json()).toMatchObject({
+    resource: `${origin}/mcp`,
+    authorization_servers: [origin],
+    scopes_supported: ["recipes"],
+  });
   const attempts: Record<string, string>[] = [{}, { Authorization: "Bearer forged" }];
 
   for (const headers of attempts) {
@@ -301,7 +310,7 @@ it("advertises CIMD and resource discovery; denies anonymous and forged tokens",
   await login(scopes, true);
 });
 
-it("publishes four code-mode-friendly schemas and enforces scopes", async () => {
+it("publishes all four code-mode-friendly schemas with the single recipes scope", async () => {
   const tools = (await rpc("tools/list")).result.tools;
   expect(tools.map((t: any) => t.name).sort()).toEqual([
     "create_recipes",
@@ -314,15 +323,14 @@ it("publishes four code-mode-friendly schemas and enforces scopes", async () => 
     expect(tool.inputSchema.type).toBe("object");
     expect(tool.outputSchema.type).toBe("object");
   }
+});
 
-  const readToken = await login(["recipes:read"]);
-  expect((await rpc("tools/list", {}, readToken)).result.tools.map((t: any) => t.name)).toEqual([
-    "search_recipes",
-    "get_recipes",
-  ]);
-  const denied = await call("create_recipes", { recipes: [draft("Denied")] }, readToken);
-  expect(denied.isError).toBe(true);
-  // Reauthorizing the same client supersedes the previous grant.
+it("requires the recipes scope even for an authenticated client", async () => {
+  const unscoped = await login([]);
+  const response = await request("/mcp", { headers: { Authorization: `Bearer ${unscoped}` } });
+  expect(response.status).toBe(403);
+  expect(response.headers.get("WWW-Authenticate")).toContain('scope="recipes"');
+  expect(response.headers.get("WWW-Authenticate")).toContain("insufficient_scope");
   token = await login();
 });
 
