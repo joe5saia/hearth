@@ -3,7 +3,6 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "task dev",
     "build": "node node_modules/vite/bin/vite.js build",
     "check": "tsc --noEmit",
     "lint": "oxlint",

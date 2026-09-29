@@ -33,8 +33,8 @@ In **production** mode:
    deployment. Do not replace the owning checkout (it runs the plugin). Confirm the SHA is
    on origin/main. Do not deploy a force-pushed-away commit. If main has advanced, finish
    the old attempt as blocked/superseded and claim the latest one before deploying.
-3. Run `npm ci`, `npm run check`, `npm test`, and `npm run build` in that worktree. Stop on
-   any failure. Run `CI=true npx alchemy deploy --stage production --yes`, capture output
+3. Bootstrap Task with `npm ci`, then run `npx task typecheck` and `npx task test` in that
+   worktree. Stop on any failure. Run `npx task deploy -- --yes` (which builds before deploying), capture output
    privately, and follow the process until it exits. Do not put production deploys into
    setup scripts. Missing permissions or bootstrap requirements are blockers, not permission
    to provision unrelated infrastructure or change credentials.
@@ -54,9 +54,7 @@ In **production** mode:
    `--headers` on `open https://hearth.joesaia.trade`, never global `set headers`:
 
    ```sh
-   agent-browser --namespace hearth-smoke --session service --cdp 9222 --pin-tab \
-     --headers "$(jq -c '{"CF-Access-Client-Id":.clientId,"CF-Access-Client-Secret":.clientSecret}' .amp/deploy-state/smoke-credentials.json)" \
-     open https://hearth.joesaia.trade
+   npx task smoke:open
    ```
 
    Use that same namespace/session/CDP connection for subsequent browser commands. Never

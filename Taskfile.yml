@@ -1,11 +1,16 @@
 version: "3"
 tasks:
+  default:
+    desc: List available development tasks
+    cmds: [task --list]
   install:
-    desc: Install the pinned toolchain
+    desc: Install pinned dependencies (bootstrap with npm ci if Task is not installed)
     cmds: [npm ci]
   dev:
     desc: Start React, the local Worker, and persistent local SQLite through Alchemy
-    cmds: [npm run build, npx task --parallel dev:worker dev:web]
+    cmds:
+      - task: build
+      - task --parallel dev:worker dev:web
   dev:worker:
     desc: Local-only Alchemy Worker and SQLite; these placeholders cannot access Cloudflare
     env:
@@ -13,19 +18,56 @@ tasks:
       CLOUDFLARE_API_TOKEN: "local-development-only"
     cmds: [npx alchemy dev]
   dev:web:
+    desc: Start the React development server
     # Bundled dev's HMR runtime needs Rolldown 1.2.9; leave production Vite unchanged.
     cmds: [node node_modules/vite-dev/bin/vite.js --experimental-bundle]
   build:
+    desc: Build production assets
     cmds: [npm run build]
   benchmark:
     desc: Measure local API, shopping CPU, and production bundle sizes (optional -- report.json)
     cmds:
-      - npm run build
+      - task: build
       - node tests/benchmark.ts {{.CLI_ARGS}}
   check:
-    cmds: [npx tsc --noEmit, npx oxlint, npx oxfmt --check, npx vitest run]
+    desc: Run type checking, lint, formatting checks, and all tests
+    cmds:
+      - task: typecheck
+      - task: lint
+      - task: format:check
+      - task: test
+  typecheck:
+    desc: Check TypeScript types
+    cmds: [npm run check]
+  lint:
+    desc: Run Oxlint and vendored rules (optional -- paths or flags)
+    cmds: ["npm run lint -- {{.CLI_ARGS}}"]
+  test:
+    desc: Run tests (optional -- test paths or Vitest flags)
+    cmds: ["npm test -- {{.CLI_ARGS}}"]
   format:
-    cmds: [npx oxfmt]
+    desc: Format source files (optional -- paths or flags)
+    cmds: ["npm run format -- {{.CLI_ARGS}}"]
+  format:check:
+    desc: Check source formatting without writing files
+    cmds: [npm run format -- --check]
+  audit:
+    desc: Audit all dependencies (optional -- npm audit flags)
+    cmds: ["npm audit {{.CLI_ARGS}}"]
+  audit:production:
+    desc: Audit production dependencies only
+    cmds: [npm audit --omit=dev]
+  preview:
+    desc: Manage disposable Cloudflare Previews (-- up, test, list, down, gc, or request; no args for help)
+    cmds: ["npm run preview -- {{.CLI_ARGS}}"]
+  smoke:open:
+    desc: Open the production smoke-test browser (deployment owner only; read-only credentials required)
+    silent: true
+    cmds:
+      - >-
+        agent-browser --namespace hearth-smoke --session service --cdp 9222 --pin-tab
+        --headers "$(jq -c '{"CF-Access-Client-Id":.clientId,"CF-Access-Client-Secret":.clientSecret}' .amp/deploy-state/smoke-credentials.json)"
+        open https://hearth.joesaia.trade
   cloud:check:
     desc: Validate Cloudflare credential configuration without provisioning resources
     env:
@@ -40,9 +82,13 @@ tasks:
     desc: Preview production changes; bootstrap remote state separately first
     env:
       CI: "true"
-    cmds: [npm run build, npx alchemy plan --stage production]
+    cmds:
+      - task: build
+      - npx alchemy plan --stage production
   deploy:
-    desc: Deploy Worker, assets, and D1 migrations (requires Cloudflare credentials)
+    desc: Deploy Worker, assets, and D1 migrations (requires explicit approval; optional -- --yes)
     env:
       CI: "true"
-    cmds: [npm run build, npx alchemy deploy --stage production]
+    cmds:
+      - task: build
+      - npx alchemy deploy --stage production {{.CLI_ARGS}}

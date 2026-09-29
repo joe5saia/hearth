@@ -15,13 +15,17 @@ Open http://localhost:5173 on your own machine. `task dev` builds the initial st
 
 The empty app offers **Try a sample week**. This adds six editable recipes and five meals in the browser's current week. It never runs automatically in production. You can also start with your own recipe. Example recipes are original demonstration content; source links point to related recipe collections, and bundled photos are illustrative.
 
-Task is installed as a pinned npm development dependency, so `npx task` works without a global install. `npm run dev` is an alias.
+Taskfile.yml is the entry point for repository development commands, for people and agents.
+Task is installed as a pinned npm development dependency, so bootstrap a fresh checkout with
+`npm ci`, then use `npx task` to list available tasks and `npx task install` to reinstall dependencies.
+Package scripts are implementation primitives, not the documented workflow. Pass arguments after
+`--`, for example `npx task test -- tests/deploy.test.ts`.
 
 `dev:web` enables Vite's experimental bundled dev mode to avoid module-request waterfalls over orb portals.
 It uses the `vite-dev` alias with Rolldown 1.2.9, matching Vite 8.3.1's embedded HMR runtime; Rolldown
 1.2.10+ changed that runtime interface. Production keeps the original Vite and Rolldown versions.
-Use `npm run build` or `npx task build`, not `npx vite build`: both Vite packages export the same CLI
-name, so the build script explicitly selects the production package.
+Use `npx task build`: both Vite packages export the same CLI name, so its underlying build
+script explicitly selects the production package.
 
 Alchemy beta.79 resolves cloud credential configuration even for local resources. `dev:worker` supplies deliberately invalid local-only credential placeholders to satisfy that configuration check. Both resources run in **local** mode; these placeholders cannot access a Cloudflare account and are not used by the deployment task. Development uses Vite's standard HTTP proxy. Production uses one Worker serving both assets and API, with D1 provisioned and bound by Alchemy.
 
@@ -51,7 +55,9 @@ All generic [anti-slop](https://github.com/dmmulroy/anti-slop) rules are enabled
 
 **Known sandbox limitation:** Oxlint 1.85's JS plugin allocator can crash on small E2B instances before linting ([upstream issue](https://github.com/oxc-project/oxc/issues/20331)). The check task reports that failure rather than bypassing rules. If affected, run `npx task check` on a machine that supports the plugin allocator before deployment.
 
-Use `npm audit --omit=dev` to check production dependencies and `npm audit` to include the development toolchain.
+Use `npx task audit:production` to check production dependencies and `npx task audit` to include the development toolchain.
+Individual checks are available as `typecheck`, `lint`, `format:check`, and `test`; use
+`npx task format` to apply formatting.
 
 ## Repeatable performance benchmark
 
@@ -115,7 +121,7 @@ identities fail closed. This does not change the household Google policy or expo
 3. Run `npx task cloud:check` to validate credential configuration. This checks presence and format, not live authorization or all required permissions.
 4. The current account has Alchemy's shared state store provisioned. When setting up a new account, obtain approval and run `npx task cloud:bootstrap` to provision its state Worker, Durable Objects, and Secrets Store secrets. Do not delete the state store's encryption key.
 5. Run `npx task plan` to build assets and preview the `production` stage against the bootstrapped state store. Cloud tasks use `CI=true`, so missing credentials or a missing/outdated state store fail instead of prompting to set them up. Do not run a plan with an unfinished local bootstrap: Alchemy may resume it during state initialization.
-6. After reviewing the plan and approving deployment, run `npx task build` followed by `CI=true npx alchemy deploy --stage production --yes`. Deployment updates the Worker, binds D1, and applies pending SQL migrations. Serialize deployments to the same stage across orbs. Production access is account-scoped: stage names are not an authorization boundary.
+6. After reviewing the plan and approving deployment, run `npx task deploy -- --yes`. This builds assets, updates the Worker, binds D1, and applies pending SQL migrations. Serialize deployments to the same stage across orbs. Production access is account-scoped: stage names are not an authorization boundary.
 7. Open the returned HTTPS Worker URL and sign in with one of the two allowed Google accounts.
 
 All production requests, including assets and API, pass through Cloudflare Access. Keep the Worker-level allowlist in place; do not add bypass or account-wide policies as a workaround. Credential configuration and read access do not establish deployment permissions; verify cloud writes only during an approved bootstrap or deployment.
@@ -132,11 +138,11 @@ legacy version URLs, or a second production Worker. Requires the pinned Wrangler
 From the thread's working branch, with `AMP_THREAD_ID` set to its full thread ID:
 
 ```sh
-npm run preview -- up                 # Build, provision/update, migrate isolated D1, deploy, smoke-test
-npm run preview -- test               # Recheck Access/assets/API and D1 persistence; print latency samples
-npm run preview -- list               # Account-side inventory, including partially provisioned resources
-npm run preview -- down               # Delete this thread's Preview and ALL its supporting resources
-npm run preview -- gc                 # Delete managed previews past their cleanup deadline
+npx task preview -- up                # Build, provision/update, migrate isolated D1, deploy, smoke-test
+npx task preview -- test              # Recheck Access/assets/API and D1 persistence; print latency samples
+npx task preview -- list              # Account-side inventory, including partially provisioned resources
+npx task preview -- down              # Delete this thread's Preview and ALL its supporting resources
+npx task preview -- gc                # Delete managed previews past their cleanup deadline
 ```
 
 `up` prints the stable HTTPS URL, deployment ID, and UTC cleanup deadline. Sign in with the same Google
@@ -163,8 +169,8 @@ A new orb running `up` rotates only that Preview's token if its one-time secret 
 For additional API validation or performance fixtures, use the authenticated request helper:
 
 ```sh
-npm run preview -- request <name-from-list> GET /api/household
-npm run preview -- request <name-from-list> POST '/api/demo?today=2026-09-28' '{}'
+npx task preview -- request <name-from-list> GET /api/household
+npx task preview -- request <name-from-list> POST '/api/demo?today=2026-09-28' '{}'
 ```
 
 The built-in smoke test checks anonymous denial, authenticated HTML/JavaScript/API, and a disposable
@@ -185,8 +191,8 @@ a Preview. **The deadline is not a Cloudflare TTL: no background janitor runs.**
 orb deletion, or Cloudflare's Preview limits to remove D1/Access resources. For recovery from any orb:
 
 ```sh
-npm run preview -- list
-npm run preview -- down <name-from-list>
+npx task preview -- list
+npx task preview -- down <name-from-list>
 ```
 
 References: [Previews](https://developers.cloudflare.com/workers/previews/),
@@ -211,7 +217,7 @@ and securely refresh the owner's private credential file. See the workflow for l
 
 Keep the owner thread unarchived and do not deploy production concurrently from another orb.
 Its webhook URL and deployment ledger live in private, gitignored `.amp/deploy-state/` files.
-Run `npx vitest run tests/deploy.test.ts` for dispatch, interruption, and deduplication tests.
+Run `npx task test -- tests/deploy.test.ts` for dispatch, interruption, and deduplication tests.
 These tests do not deploy or replace the required live end-to-end test.
 
 ## Photo credits

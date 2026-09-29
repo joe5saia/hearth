@@ -294,9 +294,9 @@ export async function up(
       try {
         await manager.down(name);
       } catch (cleanup) {
-        console.error(`Rollback incomplete. Run npm run preview -- down ${name}.`, cleanup);
+        console.error(`Rollback incomplete. Run npx task preview -- down ${name}.`, cleanup);
       }
-    } else console.error(`Existing Preview preserved. Retry up or run npm run preview -- down ${name}.`);
+    } else console.error(`Existing Preview preserved. Retry up or run npx task preview -- down ${name}.`);
     throw error;
   }
 }
@@ -410,7 +410,7 @@ async function main(): Promise<void> {
   const [action = "help", argument, method, path, body] = process.argv.slice(2);
   if (!["up", "down", "list", "gc", "test", "request"].includes(action)) {
     console.log(
-      "npm run preview -- up | list | gc | down [name] | test [name] | request <name> <METHOD> </path> [JSON]\nup/gc removes resources past their seven-day cleanup deadline. No background timer runs. Use down when review ends.",
+      "npx task preview -- up | list | gc | down [name] | test [name] | request <name> <METHOD> </path> [JSON]\nup/gc removes resources past their seven-day cleanup deadline. No background timer runs. Use down when review ends.",
     );
     return;
   }
