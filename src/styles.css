@@ -1566,14 +1566,19 @@ main {
   margin-top: 14px;
 }
 .ingredient-list li {
-  display: flex;
-  justify-content: space-between;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
   gap: 15px;
   font-size: 1rem;
   padding: 13px 0;
   border-bottom: 1px solid var(--line);
 }
+.ingredient-list li > span {
+  overflow-wrap: anywhere;
+}
 .ingredient-list strong {
+  text-align: right;
   white-space: nowrap;
   font-weight: 500;
   color: #788b66;
@@ -2593,8 +2598,7 @@ textarea::placeholder {
   .primary,
   .secondary,
   .plan-footer .text-button,
-  .item-amount,
-  .ingredient-list strong {
+  .item-amount {
     white-space: normal;
   }
   .sidebar {
@@ -2694,9 +2698,6 @@ textarea::placeholder {
   }
   .custom-check {
     margin-top: 3px;
-  }
-  .ingredient-list li {
-    flex-wrap: wrap;
   }
   .toast {
     bottom: calc(8rem + env(safe-area-inset-bottom));
