@@ -7,6 +7,16 @@ people or agents to invoke those primitives instead of tasks. The bootstrap exce
 `npm ci` in a fresh checkout or orb setup, which installs the pinned Task executable itself.
 Git, Amp lifecycle/tool calls, and interactive browser inspection remain native operations.
 
+# Validation
+
+We do not use unit tests. Do not add or restore unit tests, including isolated tests with mocked dependencies.
+Every change must be validated with smoke tests or end-to-end testing that exercises the affected behavior.
+Use `npx task test` for the local integration smoke suite (Worker/D1/KV and deployment Git/persistence);
+use browser or isolated Preview
+end-to-end testing when the change requires UI or real Cloudflare coverage. Report what was exercised
+and the result. Type checking, linting, formatting checks, and builds supplement runtime validation;
+they do not replace it.
+
 # Git workflow
 
 ## Before making changes

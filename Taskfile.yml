@@ -30,7 +30,7 @@ tasks:
       - task: build
       - node tests/benchmark.ts {{.CLI_ARGS}}
   check:
-    desc: Run type checking, lint, formatting checks, and all tests
+    desc: Run type checking, lint, formatting checks, and integration smoke tests
     cmds:
       - task: typecheck
       - task: lint
@@ -43,7 +43,7 @@ tasks:
     desc: Run Oxlint and vendored rules (optional -- paths or flags)
     cmds: ["npm run lint -- {{.CLI_ARGS}}"]
   test:
-    desc: Run tests (optional -- test paths or Vitest flags)
+    desc: Run local integration smoke tests (optional -- test paths or Vitest flags)
     cmds: ["npm test -- {{.CLI_ARGS}}"]
   format:
     desc: Format source files (optional -- paths or flags)

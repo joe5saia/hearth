@@ -4,7 +4,6 @@ import { rolldown } from "rolldown";
 import { readFile } from "node:fs/promises";
 import { generateKeyPair, exportJWK, SignJWT } from "jose";
 import { z } from "zod";
-import { consentPage } from "../src/mcp-consent";
 import { updateRecipes } from "../src/recipes";
 
 let worker: Miniflare;
@@ -210,56 +209,6 @@ beforeAll(async () => {
 }, 30000);
 
 afterAll(async () => worker?.dispose());
-
-it("escapes consent metadata and renders only the requested permissions", () => {
-  const html = consentPage(
-    {
-      clientId,
-      clientName: '<img src=x onerror="alert(1)">',
-      redirectUri,
-      redirectHost: "client.example.com",
-      redirectIsLoopback: false,
-      scope: scopes,
-    },
-    'opaque"handle',
-  );
-
-  expect(html).not.toContain("<img");
-  expect(html).toContain("&#60;img");
-  expect(html).toContain('value="opaque&#34;handle"');
-  expect(html).toContain('name="scope" value="recipes" checked');
-  expect(html).toContain("Manage household recipes");
-  expect(html).toContain("Search, view, create and edit your household recipes.");
-  expect(html.match(/type="checkbox"/g)).toHaveLength(1);
-  expect(html).not.toContain('value="recipes:read"');
-  expect(html).not.toContain('value="recipes:write"');
-  expect(html).not.toContain("(on this computer)");
-  expect(html).toContain('name="decision" value="deny"');
-  expect(html).toContain("This app’s name is unverified");
-  expect(html).not.toContain("Any process on your computer");
-});
-
-it("shows the CIMD domain independently of the claimed name and warns for local apps", () => {
-  const html = consentPage(
-    {
-      clientId,
-      clientName: "Trusted Assistant",
-      clientDomain: "attacker.example<iframe>",
-      redirectUri,
-      redirectHost: "localhost",
-      redirectIsLoopback: true,
-      scope: scopes,
-    },
-    "handle",
-  );
-
-  expect(html).toContain("Trusted Assistant");
-  expect(html).toContain("Client domain: <strong>attacker.example&#60;iframe&#62;</strong>");
-  expect(html).not.toContain("<iframe>");
-  expect(html).not.toContain("This app’s name is unverified");
-  expect(html).toContain("Continue only if you just started connecting from this local app");
-  expect(html).toContain("Any process on your computer could be listening");
-});
 
 it("allows OAuth grants for only the configured preview service and rejects unrelated identities", async () => {
   const sign = (claims: { sub: string; common_name?: string; email?: string }) =>

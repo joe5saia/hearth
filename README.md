@@ -19,7 +19,7 @@ Taskfile.yml is the entry point for repository development commands, for people 
 Task is installed as a pinned npm development dependency, so bootstrap a fresh checkout with
 `npm ci`, then use `npx task` to list available tasks and `npx task install` to reinstall dependencies.
 Package scripts are implementation primitives, not the documented workflow. Pass arguments after
-`--`, for example `npx task test -- tests/deploy.test.ts`.
+`--`, for example `npx task test -- tests/api.test.ts`.
 
 `dev:web` enables Vite's experimental bundled dev mode to avoid module-request waterfalls over orb portals.
 It uses the `vite-dev` alias with Rolldown 1.2.9, matching Vite 8.3.1's embedded HMR runtime; Rolldown
@@ -45,13 +45,15 @@ The app uses one shared household, with no per-person app accounts or roles. Cha
 ## Check the app
 
 ```sh
-npx task check  # TypeScript, Oxlint + vendored rules, Oxfmt, and tests
+npx task check  # TypeScript, Oxlint + vendored rules, Oxfmt, and integration smoke tests
 npx task build
 ```
 
-Tests bundle the actual Worker with Rolldown and exercise disposable local D1 via Miniflare. They cover CRUD, SQL persistence, validation, delete protection, seeding, signed Access tokens, CSRF rejection, fractional scaling, date boundaries, compatible-unit conversion, and checkmark invalidation. Authentication tests verify valid tokens and reject forged signatures, incorrect issuers or audiences, expired or not-yet-valid tokens, and missing expiry or audience configuration. Tests do not use the development household database.
+We do not use unit tests. Every change must be validated with smoke tests or end-to-end testing of the affected behavior; static checks and builds alone are not sufficient.
 
-All generic [anti-slop](https://github.com/dmmulroy/anti-slop) rules are enabled in `oxlint.config.ts`. Their source, tests, license, and upstream revision are vendored under `tools/oxlint/anti-slop`. Do not modify the vendored snapshot during formatting.
+`npx task test` runs integration smoke tests that bundle the actual Workers with Rolldown and exercise disposable local D1/KV via Miniflare. They cover API CRUD, SQL persistence, validation, delete protection, seeding, signed Access tokens, CSRF rejection, and MCP OAuth and recipe operations. Authentication tests verify valid tokens and reject forged signatures, incorrect issuers or audiences, expired or not-yet-valid tokens, and missing expiry or audience configuration. Tests do not use the development household database. Use browser or isolated Preview end-to-end testing for changes needing UI or real Cloudflare coverage.
+
+All generic [anti-slop](https://github.com/dmmulroy/anti-slop) rules are enabled in `oxlint.config.ts`. Their source, CLI integration test, license, and upstream revision are vendored under `tools/oxlint/anti-slop`; unit tests are omitted. Do not modify the vendored snapshot during formatting.
 
 **Known sandbox limitation:** Oxlint 1.85's JS plugin allocator can crash on small E2B instances before linting ([upstream issue](https://github.com/oxc-project/oxc/issues/20331)). The check task reports that failure rather than bypassing rules. If affected, run `npx task check` on a machine that supports the plugin allocator before deployment.
 
@@ -217,8 +219,9 @@ and securely refresh the owner's private credential file. See the workflow for l
 
 Keep the owner thread unarchived and do not deploy production concurrently from another orb.
 Its webhook URL and deployment ledger live in private, gitignored `.amp/deploy-state/` files.
-Run `npx task test -- tests/deploy.test.ts` for dispatch, interruption, and deduplication tests.
-These tests do not deploy or replace the required live end-to-end test.
+`npx task test -- tests/deploy.test.ts` smoke-tests dispatch against a disposable Git repository and
+disk-backed interruption recovery and deduplication. It does not deploy production or replace live validation.
+Validate deployment changes with the required live end-to-end test described in the workflow.
 
 ## Recipe MCP server
 
