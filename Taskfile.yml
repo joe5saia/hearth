@@ -45,6 +45,9 @@ tasks:
   test:
     desc: Run local integration smoke tests (optional -- test paths or Vitest flags)
     cmds: ["npm test -- {{.CLI_ARGS}}"]
+  timers:smoke:
+    desc: Browser E2E with a real one-minute expiry (requires agent-browser and running local dev; optional -- local URL)
+    cmds: ["node tools/timers-smoke.ts {{.CLI_ARGS}}"]
   format:
     desc: Format source files (optional -- paths or flags)
     cmds: ["npm run format -- {{.CLI_ARGS}}"]

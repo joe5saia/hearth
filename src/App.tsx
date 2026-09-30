@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Option, Schema } from "effect";
+import { KitchenTimers } from "./KitchenTimers";
 import {
   ArrowDownToLine,
   ArrowRight,
@@ -131,12 +132,14 @@ function Dialog({
   children,
   wide = false,
   fullScreen = false,
+  timerHost,
 }: {
   title: string;
   close: () => void;
   children: ReactNode;
   wide?: boolean;
   fullScreen?: boolean;
+  timerHost?: (element: HTMLDivElement | null) => void;
 }) {
   const ref = useRef<HTMLDialogElement>(null);
   useEffect(() => {
@@ -178,6 +181,7 @@ function Dialog({
     >
       <div className="modal-heading">
         <h2>{title}</h2>
+        {timerHost && <div className="timer-slot" ref={timerHost} />}
         <button className="icon-button" aria-label="Close dialog" onClick={close}>
           <X size={20} />
         </button>
@@ -202,6 +206,8 @@ export function App() {
   const [end, setEnd] = useState(addDays(weekStart(), 6));
   const [extra, setExtra] = useState("");
   const [hideChecked, setHideChecked] = useState(false);
+  const [timerHeaderHost, setTimerHeaderHost] = useState<HTMLDivElement | null>(null);
+  const [timerDialogHost, setTimerDialogHost] = useState<HTMLDivElement | null>(null);
   const weekInput = useRef<HTMLInputElement>(null);
 
   const refresh = useCallback(async () => {
@@ -386,9 +392,7 @@ export function App() {
           <a className="mobile-brand" href="#plan" aria-label="Hearth meal plan">
             hearth.
           </a>
-          <span className="household-caption">
-            <span className="status-dot" /> Made for our household
-          </span>
+          <div className="timer-slot" ref={setTimerHeaderHost} />
           <button
             className="secondary"
             onClick={() => {
@@ -1017,6 +1021,11 @@ export function App() {
           </>
         )}
       </main>
+      <KitchenTimers
+        host={timerDialogHost ?? timerHeaderHost}
+        recipeName={modal?.kind === "recipe" ? modal.recipe.title : ""}
+        interactive={modal?.kind !== "meal"}
+      />
       {toast && (
         <div className="toast" role="status">
           <Check size={17} />
@@ -1025,6 +1034,7 @@ export function App() {
       )}
       {modal?.kind === "collections" && (
         <Dialog
+          timerHost={setTimerDialogHost}
           title="Manage collections"
           close={() => {
             setModal(null);
@@ -1069,6 +1079,7 @@ export function App() {
       )}
       {modal?.kind === "collection" && (
         <Dialog
+          timerHost={setTimerDialogHost}
           title={
             data.collections.some((collection) => collection.id === modal.collection.id)
               ? "Edit collection"
@@ -1130,6 +1141,7 @@ export function App() {
       )}
       {modal?.kind === "recipe" && (
         <Dialog
+          timerHost={setTimerDialogHost}
           title="Recipe details"
           close={() => {
             setModal(modal.meal ? { kind: "meal", meal: modal.meal } : null);
@@ -1148,12 +1160,13 @@ export function App() {
         </Dialog>
       )}
       {modal?.kind === "import" && (
-        <Dialog title="Import a recipe" close={() => setModal(null)}>
+        <Dialog timerHost={setTimerDialogHost} title="Import a recipe" close={() => setModal(null)}>
           <RecipeImport imported={(recipe, warnings) => setModal({ kind: "editor", recipe, warnings })} />
         </Dialog>
       )}
       {modal?.kind === "editor" && (
         <Dialog
+          timerHost={setTimerDialogHost}
           title={
             data.recipes.some((recipe) => recipe.id === modal.recipe.id) ? "Edit recipe" : "Add a recipe"
           }
@@ -1267,30 +1280,81 @@ function MealForm({
   viewRecipe: (recipe: Recipe, meal: Meal) => void;
 }) {
   const [draft, setDraft] = useState(meal);
+  const [recipeSearch, setRecipeSearch] = useState("");
+  const [debouncedRecipeSearch, setDebouncedRecipeSearch] = useState("");
+  const recipeSearchInput = useRef<HTMLInputElement>(null);
   const recipe = recipes.find((entry) => entry.id === draft.recipeId);
+  const searching = recipeSearch.trim() !== debouncedRecipeSearch;
+
+  const recipeResults = useMemo(
+    () => recipes.filter((entry) => matchesRecipeSearch(entry, debouncedRecipeSearch)),
+    [recipes, debouncedRecipeSearch],
+  );
+
+  useEffect(() => {
+    const timeout = window.setTimeout(() => setDebouncedRecipeSearch(recipeSearch.trim()), 300);
+
+    return () => window.clearTimeout(timeout);
+  }, [recipeSearch]);
 
   return (
     <form
       className="modal-form"
       onSubmit={(event) => {
         event.preventDefault();
-        save(draft);
+
+        if (recipe) save(draft);
       }}
     >
       <label>
         Recipe
-        <select
-          value={draft.recipeId}
-          required
-          onChange={(event) => setDraft({ ...draft, recipeId: event.target.value })}
-        >
-          {recipes.map((entry) => (
-            <option key={entry.id} value={entry.id}>
-              {entry.title}
-            </option>
-          ))}
-        </select>
+        <input
+          ref={recipeSearchInput}
+          type="search"
+          placeholder="Search recipes by name or ingredient…"
+          autoComplete="off"
+          value={recipeSearch}
+          onChange={(event) => setRecipeSearch(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key === "Enter") event.preventDefault();
+          }}
+          aria-describedby={recipeSearch.trim() ? "meal-recipe-search-status" : undefined}
+        />
       </label>
+      {recipeSearch.trim() && (
+        <div className="meal-recipe-results" aria-busy={searching}>
+          <p id="meal-recipe-search-status" role="status">
+            {searching
+              ? "Searching…"
+              : recipeResults.length
+                ? `${recipeResults.length} matching ${recipeResults.length === 1 ? "recipe" : "recipes"}`
+                : "No recipes found. Try another name or ingredient."}
+          </p>
+          {!searching && recipeResults.length > 0 && (
+            <ul aria-label="Matching recipes">
+              {recipeResults.map((entry) => (
+                <li key={entry.id}>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setDraft({ ...draft, recipeId: entry.id });
+                      setRecipeSearch("");
+                      setDebouncedRecipeSearch("");
+                      recipeSearchInput.current?.focus();
+                    }}
+                  >
+                    <span>{entry.title}</span>
+                    <small>
+                      {entry.minutes} min · {entry.servings} servings
+                    </small>
+                    {entry.id === draft.recipeId && <Check size={16} aria-label="Selected recipe" />}
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      )}
       {recipe && (
         <button
           type="button"
@@ -1381,7 +1445,7 @@ function MealForm({
             <Trash2 size={16} /> Remove meal
           </button>
         )}
-        <button className="primary" disabled={busy}>
+        <button className="primary" disabled={busy || !recipe}>
           {busy ? "Saving…" : "Save to meal plan"}
           <Check size={16} />
         </button>
