@@ -1,11 +1,11 @@
 :root {
   font-family: "DM Sans Variable", sans-serif;
-  color: #343c30;
+  color: #252e23;
   background: #faf9f5;
   font-synthesis: none;
   font-weight: 400;
-  --olive: #4e6045;
-  --muted: #5f6956;
+  --olive: #3f5136;
+  --muted: #424c3b;
   --line: #e5e5db;
   --serif: "Lora Variable", Georgia, serif;
 }
@@ -81,7 +81,7 @@ select {
   border: 1px solid #808773;
   border-radius: 6px;
   background: #fffefa;
-  color: #343c30;
+  color: #252e23;
   padding: 11px 12px;
   outline: none;
   min-width: 0;
@@ -143,7 +143,7 @@ small {
   color: #5c6b4d;
 }
 .brand-dot {
-  color: #b78b6b;
+  color: #795538;
   margin-left: -10px;
 }
 .brand-caption {
@@ -306,7 +306,7 @@ main {
 .secondary {
   border: 1px solid #daddce;
   background: #fcfbf8;
-  color: #5e6850;
+  color: var(--olive);
 }
 .secondary:hover {
   background: #eef0e5;
@@ -803,7 +803,7 @@ main {
   margin: 5px 0 8px;
 }
 .recipe-row-main > div > p {
-  font-size: 11px;
+  font-size: 0.875rem;
   line-height: 1.6;
   color: #929585;
   max-width: 540px;
@@ -840,13 +840,13 @@ main {
   border-radius: 6px;
 }
 .rating-up {
-  color: #397749;
+  color: #2e633b;
 }
 .rating-neutral {
-  color: #947414;
+  color: #73570c;
 }
 .rating-down {
-  color: #a34d46;
+  color: #873b35;
 }
 .recipe-rating button:hover,
 .recipe-rating button[aria-pressed="true"] {
@@ -1230,7 +1230,7 @@ main {
   color: #526343;
 }
 .error {
-  color: #a6533d;
+  color: #7c3d28;
   background: #faeee7;
   border: 1px solid #ebd1c3;
   border-radius: 5px;
@@ -1265,7 +1265,7 @@ main {
   width: min(520px, calc(100% - 32px));
   max-height: 90vh;
   background: #faf9f4;
-  color: #343c30;
+  color: #252e23;
   box-shadow: 0 22px 90px #1f2b2740;
   overscroll-behavior: contain;
 }
@@ -1451,7 +1451,7 @@ main {
   letter-spacing: -0.6px;
 }
 .detail-title > p {
-  font-size: 12px;
+  font-size: 1rem;
   line-height: 1.8;
   color: #909581;
 }
@@ -1460,7 +1460,7 @@ main {
   align-items: center;
   gap: 24px;
   margin-top: 20px;
-  font-size: 11px;
+  font-size: 0.875rem;
   color: #89967b;
 }
 .detail-meta > span {
@@ -1499,7 +1499,7 @@ main {
   display: flex;
   justify-content: space-between;
   gap: 15px;
-  font-size: 11px;
+  font-size: 1rem;
   padding: 13px 0;
   border-bottom: 1px solid var(--line);
 }
@@ -1530,9 +1530,12 @@ main {
   font-size: 10px;
 }
 .instructions p {
-  font-size: 11px;
+  font-size: 1rem;
   line-height: 1.9;
   color: #878e7b;
+}
+.recipe-detail .field-hint {
+  font-size: 0.875rem;
 }
 .detail-footer {
   display: flex;
@@ -1620,7 +1623,7 @@ main {
 .delete-confirm button {
   margin-right: 18px;
 }
-/* Secondary copy still needs normal-text contrast on the cream and sage surfaces. */
+/* Keep secondary text readable on every cream and sage surface. */
 .brand-caption,
 .sidebar nav a,
 .sidebar-bottom > p,
@@ -1628,6 +1631,7 @@ main {
 .topbar,
 .page-heading p,
 .week-navigation h2 span,
+.week-jump,
 .today-button,
 .shopping-summary span,
 .day-heading > span:first-child,
@@ -1641,8 +1645,10 @@ main {
 .category-label,
 .recipe-tile p,
 .page-footer,
+.search-box,
 .recipe-row-main > div > p,
 .row-meta,
+.date-range,
 .date-range label,
 .range-count,
 .count-pill,
@@ -1656,10 +1662,13 @@ main {
 .meal-notes-panel p,
 .meal-notes-panel small,
 .welcome p,
+.empty-state,
+.empty-state h2,
 .empty-state p,
 .icon-button,
 .selected-recipe small,
 .scale-panel p,
+.scale-input,
 .field-hint,
 .detail-title > p,
 .detail-meta,
@@ -1671,10 +1680,10 @@ main {
   color: var(--muted);
 }
 .meal-meta > span {
-  color: #795538;
+  color: #67482f;
 }
 .danger {
-  color: #91472f;
+  color: #7c3d28;
 }
 input::placeholder,
 textarea::placeholder {
@@ -1943,7 +1952,7 @@ textarea::placeholder {
     padding: 11px 15px;
     border-radius: 0;
     background: none;
-    color: #989f8a;
+    color: var(--muted);
   }
   .sidebar nav a.active {
     color: #4e6840;
@@ -2059,12 +2068,12 @@ textarea::placeholder {
   }
   .meal-meta {
     font-size: 10px;
-    color: #68755c;
+    color: var(--muted);
     margin-top: 6px;
   }
   .meal-note {
     font-size: 11px;
-    color: #777060;
+    color: var(--muted);
     margin-top: 7px;
     padding-top: 7px;
   }
@@ -2074,7 +2083,7 @@ textarea::placeholder {
   .add-day {
     min-height: 44px;
     font-size: 11px;
-    color: #60734f;
+    color: var(--muted);
   }
   .shopping-summary {
     flex-wrap: wrap;
@@ -2388,7 +2397,7 @@ textarea::placeholder {
   .icon-button,
   .today-button,
   .sidebar nav a {
-    color: #617054;
+    color: var(--muted);
   }
   .detail-footer a {
     min-height: 44px;
