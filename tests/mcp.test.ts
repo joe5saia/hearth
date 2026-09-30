@@ -196,11 +196,11 @@ beforeAll(async () => {
   );
   const db = await worker.getD1Database("DB");
 
-  for (const file of ["0001_initial.sql", "0002_recipe_rating.sql"]) {
+  for (const file of ["0001_initial.sql", "0002_recipe_rating.sql", "0003_collections.sql"]) {
     const sql = await readFile(`migrations/${file}`, "utf8");
     await db.batch(
       sql
-        .split(";")
+        .split(/;\n(?=CREATE|INSERT)|;\s*$/)
         .filter((s) => s.trim())
         .map((s) => db.prepare(s)),
     );
@@ -332,6 +332,56 @@ it("requires the recipes scope even for an authenticated client", async () => {
   expect(response.headers.get("WWW-Authenticate")).toContain('scope="recipes"');
   expect(response.headers.get("WWW-Authenticate")).toContain("insufficient_scope");
   token = await login();
+});
+
+it("rejects mixed valid and nonexistent collections with actionable errors and no partial writes", async () => {
+  const db = await worker.getD1Database("DB");
+  const before = await db.prepare("SELECT * FROM recipes ORDER BY id").all();
+
+  const failedCreate = await call("create_recipes", {
+    recipes: [draft("Must not persist"), { ...draft("Invalid collection"), category: "Missing collection" }],
+  });
+
+  expect(failedCreate.isError).toBe(true);
+  expect(failedCreate.content[0].text).toContain("Choose an existing collection name");
+  expect(failedCreate.content[0].text).toContain("No recipes were changed");
+  expect((await db.prepare("SELECT * FROM recipes ORDER BY id").all()).results).toEqual(before.results);
+  const created = await call("create_recipes", { recipes: [draft("Membership A"), draft("Membership B")] });
+  const [a, b] = created.structuredContent.recipes;
+
+  const failedUpdate = await call("update_recipes", {
+    updates: [
+      { id: a.id, changes: { title: "Must not rename" } },
+      { id: b.id, changes: { category: "Missing collection" } },
+    ],
+  });
+
+  expect(failedUpdate.isError).toBe(true);
+  expect(failedUpdate.content[0].text).toContain("Choose an existing collection name");
+  expect(failedUpdate.content[0].text).toContain("No recipes were changed");
+  expect((await call("get_recipes", { ids: [a.id, b.id] })).structuredContent.recipes).toEqual([a, b]);
+  await db.batch([
+    db.prepare("DELETE FROM recipes WHERE id=?").bind(a.id),
+    db.prepare("DELETE FROM recipes WHERE id=?").bind(b.id),
+  ]);
+});
+
+it("accepts custom collections and Uncollected in recipe tool inputs and outputs", async () => {
+  const db = await worker.getD1Database("DB");
+  await db.prepare("INSERT INTO collections(id,name) VALUES('holiday','Holiday meals')").run();
+
+  const created = await call("create_recipes", {
+    recipes: [{ ...draft("Holiday recipe"), category: "Holiday meals" }],
+  });
+
+  expect(created.isError).not.toBe(true);
+  const saved = created.structuredContent.recipes[0];
+  expect(saved.category).toBe("Holiday meals");
+  const updated = await call("update_recipes", { updates: [{ id: saved.id, changes: { category: "" } }] });
+  expect(updated.isError).not.toBe(true);
+  expect(updated.structuredContent.recipes[0].category).toBe("");
+  await db.prepare("DELETE FROM recipes WHERE id=?").bind(saved.id).run();
+  await db.prepare("DELETE FROM collections WHERE id='holiday'").run();
 });
 
 it("creates batches, searches like the app, paginates empty/end pages, and gets requested IDs", async () => {

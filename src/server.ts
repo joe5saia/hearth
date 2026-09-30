@@ -6,6 +6,8 @@ import {
   RecipeSchema,
   ExtraSchema,
   CheckSchema,
+  CollectionSchema,
+  type Collection,
   validDate,
   type Meal,
   type Extra,
@@ -49,23 +51,76 @@ function api(request: Request, env: WebsiteEnv) {
     const db = env.DB;
 
     if (method === "GET" && path === "/api/household") {
-      const [recipes, meals, extras, checks] = yield* database(() =>
-        Promise.all([
-          db.prepare("SELECT * FROM recipes ORDER BY title").all<RecipeRow>(),
-          db.prepare("SELECT * FROM meals ORDER BY date,slot,id").all<Meal>(),
-          db.prepare("SELECT * FROM extras ORDER BY rowid").all<Extra>(),
-          db.prepare("SELECT * FROM checks WHERE checked=1").all<{ key: string; checked: number }>(),
-        ]),
-      );
+      const [recipes, meals, extras, checks, collections] = yield* database(async () => {
+        const results = await db.batch([
+          db.prepare("SELECT * FROM recipes ORDER BY title"),
+          db.prepare("SELECT * FROM meals ORDER BY date,slot,id"),
+          db.prepare("SELECT * FROM extras ORDER BY rowid"),
+          db.prepare("SELECT * FROM checks WHERE checked=1"),
+          db.prepare("SELECT * FROM collections ORDER BY name"),
+        ]);
+
+        // SAFETY: These fixed SELECTs return the listed row types in this order.
+        // One D1 batch keeps recipes and collections in the same transaction snapshot.
+        return results as [
+          D1Result<RecipeRow>,
+          D1Result<Meal>,
+          D1Result<Extra>,
+          D1Result<{ key: string; checked: number }>,
+          D1Result<Collection>,
+        ];
+      });
 
       const parsed = recipes.results.map(parseRecipe);
 
       return Response.json({
+        collections: collections.results,
         recipes: parsed,
         meals: meals.results,
         extras: extras.results,
         checks: checks.results,
       } satisfies Household);
+    }
+
+    if (method === "PUT" && path === "/api/collections") {
+      const body = yield* readJson(request);
+
+      const collection = yield* Schema.decodeUnknownEffect(CollectionSchema)(body).pipe(
+        Effect.mapError(() => invalid("Add a collection name.")),
+      );
+
+      const name = collection.name.trim();
+
+      if (!collection.id || collection.id.length > 100 || !name || name.length > 100)
+        return yield* Effect.fail(invalid("Add a collection name of 100 characters or less."));
+
+      const result = yield* database(() =>
+        db
+          .prepare(`INSERT INTO collections(id,name) SELECT ?,? WHERE NOT EXISTS
+          (SELECT 1 FROM collections WHERE name=? AND id<>?)
+          ON CONFLICT(id) DO UPDATE SET name=excluded.name`)
+          .bind(collection.id, name, name, collection.id)
+          .run(),
+      );
+
+      if (!result.meta.changes)
+        return yield* Effect.fail(
+          new ApiError({ status: 409, message: "A collection with that name already exists." }),
+        );
+
+      return Response.json({ ok: true });
+    }
+
+    if (method === "DELETE" && path.startsWith("/api/collections/")) {
+      const id = yield* decodeId(path, "/api/collections/");
+      const result = yield* database(() => db.prepare("DELETE FROM collections WHERE id=?").bind(id).run());
+
+      if (!result.meta.changes)
+        return yield* Effect.fail(
+          new ApiError({ status: 404, message: "That collection no longer exists." }),
+        );
+
+      return Response.json({ ok: true });
     }
 
     if (method === "POST" && path === "/api/recipes/import") {
@@ -106,6 +161,16 @@ function api(request: Request, env: WebsiteEnv) {
             "Check your recipe: add a title, positive quantities, ingredients, instructions, and valid URLs.",
           ),
         );
+
+      if (recipe.category) {
+        const collection = yield* database(() =>
+          db.prepare("SELECT id FROM collections WHERE name=? COLLATE BINARY").bind(recipe.category).first(),
+        );
+
+        if (!collection)
+          return yield* Effect.fail(invalid("That collection no longer exists. Choose another collection."));
+      }
+
       yield* database(() => recipeStatement(db, recipe).run());
 
       return Response.json({ ok: true });
@@ -250,9 +315,21 @@ function api(request: Request, env: WebsiteEnv) {
         return yield* Effect.fail(
           new ApiError({ status: 409, message: "Sample recipes are only added to an empty household." }),
         );
+
+      const collections = yield* database(() =>
+        db.prepare("SELECT name FROM collections").all<{ name: string }>(),
+      );
+
       yield* database(() =>
         db.batch([
-          ...sampleRecipes.map((recipe) => recipeStatement(db, recipe)),
+          ...sampleRecipes.map((recipe) =>
+            recipeStatement(db, {
+              ...recipe,
+              category: collections.results.some((collection) => collection.name === recipe.category)
+                ? recipe.category
+                : "",
+            }),
+          ),
           ...sampleMeals(today).map((meal) => mealStatement(db, meal)),
           db.prepare("INSERT INTO extras(id,name,checked) VALUES('sample-extra','Greek yogurt',0)"),
         ]),

@@ -1,5 +1,5 @@
 import { Schema } from "effect";
-import { RecipeSchema, categories, units, type Recipe } from "./domain";
+import { RecipeSchema, units, type Recipe } from "./domain";
 
 export type RecipeRow = Omit<Recipe, "ingredients" | "instructions"> & {
   ingredients: string;
@@ -38,7 +38,7 @@ export function validateRecipe(recipe: Recipe): boolean {
     Number.isInteger(recipe.minutes) &&
     recipe.minutes > 0 &&
     recipe.minutes <= 10000 &&
-    categories.includes(recipe.category) &&
+    recipe.category.length <= 100 &&
     safeUrl(recipe.source) &&
     (safeUrl(recipe.photo) ||
       /^\/photos\/[a-z-]+\.jpg$/.test(recipe.photo) ||
@@ -96,6 +96,17 @@ export async function getRecipes(db: D1Database, ids: string[]) {
 
 export class RecipeInputError extends Error {}
 
+async function validateCollections(db: D1Database, names: readonly string[]) {
+  if (!names.some((name) => name !== "")) return;
+  const collections = await db.prepare("SELECT name FROM collections").all<{ name: string }>();
+  const existing = new Set(collections.results.map((collection) => collection.name));
+
+  if (names.some((name) => name !== "" && !existing.has(name)))
+    throw new RecipeInputError(
+      "A collection no longer exists. Choose an existing collection name or use an empty string for Uncollected. No recipes were changed.",
+    );
+}
+
 export async function createRecipes(db: D1Database, inputs: Omit<Recipe, "id">[]) {
   const recipes = inputs.map((input) => ({ ...input, id: crypto.randomUUID(), title: input.title.trim() }));
 
@@ -103,6 +114,10 @@ export async function createRecipes(db: D1Database, inputs: Omit<Recipe, "id">[]
     throw new RecipeInputError(
       "Invalid recipe: check title, quantities, instructions, category, and URLs. No recipes were created.",
     );
+  await validateCollections(
+    db,
+    recipes.map((recipe) => recipe.category),
+  );
   await db.batch(
     recipes.flatMap((recipe) => [
       recipeStatement(db, recipe),
@@ -132,6 +147,10 @@ export async function updateRecipes(
     throw new RecipeInputError(
       "Invalid changes: check title, quantities, instructions, category, and URLs. No recipes were updated.",
     );
+  await validateCollections(
+    db,
+    updates.flatMap(({ changes }) => (changes.category === undefined ? [] : [changes.category])),
+  );
   const ids = updates.map((update) => update.id);
   const existenceGuard = `(SELECT COUNT(*) FROM recipes WHERE id IN (${ids.map(() => "?").join(",")}))=?`;
 

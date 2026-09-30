@@ -741,10 +741,32 @@ main {
 }
 .recipe-toolbar {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
   gap: 15px;
   margin: 0 0 20px;
+}
+.recipe-toolbar > label:not(.search-box) {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  max-width: 100%;
+}
+.recipe-toolbar select {
+  min-width: 0;
+  max-width: 260px;
+}
+.collection-row {
+  gap: 16px;
+}
+.collection-row > div {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.collection-row > button {
+  flex-shrink: 0;
 }
 .search-box {
   display: flex;
@@ -2134,7 +2156,8 @@ textarea::placeholder {
     font-size: 8px;
   }
   .recipe-toolbar {
-    display: block;
+    display: flex;
+    align-items: stretch;
   }
   .search-box {
     width: 100%;

@@ -29,7 +29,6 @@ import {
 } from "lucide-react";
 import {
   addDays,
-  categories,
   checkKey,
   dateKey,
   displayAmount,
@@ -43,6 +42,7 @@ import {
   RecipeSchema,
   HouseholdSchema,
   type Household,
+  type Collection,
   type Ingredient,
   type Meal,
   type Recipe,
@@ -52,12 +52,14 @@ import {
 type Page = "plan" | "recipes" | "shopping";
 
 type Modal =
+  | { kind: "collections" }
+  | { kind: "collection"; collection: Collection }
   | { kind: "meal"; meal: Meal }
   | { kind: "recipe"; recipe: Recipe; meal?: Meal }
   | { kind: "import" }
   | { kind: "editor"; recipe: Recipe; warnings?: readonly string[] };
 
-const emptyHousehold: Household = { recipes: [], meals: [], extras: [], checks: [] };
+const emptyHousehold: Household = { collections: [], recipes: [], meals: [], extras: [], checks: [] };
 
 const readableDate = (
   date: string,
@@ -72,6 +74,7 @@ async function api(
   method = "GET",
   body?:
     | Recipe
+    | Collection
     | Meal
     | { url: string }
     | { id: string; name: string; checked: number }
@@ -194,6 +197,7 @@ export function App() {
   const [week, setWeek] = useState(weekStart());
   const [modal, setModal] = useState<Modal | null>(null);
   const [search, setSearch] = useState("");
+  const [collectionFilter, setCollectionFilter] = useState("all");
   const [start, setStart] = useState(weekStart());
   const [end, setEnd] = useState(addDays(weekStart(), 6));
   const [extra, setExtra] = useState("");
@@ -274,7 +278,7 @@ export function App() {
         description: "",
         servings: 4,
         minutes: 30,
-        category: "Weeknight favorites",
+        category: data.collections.find((collection) => collection.id === collectionFilter)?.name ?? "",
         photo: "",
         source: "",
         rating: "neutral",
@@ -285,7 +289,15 @@ export function App() {
 
   const weekMeals = data.meals.filter((meal) => meal.date >= week && meal.date <= addDays(week, 6));
 
-  const matchingRecipes = data.recipes.filter((recipe) => matchesRecipeSearch(recipe, search));
+  const selectedCollection = data.collections.find((collection) => collection.id === collectionFilter);
+
+  const matchingRecipes = data.recipes.filter(
+    (recipe) =>
+      matchesRecipeSearch(recipe, search) &&
+      (collectionFilter === "uncollected"
+        ? !recipe.category
+        : !selectedCollection || recipe.category === selectedCollection.name),
+  );
 
   const items = useMemo(
     () => shoppingList(data.recipes, data.meals, start, end),
@@ -645,8 +657,41 @@ export function App() {
                       onChange={(event) => setSearch(event.target.value)}
                     />
                   </label>
-                  <span className="muted small">{matchingRecipes.length} recipes in your collection</span>
+                  <label>
+                    <span className="muted small">Collection</span>
+                    <select
+                      aria-label="Filter by collection"
+                      value={
+                        selectedCollection
+                          ? collectionFilter
+                          : collectionFilter === "uncollected"
+                            ? "uncollected"
+                            : "all"
+                      }
+                      onChange={(event) => setCollectionFilter(event.target.value)}
+                    >
+                      <option value="all">All recipes</option>
+                      <option value="uncollected">Uncollected</option>
+                      {data.collections.map((collection) => (
+                        <option key={collection.id} value={collection.id}>
+                          {collection.name}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <button
+                    className="secondary"
+                    onClick={() => {
+                      setError("");
+                      setModal({ kind: "collections" });
+                    }}
+                  >
+                    <SlidersHorizontal size={16} /> Manage collections
+                  </button>
                 </div>
+                <p className="muted small">
+                  {matchingRecipes.length} {matchingRecipes.length === 1 ? "recipe" : "recipes"}
+                </p>
                 <div className="recipe-list">
                   {matchingRecipes.map((recipe) => (
                     <article className="recipe-row" key={recipe.id}>
@@ -656,7 +701,7 @@ export function App() {
                       >
                         <Photo recipe={recipe} />
                         <div>
-                          <span className="category-label">{recipe.category}</span>
+                          <span className="category-label">{recipe.category || "Uncollected"}</span>
                           <h2>{recipe.title}</h2>
                           <p>{recipe.description}</p>
                           <div className="row-meta">
@@ -978,6 +1023,88 @@ export function App() {
           {toast}
         </div>
       )}
+      {modal?.kind === "collections" && (
+        <Dialog
+          title="Manage collections"
+          close={() => {
+            setModal(null);
+            setError("");
+          }}
+        >
+          <div className="modal-form">
+            <p className="muted">
+              Organize your recipes into collections. Deleting a collection keeps its recipes.
+            </p>
+            {data.collections.map((collection) => (
+              <div className="section-heading collection-row" key={collection.id}>
+                <div>
+                  <strong>{collection.name}</strong>
+                  <p className="muted small">
+                    {data.recipes.filter((recipe) => recipe.category === collection.name).length}{" "}
+                    {data.recipes.filter((recipe) => recipe.category === collection.name).length === 1
+                      ? "recipe"
+                      : "recipes"}
+                  </p>
+                </div>
+                <button
+                  className="secondary small-button"
+                  aria-label={`Edit ${collection.name}`}
+                  onClick={() => setModal({ kind: "collection", collection })}
+                >
+                  <Pencil size={16} /> Edit
+                </button>
+              </div>
+            ))}
+            {!data.collections.length && <p>No collections yet. Add one to get started.</p>}
+            <button
+              className="primary"
+              onClick={() =>
+                setModal({ kind: "collection", collection: { id: crypto.randomUUID(), name: "" } })
+              }
+            >
+              <Plus size={16} /> Add collection
+            </button>
+          </div>
+        </Dialog>
+      )}
+      {modal?.kind === "collection" && (
+        <Dialog
+          title={
+            data.collections.some((collection) => collection.id === modal.collection.id)
+              ? "Edit collection"
+              : "Add collection"
+          }
+          close={() => {
+            setModal({ kind: "collections" });
+            setError("");
+          }}
+        >
+          <CollectionForm
+            collection={modal.collection}
+            busy={busy}
+            error={error}
+            save={async (collection) => {
+              if (await mutate("collections", "PUT", collection, "Collection saved"))
+                setModal({ kind: "collections" });
+            }}
+            remove={
+              data.collections.some((collection) => collection.id === modal.collection.id)
+                ? async () => {
+                    if (
+                      await mutate(
+                        `collections/${encodeURIComponent(modal.collection.id)}`,
+                        "DELETE",
+                        undefined,
+                        "Collection deleted; recipes kept",
+                      )
+                    )
+                      setModal({ kind: "collections" });
+                  }
+                : undefined
+            }
+          />
+        </Dialog>
+      )}
       {modal?.kind === "meal" && (
         <Dialog
           title={data.meals.some((meal) => meal.id === modal.meal.id) ? "Edit meal" : "Add a meal"}
@@ -1038,6 +1165,7 @@ export function App() {
         >
           <RecipeForm
             recipe={modal.recipe}
+            collections={data.collections}
             warnings={modal.warnings}
             busy={busy}
             error={error}
@@ -1051,6 +1179,73 @@ export function App() {
         </Dialog>
       )}
     </div>
+  );
+}
+
+function CollectionForm({
+  collection,
+  busy,
+  error,
+  save,
+  remove,
+}: {
+  collection: Collection;
+  busy: boolean;
+  error: string;
+  save: (collection: Collection) => Promise<void>;
+  remove?: () => Promise<void>;
+}) {
+  const [name, setName] = useState(collection.name);
+  const [confirmDelete, setConfirmDelete] = useState(false);
+
+  return (
+    <form
+      className="modal-form"
+      onSubmit={(event) => {
+        event.preventDefault();
+        save({ ...collection, name });
+      }}
+    >
+      <label>
+        Collection name
+        <input
+          required
+          maxLength={100}
+          value={name}
+          onChange={(event) => setName(event.target.value)}
+          autoFocus
+        />
+      </label>
+      {error && (
+        <p className="error" role="alert">
+          {error}
+        </p>
+      )}
+      {confirmDelete ? (
+        <div className="delete-confirm">
+          <p>
+            Delete “{collection.name}”? Its recipes will stay saved as Uncollected. This cannot be undone.
+          </p>
+          <button type="button" className="danger" disabled={busy} onClick={remove}>
+            Delete collection
+          </button>
+          <button type="button" className="secondary" disabled={busy} onClick={() => setConfirmDelete(false)}>
+            Cancel
+          </button>
+        </div>
+      ) : (
+        <div className="form-actions">
+          {remove && (
+            <button type="button" className="danger" disabled={busy} onClick={() => setConfirmDelete(true)}>
+              <Trash2 size={16} /> Delete collection
+            </button>
+          )}
+          <button className="primary" disabled={busy || !name.trim()}>
+            Save collection
+          </button>
+        </div>
+      )}
+    </form>
   );
 }
 
@@ -1364,6 +1559,7 @@ function RecipeImport({ imported }: { imported: (recipe: Recipe, warnings: reado
 
 function RecipeForm({
   recipe,
+  collections,
   warnings,
   busy,
   error,
@@ -1371,13 +1567,18 @@ function RecipeForm({
   remove,
 }: {
   recipe: Recipe;
+  collections: readonly Collection[];
   warnings?: readonly string[];
   busy: boolean;
   error: string;
   save: (recipe: Recipe) => Promise<boolean>;
   remove?: () => Promise<boolean>;
 }) {
-  const [draft, setDraft] = useState(recipe);
+  const [draft, setDraft] = useState({
+    ...recipe,
+    category: collections.some((collection) => collection.name === recipe.category) ? recipe.category : "",
+  });
+
   const [photoError, setPhotoError] = useState("");
   const [confirmDelete, setConfirmDelete] = useState(false);
 
@@ -1473,8 +1674,11 @@ function RecipeForm({
             value={draft.category}
             onChange={(event) => setDraft({ ...draft, category: event.target.value })}
           >
-            {categories.map((value) => (
-              <option key={value}>{value}</option>
+            <option value="">Uncollected</option>
+            {collections.map((collection) => (
+              <option key={collection.id} value={collection.name}>
+                {collection.name}
+              </option>
             ))}
           </select>
         </label>

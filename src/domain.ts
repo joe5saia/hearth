@@ -41,7 +41,12 @@ export const ExtraSchema = Schema.Struct({ id: Schema.String, name: Schema.Strin
 
 export const CheckSchema = Schema.Struct({ key: Schema.String, checked: Schema.Number });
 
+export const CollectionSchema = Schema.Struct({ id: Schema.String, name: Schema.String });
+
+export type Collection = typeof CollectionSchema.Type;
+
 export const HouseholdSchema = Schema.Struct({
+  collections: Schema.Array(CollectionSchema),
   recipes: Schema.Array(RecipeSchema),
   meals: Schema.Array(MealSchema),
   extras: Schema.Array(ExtraSchema),
@@ -69,8 +74,6 @@ export const units = [
   "pinch",
   "slice",
 ];
-
-export const categories = ["Weeknight favorites", "Vegetarian", "Comfort food", "Something special"];
 
 export function matchesRecipeSearch(recipe: Pick<Recipe, "title" | "ingredients">, search: string): boolean {
   return `${recipe.title} ${recipe.ingredients.map((item) => item.name).join(" ")}`

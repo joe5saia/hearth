@@ -106,7 +106,7 @@ for (const [name, recipeCount, mealCount, photoBytes] of [
       const sql = await readFile(`migrations/${file}`, "utf8");
       await db.batch(
         sql
-          .split(";")
+          .split(/;\n(?=CREATE|INSERT)|;\s*$/)
           .filter((statement) => statement.trim())
           .map((statement) => db.prepare(statement)),
       );
@@ -143,6 +143,12 @@ for (const [name, recipeCount, mealCount, photoBytes] of [
     assert.equal(response.status, 200);
     const body = await response.text();
     assert.deepEqual(JSON.parse(body), {
+      collections: [
+        { id: "comfort", name: "Comfort food" },
+        { id: "special", name: "Something special" },
+        { id: "vegetarian", name: "Vegetarian" },
+        { id: "weeknight", name: "Weeknight favorites" },
+      ],
       recipes,
       meals: meals.toSorted((a, b) => a.date.localeCompare(b.date) || a.id.localeCompare(b.id)),
       extras: [],

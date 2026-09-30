@@ -1,6 +1,5 @@
 import { Option, Schema } from "effect";
 import { decodeHTML } from "entities";
-import { categories } from "./domain";
 
 const Step = Schema.Struct({ text: Schema.String });
 
@@ -210,7 +209,7 @@ export function parseRecipeHtml(html: string, source: string) {
           description: plainText(data.description ?? ""),
           servings,
           minutes,
-          category: categories[0],
+          category: "",
           source,
           photo: Option.isSome(photo) ? photo.value : Option.isSome(imageObject) ? imageObject.value.url : "",
           rating: "neutral" as const,

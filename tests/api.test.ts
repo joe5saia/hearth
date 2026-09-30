@@ -6,6 +6,8 @@ import { exportJWK, generateKeyPair, SignJWT, type JSONWebKeySet, type JWTPayloa
 import { sampleRecipes } from "../src/seed";
 import { Schema } from "effect";
 import { HouseholdSchema, RecipeSchema, type Meal } from "../src/domain";
+import server from "../src/server";
+import type { WebsiteEnv } from "../alchemy.run";
 
 let worker: Miniflare;
 
@@ -14,6 +16,13 @@ let script = "";
 let signingKey: CryptoKey;
 
 let publicKeys: JSONWebKeySet;
+
+const defaultCollections = [
+  { id: "comfort", name: "Comfort food" },
+  { id: "special", name: "Something special" },
+  { id: "vegetarian", name: "Vegetarian" },
+  { id: "weeknight", name: "Weeknight favorites" },
+];
 
 const meal: Meal = {
   id: "test-meal",
@@ -87,6 +96,13 @@ beforeAll(async () => {
   const statements = sql.split(";").flatMap((statement) => (statement.trim() ? [db.prepare(statement)] : []));
   await db.batch(statements);
   await db.prepare(await readFile("migrations/0002_recipe_rating.sql", "utf8")).run();
+  const collectionsSql = await readFile("migrations/0003_collections.sql", "utf8");
+  await db.batch(
+    collectionsSql
+      .split(/;\n(?=CREATE|INSERT)|;\s*$/)
+      .filter((s) => s.trim())
+      .map((s) => db.prepare(s)),
+  );
 }, 30000);
 
 beforeEach(async () => {
@@ -97,6 +113,10 @@ beforeEach(async () => {
     db.prepare("DELETE FROM recipes"),
     db.prepare("DELETE FROM extras"),
     db.prepare("DELETE FROM checks"),
+    db.prepare("DELETE FROM collections"),
+    ...defaultCollections.map((collection) =>
+      db.prepare("INSERT INTO collections(id,name) VALUES(?,?)").bind(collection.id, collection.name),
+    ),
   ]);
 });
 
@@ -112,9 +132,204 @@ const send = (path: string, method: string, body: string) =>
   });
 
 describe("real Worker with disposable SQLite D1", () => {
+  it("returns one household snapshot when a collection is renamed during a read", async () => {
+    const recipe = { ...sampleRecipes[0], category: "Vegetarian" };
+    expect((await send("recipes", "PUT", JSON.stringify(recipe))).status).toBe(200);
+    const db = await worker.getD1Database("DB");
+    let resolveRename!: () => void;
+
+    const renamed = new Promise<void>((resolve) => {
+      resolveRename = resolve;
+    });
+
+    const rename = async () => {
+      await db.prepare("UPDATE collections SET name='Plant-based' WHERE id='vegetarian'").run();
+      resolveRename();
+    };
+
+    // SAFETY: Only prepare and batch are used by this route, both backed by real D1.
+    // Separate reads force the rename between recipes and collections; a batch
+    // returns its complete snapshot before the competing rename is applied.
+    const racingDb = {
+      prepare(sql: string) {
+        const statement = db.prepare(sql);
+        const read = statement.all.bind(statement);
+        statement.all = async <T>() => {
+          if (sql.includes("FROM collections")) await renamed;
+          const result = await read<T>();
+
+          if (sql.includes("FROM recipes")) await rename();
+
+          return result;
+        };
+
+        return statement;
+      },
+      async batch(statements: Parameters<typeof db.batch>[0]) {
+        const results = await db.batch(statements);
+        await rename();
+
+        return results;
+      },
+    } as D1Database;
+
+    // SAFETY: The local API read uses only DB and LOCAL_DEV, not other Worker bindings.
+    const env = { DB: racingDb, LOCAL_DEV: "true" } as WebsiteEnv;
+    const response = await server.fetch(new Request("http://localhost/api/household"), env);
+    expect(response.status).toBe(200);
+    const state = Schema.decodeUnknownSync(HouseholdSchema)(await response.json());
+    expect(state.collections).toEqual(defaultCollections);
+    expect(state.recipes).toEqual([recipe]);
+    expect(await db.prepare("SELECT category FROM recipes WHERE id=?").bind(recipe.id).first()).toEqual({
+      category: "Plant-based",
+    });
+  });
+  it("keeps collection names with consecutive spaces distinct when saving recipes", async () => {
+    for (const collection of [
+      { id: "single", name: "Sunday suppers" },
+      { id: "double", name: "Sunday  suppers" },
+    ]) {
+      expect((await send("collections", "PUT", JSON.stringify(collection))).status).toBe(200);
+    }
+
+    const recipe = { ...sampleRecipes[0], category: "Sunday  suppers" };
+    expect((await send("recipes", "PUT", JSON.stringify(recipe))).status).toBe(200);
+
+    const state = Schema.decodeUnknownSync(HouseholdSchema)(
+      await (await worker.dispatchFetch("http://localhost/api/household")).json(),
+    );
+
+    expect(state.recipes).toEqual([recipe]);
+    expect(state.collections).toContainEqual({ id: "double", name: "Sunday  suppers" });
+    expect(state.collections).toContainEqual({ id: "single", name: "Sunday suppers" });
+  });
+  it("migrates existing collection assignments without changing saved recipes", async () => {
+    const legacy = new Miniflare(options("true"));
+
+    try {
+      const db = await legacy.getD1Database("DB");
+
+      for (const file of ["0001_initial.sql", "0002_recipe_rating.sql"]) {
+        const sql = await readFile(`migrations/${file}`, "utf8");
+        await db.batch(
+          sql
+            .split(";")
+            .filter((s) => s.trim())
+            .map((s) => db.prepare(s)),
+        );
+      }
+
+      expect(
+        (
+          await legacy.dispatchFetch("http://localhost/api/recipes", {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ ...sampleRecipes[0], category: "" }),
+          })
+        ).status,
+      ).toBe(200);
+      await db
+        .prepare("UPDATE recipes SET category=? WHERE id=?")
+        .bind("Weeknight favorites", sampleRecipes[0].id)
+        .run();
+      const sql = await readFile("migrations/0003_collections.sql", "utf8");
+      await db.batch(
+        sql
+          .split(/;\n(?=CREATE|INSERT)|;\s*$/)
+          .filter((s) => s.trim())
+          .map((s) => db.prepare(s)),
+      );
+
+      const state = Schema.decodeUnknownSync(HouseholdSchema)(
+        await (await legacy.dispatchFetch("http://localhost/api/household")).json(),
+      );
+
+      expect(state.collections).toEqual(defaultCollections);
+      expect(state.recipes).toEqual([sampleRecipes[0]]);
+    } finally {
+      await legacy.dispose();
+    }
+  });
+  it("allows adding recipes and sample content after every collection is deleted", async () => {
+    for (const collection of defaultCollections) {
+      expect((await send(`collections/${collection.id}`, "DELETE", "{}")).status).toBe(200);
+    }
+
+    expect((await send("demo?today=2026-09-21", "POST", "{}")).status).toBe(200);
+
+    const state = Schema.decodeUnknownSync(HouseholdSchema)(
+      await (await worker.dispatchFetch("http://localhost/api/household")).json(),
+    );
+
+    expect(state.collections).toEqual([]);
+    expect(state.recipes).toHaveLength(6);
+    expect(state.recipes.every((recipe) => recipe.category === "")).toBe(true);
+    expect(
+      (await send("recipes", "PUT", JSON.stringify({ ...sampleRecipes[0], id: "uncollected", category: "" })))
+        .status,
+    ).toBe(200);
+  });
+  it("creates, renames, and deletes collections without losing recipes or planned meals", async () => {
+    const collection = { id: "custom/collection", name: "  Sunday suppers  " };
+    expect((await send("collections", "PUT", JSON.stringify(collection))).status).toBe(200);
+    const recipe = { ...sampleRecipes[0], category: "Sunday suppers" };
+    expect((await send("recipes", "PUT", JSON.stringify(recipe))).status).toBe(200);
+    expect((await send("recipes", "PUT", JSON.stringify(sampleRecipes[1]))).status).toBe(200);
+    expect((await send("meals", "PUT", JSON.stringify(meal))).status).toBe(200);
+    expect(
+      (await send("collections", "PUT", JSON.stringify({ ...collection, name: "Weekend dinners" }))).status,
+    ).toBe(200);
+
+    const read = async () =>
+      Schema.decodeUnknownSync(HouseholdSchema)(
+        await (await worker.dispatchFetch("http://localhost/api/household")).json(),
+      );
+
+    const renamed = await read();
+    expect(renamed.collections).toContainEqual({ id: collection.id, name: "Weekend dinners" });
+    expect(renamed.recipes.find((item) => item.id === recipe.id)).toEqual({
+      ...recipe,
+      category: "Weekend dinners",
+    });
+    expect(renamed.recipes.find((item) => item.id === sampleRecipes[1].id)).toEqual(sampleRecipes[1]);
+    expect((await send(`collections/${encodeURIComponent(collection.id)}`, "DELETE", "{}")).status).toBe(200);
+    const deleted = await read();
+    expect(deleted.collections).toEqual(defaultCollections);
+    expect(deleted.recipes.find((item) => item.id === recipe.id)).toEqual({ ...recipe, category: "" });
+    expect(deleted.meals).toEqual([meal]);
+    expect((await send("recipes", "PUT", JSON.stringify(recipe))).status).toBe(400);
+    expect((await send("recipes", "PUT", JSON.stringify({ ...recipe, category: "" }))).status).toBe(200);
+  });
+  it("rejects blank, oversized, duplicate, and missing collections without changing assignments", async () => {
+    for (const name of ["   ", "x".repeat(101)]) {
+      expect((await send("collections", "PUT", JSON.stringify({ id: "invalid", name }))).status).toBe(400);
+    }
+
+    expect((await send("recipes", "PUT", JSON.stringify(sampleRecipes[0]))).status).toBe(200);
+
+    for (const id of ["duplicate", "weeknight"]) {
+      expect((await send("collections", "PUT", JSON.stringify({ id, name: " vegetarian " }))).status).toBe(
+        409,
+      );
+    }
+
+    const state = Schema.decodeUnknownSync(HouseholdSchema)(
+      await (await worker.dispatchFetch("http://localhost/api/household")).json(),
+    );
+
+    expect(state.collections).toEqual(defaultCollections);
+    expect(state.recipes).toEqual([sampleRecipes[0]]);
+    expect((await send("collections/missing", "DELETE", "{}")).status).toBe(404);
+  });
   it("starts empty and saves recipe JSON, decimal quantities, source, and photo", async () => {
     const initial = await worker.dispatchFetch("http://localhost/api/household");
-    expect(await initial.json()).toEqual({ recipes: [], meals: [], extras: [], checks: [] });
+    expect(await initial.json()).toEqual({
+      collections: defaultCollections,
+      recipes: [],
+      meals: [],
+      extras: [],
+      checks: [],
+    });
     expect((await send("recipes", "PUT", JSON.stringify(sampleRecipes[0]))).status).toBe(200);
     const db = await worker.getD1Database("DB");
 
@@ -223,6 +438,7 @@ describe("real Worker with disposable SQLite D1", () => {
     ).toBe(200);
     const state = await worker.dispatchFetch("http://localhost/api/household");
     expect(Schema.decodeUnknownSync(HouseholdSchema)(await state.json())).toEqual({
+      collections: defaultCollections,
       recipes: [],
       meals: [],
       extras: [{ id: "snack", name: "Apples & peanut butter", checked: 1 }],
@@ -441,7 +657,13 @@ describe("real Worker with disposable SQLite D1", () => {
     for (let i = 0; i < 2; i++) {
       const response = await read();
       expect(response.status).toBe(200);
-      expect(await response.json()).toEqual({ recipes: [], meals: [], extras: [], checks: [] });
+      expect(await response.json()).toEqual({
+        collections: defaultCollections,
+        recipes: [],
+        meals: [],
+        extras: [],
+        checks: [],
+      });
     }
 
     expect(fetches).toBe(2);
