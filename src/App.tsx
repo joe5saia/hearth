@@ -345,7 +345,6 @@ export function App() {
         <a className="brand" href="#plan" aria-label="Hearth meal plan">
           <img src="/brand/logo.svg" alt="Hearth" width="184" height="50" />
         </a>
-        <p className="brand-caption">Our everyday table</p>
         <nav aria-label="Main navigation">
           <a
             href="#plan"
@@ -369,19 +368,6 @@ export function App() {
             <ShoppingBasket size={19} /> Shopping list
           </a>
         </nav>
-        <div className="sidebar-bottom">
-          <Sprout size={42} strokeWidth={1} />
-          <p>
-            Good food.
-            <br />A little less fuss.
-          </p>
-          <div className="household">
-            <span>H</span>
-            <div>
-              Our household<small>A place at the table</small>
-            </div>
-          </div>
-        </div>
       </aside>
       <main>
         <div className="topbar">
@@ -426,9 +412,6 @@ export function App() {
             <header className={`page-heading ${page === "plan" ? "plan-heading" : ""}`}>
               <div>
                 <h1>{page === "plan" ? "Meal Plan" : page === "recipes" ? "Recipes" : "Shopping list"}</h1>
-                {page === "plan" && (
-                  <p>Make room for the meals you love, and the people you share them with.</p>
-                )}
               </div>
               {page === "plan" ? (
                 <button className="primary" onClick={() => (data.recipes.length ? addMeal() : newRecipe())}>
@@ -1517,7 +1500,6 @@ function RecipeDetail({
               </li>
             ))}
           </ul>
-          <p className="field-hint">Preview only. Set the meal’s scale when adding it to your plan.</p>
         </section>
         <section>
           <h2>Let’s make it</h2>
@@ -1537,7 +1519,7 @@ function RecipeDetail({
       <div className="detail-footer">
         {recipe.source ? (
           <a href={recipe.source} target="_blank" rel="noreferrer">
-            Recipe source <ExternalLink size={14} />
+            Recipe source <ExternalLink size={28} />
           </a>
         ) : (
           <span>From our kitchen</span>

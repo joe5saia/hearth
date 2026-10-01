@@ -16,9 +16,8 @@ export function consentPage(details: ConsentDescription, handle: string) {
   * { box-sizing: border-box; }
   body { margin: 0; padding: 48px 20px; line-height: 1.5; }
   main { width: 100%; max-width: 520px; margin: 0 auto; }
-  .brand { display: flex; justify-content: center; }
+  .brand { display: flex; justify-content: center; margin-bottom: 32px; }
   .brand svg { display: block; width: 220px; height: auto; max-width: 100%; }
-  .caption { text-align: center; color: #5f6956; font-size: 12px; letter-spacing: 1.1px; margin: 8px 0 32px; }
   .card { background: #fffefa; border: 1px solid #e5e5db; border-radius: 12px; overflow: hidden; }
   .intro { padding: 32px; background: #f0f0e7; border-bottom: 1px solid #e5e5db; }
   .eyebrow { font-size: 12px; font-weight: 600; letter-spacing: 1.2px; text-transform: uppercase; color: #5f6956; margin: 0 0 12px; }
@@ -49,7 +48,6 @@ export function consentPage(details: ConsentDescription, handle: string) {
 </head>
 <body><main>
   <div class="brand" role="img" aria-label="Hearth">${logoSvg}</div>
-  <p class="caption">Our everyday table</p>
   <section class="card" aria-labelledby="consent-title">
     <div class="intro"><p class="eyebrow">App connection</p><h1 id="consent-title">Connect to Hearth</h1><p>Allow <strong>${escape(details.clientName)}</strong> to access your household recipes?</p>
       <p class="identity">${details.clientDomain ? `Client domain: <strong>${escape(details.clientDomain)}</strong>` : "This app’s name is unverified. It was supplied by the app, not verified by Hearth."}</p>

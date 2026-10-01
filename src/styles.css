@@ -133,18 +133,13 @@ small {
 .brand {
   display: flex;
   align-items: center;
+  margin-bottom: 48px;
 }
 .brand img,
 .mobile-brand img {
   display: block;
   max-width: 100%;
   height: auto;
-}
-.brand-caption {
-  font-size: 10px;
-  letter-spacing: 1.1px;
-  color: #858878;
-  margin: 9px 0 48px 57px;
 }
 .sidebar nav {
   display: flex;
@@ -182,47 +177,6 @@ small {
   height: 5px;
   background: #677951;
   border-radius: 50%;
-}
-.sidebar-bottom {
-  margin-top: auto;
-  padding-top: 60px;
-  color: #7a846a;
-}
-.sidebar-bottom > svg {
-  margin: 0 0 15px 17px;
-  transform: rotate(-15deg);
-}
-.sidebar-bottom > p {
-  font-family: var(--serif);
-  font-size: 16px;
-  line-height: 1.7;
-  padding-left: 17px;
-  color: #747d66;
-}
-.household {
-  border-top: 1px solid #dce0cf;
-  margin-top: 35px;
-  padding-top: 22px;
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  font-size: 12px;
-  color: #4a5341;
-}
-.household > span {
-  background: #e2dfce;
-  width: 32px;
-  height: 32px;
-  border-radius: 50%;
-  display: grid;
-  place-items: center;
-  font-family: var(--serif);
-}
-.household small {
-  display: block;
-  color: #8b907e;
-  font-size: 9px;
-  margin-top: 3px;
 }
 main {
   margin-left: 222px;
@@ -770,12 +724,20 @@ main {
   padding-left: 13px;
   color: #8c947f;
 }
+.search-box:focus-within {
+  border-color: var(--olive);
+  outline: 2px solid var(--olive);
+  outline-offset: 2px;
+}
 .search-box input {
   width: 100%;
   border: none;
   background: none;
   font-size: 12px;
   box-shadow: none;
+}
+.search-box input:focus {
+  outline: none;
 }
 .recipe-list {
   border: 1px solid var(--line);
@@ -1618,6 +1580,7 @@ main {
   display: flex;
   align-items: center;
   gap: 6px;
+  font-size: 2em;
   text-decoration: underline;
   text-underline-offset: 3px;
 }
@@ -1691,10 +1654,7 @@ main {
   margin-right: 18px;
 }
 /* Keep secondary text readable on every cream and sage surface. */
-.brand-caption,
 .sidebar nav a,
-.sidebar-bottom > p,
-.household small,
 .topbar,
 .page-heading p,
 .week-navigation h2 span,
@@ -1793,10 +1753,6 @@ textarea::placeholder {
     font-size: 12px;
     gap: 9px;
   }
-  .brand-caption {
-    font-size: 9px;
-    margin-left: 50px;
-  }
   main {
     margin-left: 190px;
     width: calc(100% - 190px);
@@ -1879,8 +1835,6 @@ textarea::placeholder {
     width: 74px;
     padding: 30px 10px;
   }
-  .brand-caption,
-  .sidebar-bottom,
   .nav-count,
   .nav-dot {
     display: none;
