@@ -113,7 +113,12 @@ beforeAll(async () => {
   worker = new Miniflare(convertV4MiniflareOptions({ workers }));
   const db = await worker.getD1Database("DB", "preview");
 
-  for (const file of ["0001_initial.sql", "0002_recipe_rating.sql", "0003_collections.sql"]) {
+  for (const file of [
+    "0001_initial.sql",
+    "0002_recipe_rating.sql",
+    "0003_collections.sql",
+    "0004_groceries.sql",
+  ]) {
     const sql = await readFile(`migrations/${file}`, "utf8");
     await db.batch(
       sql

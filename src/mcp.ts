@@ -9,6 +9,10 @@ const ingredient = z.strictObject({
   name: z.string().min(1).max(150),
   quantity: z.number().positive().max(1_000_000),
   unit: z.enum(units),
+  groceryItemId: id
+    .nullable()
+    .optional()
+    .describe("Existing grocery ID; omit to auto-match exact name or alias, null to stay unlinked."),
 });
 
 const fields = z.strictObject({

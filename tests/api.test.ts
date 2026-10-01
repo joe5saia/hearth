@@ -5,8 +5,18 @@ import { readFile } from "node:fs/promises";
 import { exportJWK, generateKeyPair, SignJWT, type JSONWebKeySet, type JWTPayload } from "jose";
 import { sampleRecipes } from "../src/seed";
 import { Schema } from "effect";
-import { HouseholdSchema, RecipeSchema, type Meal } from "../src/domain";
+import {
+  HouseholdSchema,
+  RecipeSchema,
+  shoppingList,
+  checkKey,
+  type Meal,
+  type GroceryItem,
+  type Recipe,
+  type ShoppingOrder,
+} from "../src/domain";
 import server from "../src/server";
+import { recipeStatement } from "../src/recipes";
 import type { WebsiteEnv } from "../alchemy.run";
 
 let worker: Miniflare;
@@ -103,6 +113,13 @@ beforeAll(async () => {
       .filter((s) => s.trim())
       .map((s) => db.prepare(s)),
   );
+  const groceriesSql = await readFile("migrations/0004_groceries.sql", "utf8");
+  await db.batch(
+    groceriesSql
+      .split(/;\n(?=CREATE|INSERT)|;\s*$/)
+      .filter((s) => s.trim())
+      .map((s) => db.prepare(s)),
+  );
 }, 30000);
 
 beforeEach(async () => {
@@ -111,6 +128,8 @@ beforeEach(async () => {
   await db.batch([
     db.prepare("DELETE FROM meals"),
     db.prepare("DELETE FROM recipes"),
+    db.prepare("DELETE FROM groceries"),
+    db.prepare("DELETE FROM shopping_order"),
     db.prepare("DELETE FROM extras"),
     db.prepare("DELETE FROM checks"),
     db.prepare("DELETE FROM collections"),
@@ -132,6 +151,239 @@ const send = (path: string, method: string, body: string) =>
   });
 
 describe("real Worker with disposable SQLite D1", () => {
+  it("calculates whole packages from saved links and scaled meals, preserving routes and quantity-sensitive checks", async () => {
+    const put = async (
+      path: string,
+      value: GroceryItem | Recipe | Meal | ShoppingOrder | { key: string; checked: number },
+    ) => {
+      expect((await send(path, "PUT", JSON.stringify(value))).status).toBe(200);
+    };
+
+    const state = async () =>
+      Schema.decodeUnknownSync(HouseholdSchema)(
+        await (await worker.dispatchFetch("http://localhost/api/household")).json(),
+      );
+
+    const products: GroceryItem[] = [
+      {
+        id: "rice",
+        name: "Rice bag",
+        aliases: ["rice", "white rice"],
+        quantity: 500,
+        unit: "g",
+        aisle: "10",
+        url: "",
+      },
+      { id: "beef", name: "Beef", aliases: [], quantity: 1, unit: "lb", aisle: "2", url: "" },
+      {
+        id: "limes",
+        name: "Fresh limes",
+        aliases: ["lime"],
+        quantity: 2,
+        unit: "lb",
+        aisle: "Produce",
+        url: "https://www.shoprite.com/sm/pickup/rsid/3000/product/fresh-limes-2-lb-bag-id-00000000096867",
+      },
+      { id: "oil", name: "Oil", aliases: [], quantity: 500, unit: "ml", aisle: "10", url: "" },
+      { id: "bread", name: "Bread", aliases: [], quantity: 20, unit: "slice", aisle: "Bakery", url: "" },
+      { id: "boundary", name: "Boundary", aliases: [], quantity: 0.3, unit: "g", aisle: "", url: "" },
+      { id: "above", name: "Above boundary", aliases: [], quantity: 300, unit: "g", aisle: "2", url: "" },
+      { id: "half", name: "Half pack", aliases: [], quantity: 500, unit: "g", aisle: "2", url: "" },
+    ];
+
+    for (const item of products) await put("groceries", item);
+
+    const first: Recipe = {
+      ...sampleRecipes[0],
+      id: "first",
+      title: "First dinner",
+      ingredients: [
+        { name: "rice", quantity: 200, unit: "g" },
+        { name: "Beef", quantity: 8, unit: "oz" },
+        { name: "lime", quantity: 2, unit: "each" },
+        { name: "Oil", quantity: 16, unit: "tbsp" },
+        { name: "Bread", quantity: 1, unit: "slice" },
+        { name: "Boundary", quantity: 0.1, unit: "g" },
+      ],
+    };
+
+    const second: Recipe = {
+      ...sampleRecipes[0],
+      id: "second",
+      title: "Second dinner",
+      ingredients: [
+        { name: "white rice", quantity: 0.1, unit: "kg" },
+        { name: "Beef", quantity: 4, unit: "oz" },
+        { name: "lime", quantity: 1, unit: "lb" },
+        { name: "Oil", quantity: 0.5, unit: "cup" },
+        { name: "Bread", quantity: 0.5, unit: "slice" },
+        { name: "Boundary", quantity: 0.15, unit: "g" },
+        { name: "Above boundary", quantity: 300.00001, unit: "g" },
+        { name: "Half pack", quantity: 250, unit: "g" },
+        { name: "Unknown garnish", quantity: 1, unit: "bunch" },
+      ],
+    };
+
+    await put("recipes", first);
+    await put("recipes", second);
+    await put("meals", { ...meal, id: "first-meal", recipeId: "first", date: "2026-09-21", scale: 1.5 });
+    await put("meals", { ...meal, id: "second-meal", recipeId: "second", date: "2026-09-27", scale: 1 });
+    await put("meals", { ...meal, id: "outside", recipeId: "second", date: "2026-09-28", scale: 100 });
+    let household = await state();
+
+    const list = () =>
+      shoppingList(
+        household.recipes,
+        household.meals,
+        "2026-09-21",
+        "2026-09-27",
+        household.groceries,
+        household.shoppingOrder,
+      );
+
+    let items = list();
+    const byId = (id: string) => items.find((item) => item.grocery?.id === id)!;
+    expect(byId("rice").packages).toBe(1); // Round after combining 300g + 100g, not per recipe.
+    expect(byId("rice").needs).toEqual([{ name: "Rice bag", quantity: 400, unit: "g" }]);
+    expect(byId("beef").packages).toBe(1); // 12oz + 4oz = 1lb, exactly one pack.
+    expect(byId("oil").needs[0].quantity).toBeCloseTo(473.176473, 6); // 2 US cups in ml.
+    expect(byId("oil").packages).toBe(1);
+    expect(byId("bread").packages).toBe(1);
+    expect(byId("bread").warnings.join()).toContain("10×");
+    expect(byId("limes").packages).toBeNull(); // Never show a count for only the convertible subset.
+    expect(byId("limes").needs.map((need) => [need.quantity, need.unit])).toEqual([
+      [3, "each"],
+      [1, "lb"],
+    ]);
+    expect(byId("limes").warnings.join()).toContain("Cannot convert");
+    expect(byId("boundary").packages).toBe(1); // 0.1 * 1.5 + 0.15 floating-point noise.
+    expect(byId("above").packages).toBe(2); // A real amount above the boundary must round up.
+    expect(byId("above").warnings).toEqual([]); // Just below twice the amount required.
+    expect(byId("half").warnings.join()).toContain("2×");
+    expect(items.at(-1)?.warnings.join()).toContain("No grocery item linked");
+    expect([...new Set(items.filter((item) => item.grocery).map((item) => item.grocery?.aisle))]).toEqual([
+      "2",
+      "10",
+      "Bakery",
+      "Produce",
+      "",
+    ]);
+    expect(items.filter((item) => item.grocery?.aisle === "10").map((item) => item.name)).toEqual([
+      "Oil",
+      "Rice bag",
+    ]);
+
+    const checkedKey = checkKey(byId("rice"), "2026-09-21", "2026-09-27");
+    await put("checks", { key: checkedKey, checked: 1 });
+
+    const order = {
+      aisles: ["Produce", "Bakery", "10", "2", ""],
+      items: [byId("rice").key, byId("oil").key],
+    };
+
+    await put("shopping-order", order);
+    household = await state();
+    items = list();
+    expect(items[0].grocery?.id).toBe("limes");
+    expect(items.filter((item) => item.grocery?.aisle === "10").map((item) => item.name)).toEqual([
+      "Rice bag",
+      "Oil",
+    ]);
+    expect(checkKey(byId("rice"), "2026-09-21", "2026-09-27")).toBe(checkedKey);
+    expect(household.checks).toContainEqual({ key: checkedKey, checked: 1 });
+    // A different run has new checks but the same stored walking route.
+    expect(checkKey(byId("rice"), "2026-09-28", "2026-10-04")).not.toBe(checkedKey);
+    await put("meals", { ...meal, id: "second-meal", recipeId: "second", date: "2026-09-27", scale: 1.1 });
+    household = await state();
+    items = list();
+    expect(byId("rice").packages).toBe(1);
+    expect(checkKey(byId("rice"), "2026-09-21", "2026-09-27")).not.toBe(checkedKey);
+    expect(household.shoppingOrder).toEqual(order);
+  });
+
+  it("persists groceries, exact links, backfill, ordering and deletion guards", async () => {
+    const put = (path: string, value: GroceryItem | Recipe | ShoppingOrder) =>
+      send(path, "PUT", JSON.stringify(value));
+
+    const state = async () =>
+      Schema.decodeUnknownSync(HouseholdSchema)(
+        await (await worker.dispatchFetch("http://localhost/api/household")).json(),
+      );
+
+    expect((await state()).shoppingOrder).toEqual({ aisles: [], items: [] });
+
+    const item = {
+      id: "rice",
+      name: "Rice",
+      url: "",
+      aisle: "",
+      quantity: 500,
+      unit: "g",
+      aliases: ["White rice"],
+    };
+
+    for (const changes of [
+      { url: "ftp://example.com" },
+      { url: "https://user:pass@example.com" },
+      { quantity: 0 },
+      { quantity: 1_000_001 },
+      { id: "" },
+      { unit: "bag" },
+    ])
+      expect((await put("groceries", { ...item, ...changes })).status).toBe(400);
+    expect((await put("groceries", item)).status).toBe(200);
+    expect((await put("groceries", { ...item, aisle: "Dry goods" })).status).toBe(200);
+
+    const recipe = {
+      ...sampleRecipes[0],
+      ingredients: [{ name: " WHITE   rice ", quantity: 100, unit: "g" }],
+    };
+
+    expect((await put("recipes", recipe)).status).toBe(200);
+    expect((await state()).recipes[0].ingredients[0].groceryItemId).toBe("rice");
+    expect(
+      (
+        await put("recipes", {
+          ...recipe,
+          ingredients: [{ ...recipe.ingredients[0], groceryItemId: "missing" }],
+        })
+      ).status,
+    ).toBe(400);
+    expect((await send("groceries/rice", "DELETE", "")).status).toBe(409);
+    const db = await worker.getD1Database("DB");
+    await expect(db.prepare("DELETE FROM groceries WHERE id='rice'").run()).rejects.toThrow();
+    await expect(
+      recipeStatement(db, {
+        ...recipe,
+        id: "bad",
+        ingredients: [{ ...recipe.ingredients[0], groceryItemId: "missing" }],
+      }).run(),
+    ).rejects.toThrow();
+    await recipeStatement(db, {
+      ...recipe,
+      ingredients: [
+        { name: "White rice", quantity: 1, unit: "g" },
+        { name: "White rice", quantity: 1, unit: "g", groceryItemId: null },
+        { name: "Nothing", quantity: 1, unit: "g" },
+        { name: "Ambiguous", quantity: 1, unit: "g" },
+      ],
+    }).run();
+    await put("groceries", { ...item, aliases: ["White rice", "Ambiguous"] });
+    await put("groceries", { ...item, id: "other", name: "Other", aliases: ["Ambiguous"] });
+    expect((await send("groceries/match", "POST", "")).status).toBe(200);
+    expect((await state()).recipes[0].ingredients.map((i) => i.groceryItemId)).toEqual([
+      "rice",
+      null,
+      undefined,
+      undefined,
+    ]);
+    const order = { aisles: ["Dry goods", ""], items: ["rice", "unresolved:test"] };
+    expect((await put("shopping-order", order)).status).toBe(200);
+    expect((await state()).shoppingOrder).toEqual(order);
+    expect((await put("shopping-order", { ...order, items: ["rice", "rice"] })).status).toBe(400);
+    expect((await send("groceries/other", "DELETE", "")).status).toBe(200);
+    expect((await state()).groceries).toHaveLength(1);
+  });
   it("returns one household snapshot when a collection is renamed during a read", async () => {
     const recipe = { ...sampleRecipes[0], category: "Vegetarian" };
     expect((await send("recipes", "PUT", JSON.stringify(recipe))).status).toBe(200);
@@ -219,19 +471,18 @@ describe("real Worker with disposable SQLite D1", () => {
         );
       }
 
-      expect(
-        (
-          await legacy.dispatchFetch("http://localhost/api/recipes", {
-            method: "PUT",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ ...sampleRecipes[0], category: "" }),
-          })
-        ).status,
-      ).toBe(200);
+      await recipeStatement(db, { ...sampleRecipes[0], category: "" }).run();
       await db
         .prepare("UPDATE recipes SET category=? WHERE id=?")
         .bind("Weeknight favorites", sampleRecipes[0].id)
         .run();
+      const grocerySql = await readFile("migrations/0004_groceries.sql", "utf8");
+      await db.batch(
+        grocerySql
+          .split(/;\n(?=CREATE|INSERT)|;\s*$/)
+          .filter((s) => s.trim())
+          .map((s) => db.prepare(s)),
+      );
       const sql = await readFile("migrations/0003_collections.sql", "utf8");
       await db.batch(
         sql
@@ -325,6 +576,8 @@ describe("real Worker with disposable SQLite D1", () => {
     const initial = await worker.dispatchFetch("http://localhost/api/household");
     expect(await initial.json()).toEqual({
       collections: defaultCollections,
+      groceries: [],
+      shoppingOrder: { aisles: [], items: [] },
       recipes: [],
       meals: [],
       extras: [],
@@ -439,6 +692,8 @@ describe("real Worker with disposable SQLite D1", () => {
     const state = await worker.dispatchFetch("http://localhost/api/household");
     expect(Schema.decodeUnknownSync(HouseholdSchema)(await state.json())).toEqual({
       collections: defaultCollections,
+      groceries: [],
+      shoppingOrder: { aisles: [], items: [] },
       recipes: [],
       meals: [],
       extras: [{ id: "snack", name: "Apples & peanut butter", checked: 1 }],
@@ -499,11 +754,30 @@ describe("real Worker with disposable SQLite D1", () => {
     ).toBe(415);
   });
   it("seeds only an empty household and refuses overwriting an existing collection", async () => {
+    const grocery = {
+      id: "demo-link",
+      name: sampleRecipes[0].ingredients[0].name,
+      url: "",
+      aisle: "",
+      quantity: 1,
+      unit: "each",
+      aliases: [],
+    };
+
+    expect((await send("groceries", "PUT", JSON.stringify(grocery))).status).toBe(200);
     expect((await send("demo?today=2026-09-27", "POST", "{}")).status).toBe(200);
     expect((await send("demo?today=2026-09-27", "POST", "{}")).status).toBe(409);
     const db = await worker.getD1Database("DB");
     expect(await db.prepare("SELECT count(*) AS count FROM recipes").first()).toEqual({ count: 6 });
     expect(await db.prepare("SELECT count(*) AS count FROM meals").first()).toEqual({ count: 5 });
+
+    const household = Schema.decodeUnknownSync(HouseholdSchema)(
+      await (await worker.dispatchFetch("http://localhost/api/household")).json(),
+    );
+
+    expect(
+      household.recipes.find((recipe) => recipe.id === sampleRecipes[0].id)?.ingredients[0].groceryItemId,
+    ).toBe("demo-link");
   });
   it("imports a draft without writing, then persists reviewed fields and the exact source URL", async () => {
     const source =
@@ -659,6 +933,8 @@ describe("real Worker with disposable SQLite D1", () => {
       expect(response.status).toBe(200);
       expect(await response.json()).toEqual({
         collections: defaultCollections,
+        groceries: [],
+        shoppingOrder: { aisles: [], items: [] },
         recipes: [],
         meals: [],
         extras: [],

@@ -1,0 +1,229 @@
+.route-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 18px 24px;
+  border-bottom: 1px solid var(--line);
+}
+.aisle-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 14px 24px;
+  background: #eef0e6;
+}
+.aisle-heading h3 {
+  font-family: var(--serif);
+  font-size: 19px;
+  overflow-wrap: anywhere;
+}
+.aisle-heading > span {
+  font-size: 12px;
+  white-space: nowrap;
+}
+.purchase-row {
+  border-bottom: 1px solid var(--line);
+}
+.purchase-row .shopping-item {
+  border: 0;
+  padding-bottom: 8px;
+}
+.purchase-row .item-info strong {
+  text-transform: none;
+  font-size: 16px;
+}
+.purchase-amount {
+  font-weight: 600;
+  font-size: 15px;
+  color: var(--olive);
+}
+.purchase-need {
+  font-size: 13px;
+  color: var(--muted);
+}
+.purchase-details {
+  padding: 0 24px 16px 58px;
+}
+.purchase-warning {
+  display: flex;
+  gap: 8px;
+  align-items: start;
+  background: #f8efdf;
+  color: #795021;
+  border-radius: 4px;
+  padding: 9px 11px;
+  font-size: 13px;
+  line-height: 1.5;
+  margin: 4px 0 8px;
+}
+.purchase-warning svg {
+  flex-shrink: 0;
+  margin-top: 2px;
+}
+.purchase-recipes {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+.purchase-links {
+  display: flex;
+  gap: 16px;
+  flex-wrap: wrap;
+  margin-top: 4px;
+}
+.purchase-links a,
+.purchase-links button {
+  display: inline-flex;
+  gap: 6px;
+  align-items: center;
+  font-size: 12px;
+  min-height: 44px;
+}
+.route-editor {
+  padding: 20px 24px;
+}
+.route-editor > .text-button {
+  margin: 12px 0;
+  text-align: left;
+}
+.route-aisle {
+  margin-top: 14px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  overflow: hidden;
+}
+.route-aisle .aisle-heading {
+  padding: 8px 12px;
+}
+.route-move {
+  display: flex;
+  flex-shrink: 0;
+  gap: 4px;
+}
+.route-move .icon-button {
+  width: 44px;
+  height: 44px;
+  border: 1px solid #bac3ad;
+  border-radius: 5px;
+  background: #fffefa;
+}
+.route-product {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+  border-top: 1px solid var(--line);
+  font-size: 14px;
+}
+.route-product > span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.route-product small {
+  display: block;
+  color: var(--muted);
+  margin-top: 4px;
+}
+.shopping-controls {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.shopping-mode .shopping-layout {
+  grid-template-columns: minmax(0, 1fr);
+  max-width: 850px;
+  margin-inline: auto;
+}
+.shopping-mode .shopping-heading,
+.shopping-mode .progress-row {
+  display: none;
+}
+.shopping-mode .page-heading {
+  display: flex;
+  align-items: center;
+  padding: 20px 0;
+  gap: 12px;
+}
+.shopping-mode .page-heading h1 {
+  font-size: 28px;
+}
+.shopping-mode .shopping-side {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 20px;
+}
+.shopping-mode .shopping-summary {
+  position: sticky;
+  top: var(--app-header-height, 72px);
+  z-index: 4;
+  background: #faf9f5;
+  padding-block: 14px;
+  border-bottom: 1px solid var(--line);
+}
+.shopping-mode .purchase-row .custom-check {
+  width: 28px;
+  height: 28px;
+}
+.shopping-mode .purchase-row .shopping-item {
+  min-height: 100px;
+  grid-template-columns: 28px minmax(0, 1fr);
+}
+.ingredient-link-editor {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding-bottom: 8px;
+}
+.ingredient-link-editor select {
+  flex: 1 1 200px;
+  width: 100%;
+}
+.ingredient-link-editor button {
+  min-height: 44px;
+  font-size: 12px;
+}
+.ingredient-product-link {
+  display: block;
+  font:
+    12px/1.5 "DM Sans Variable",
+    sans-serif;
+  color: var(--olive);
+  margin-top: 5px;
+}
+.ingredient-product-link.unlinked {
+  color: #795021;
+}
+@media (max-width: 600px) {
+  .route-toolbar,
+  .route-editor {
+    padding: 16px;
+  }
+  .aisle-heading {
+    padding-inline: 16px;
+  }
+  .purchase-details {
+    padding-left: 16px;
+    padding-right: 16px;
+  }
+  .shopping-mode .shopping-side {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .shopping-controls {
+    width: 100%;
+  }
+  .shopping-controls button {
+    flex: 1;
+  }
+  .ingredient-editor > .ingredient-link-editor {
+    grid-row: 3;
+  }
+  .ingredient-link-editor select {
+    flex-basis: 100%;
+  }
+}

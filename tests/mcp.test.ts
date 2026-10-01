@@ -141,6 +141,60 @@ const draft = (title: string) => ({
   instructions: ["Cook and serve."],
 });
 
+it("auto-links MCP ingredient writes and rejects invalid references atomically", async () => {
+  const db = await worker.getD1Database("DB");
+  await db
+    .prepare(
+      "INSERT INTO groceries(id,name,url,aisle,quantity,unit,aliases) VALUES('mcp-lemon','Lemon','','',1,'each','[]')",
+    )
+    .run();
+  const created = await call("create_recipes", { recipes: [draft("Linked MCP")] });
+  const recipe = created.structuredContent.recipes[0];
+  expect(recipe.ingredients[1].groceryItemId).toBe("mcp-lemon");
+
+  const updated = await call("update_recipes", {
+    updates: [{ id: recipe.id, changes: { title: "Preserved MCP" } }],
+  });
+
+  expect(updated.structuredContent.recipes[0].ingredients[1].groceryItemId).toBe("mcp-lemon");
+
+  const failed = await call("create_recipes", {
+    recipes: [
+      draft("Atomic valid"),
+      {
+        ...draft("Atomic invalid"),
+        ingredients: [{ name: "Lemon", quantity: 1, unit: "each", groceryItemId: "missing" }],
+      },
+    ],
+  });
+
+  expect(failed.isError).toBe(true);
+  expect(await db.prepare("SELECT id FROM recipes WHERE title='Atomic valid'").first()).toBeNull();
+
+  const badUpdate = await call("update_recipes", {
+    updates: [
+      {
+        id: recipe.id,
+        changes: {
+          title: "Not saved",
+          ingredients: [{ name: "Lemon", quantity: 1, unit: "each", groceryItemId: "missing" }],
+        },
+      },
+    ],
+  });
+
+  expect(badUpdate.isError).toBe(true);
+
+  const linkedUpdate = await call("update_recipes", {
+    updates: [{ id: recipe.id, changes: { ingredients: [{ name: " LEMON ", quantity: 2, unit: "each" }] } }],
+  });
+
+  expect(linkedUpdate.structuredContent.recipes[0].title).toBe("Preserved MCP");
+  expect(linkedUpdate.structuredContent.recipes[0].ingredients[0].groceryItemId).toBe("mcp-lemon");
+  await db.prepare("DELETE FROM recipes WHERE id=?").bind(recipe.id).run();
+  await db.prepare("DELETE FROM groceries WHERE id='mcp-lemon'").run();
+});
+
 beforeAll(async () => {
   const keys = await generateKeyPair("RS256");
   signingKey = keys.privateKey;
@@ -199,7 +253,12 @@ beforeAll(async () => {
   );
   const db = await worker.getD1Database("DB");
 
-  for (const file of ["0001_initial.sql", "0002_recipe_rating.sql", "0003_collections.sql"]) {
+  for (const file of [
+    "0001_initial.sql",
+    "0002_recipe_rating.sql",
+    "0003_collections.sql",
+    "0004_groceries.sql",
+  ]) {
     const sql = await readFile(`migrations/${file}`, "utf8");
     await db.batch(
       sql

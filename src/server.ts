@@ -7,6 +7,8 @@ import {
   ExtraSchema,
   CheckSchema,
   CollectionSchema,
+  GroceryItemSchema,
+  ShoppingOrderSchema,
   type Collection,
   validDate,
   type Meal,
@@ -16,6 +18,8 @@ import {
 import { sampleRecipes, sampleMeals } from "./seed";
 import { importRecipe } from "./recipe-import";
 import { parseRecipe, recipeStatement, validateRecipe, type RecipeRow } from "./recipes";
+import { matchRecipeIngredients, RecipeInputError } from "./recipes";
+import { parseGrocery, validateGrocery, validateShoppingOrder, type GroceryRow } from "./groceries";
 
 class ApiError extends Data.TaggedError("ApiError")<{ status: number; message: string }> {}
 
@@ -24,7 +28,10 @@ const invalid = (message: string) => new ApiError({ status: 400, message });
 const database = <A>(run: () => Promise<A>) =>
   Effect.tryPromise({
     try: run,
-    catch: () => new ApiError({ status: 500, message: "We couldn’t save that change. Please try again." }),
+    catch: (error) =>
+      error instanceof RecipeInputError
+        ? invalid(error.message)
+        : new ApiError({ status: 500, message: "We couldn’t save that change. Please try again." }),
   });
 
 const readJson = (request: Request) =>
@@ -51,25 +58,31 @@ function api(request: Request, env: WebsiteEnv) {
     const db = env.DB;
 
     if (method === "GET" && path === "/api/household") {
-      const [recipes, meals, extras, checks, collections] = yield* database(async () => {
-        const results = await db.batch([
-          db.prepare("SELECT * FROM recipes ORDER BY title"),
-          db.prepare("SELECT * FROM meals ORDER BY date,slot,id"),
-          db.prepare("SELECT * FROM extras ORDER BY rowid"),
-          db.prepare("SELECT * FROM checks WHERE checked=1"),
-          db.prepare("SELECT * FROM collections ORDER BY name"),
-        ]);
+      const [recipes, meals, extras, checks, collections, groceries, shoppingOrder] = yield* database(
+        async () => {
+          const results = await db.batch([
+            db.prepare("SELECT * FROM recipes ORDER BY title"),
+            db.prepare("SELECT * FROM meals ORDER BY date,slot,id"),
+            db.prepare("SELECT * FROM extras ORDER BY rowid"),
+            db.prepare("SELECT * FROM checks WHERE checked=1"),
+            db.prepare("SELECT * FROM collections ORDER BY name"),
+            db.prepare("SELECT * FROM groceries ORDER BY name,id"),
+            db.prepare("SELECT aisles,items FROM shopping_order WHERE id=1"),
+          ]);
 
-        // SAFETY: These fixed SELECTs return the listed row types in this order.
-        // One D1 batch keeps recipes and collections in the same transaction snapshot.
-        return results as [
-          D1Result<RecipeRow>,
-          D1Result<Meal>,
-          D1Result<Extra>,
-          D1Result<{ key: string; checked: number }>,
-          D1Result<Collection>,
-        ];
-      });
+          // SAFETY: These fixed SELECTs return the listed row types in this order.
+          // One D1 batch keeps recipes and collections in the same transaction snapshot.
+          return results as [
+            D1Result<RecipeRow>,
+            D1Result<Meal>,
+            D1Result<Extra>,
+            D1Result<{ key: string; checked: number }>,
+            D1Result<Collection>,
+            D1Result<GroceryRow>,
+            D1Result<{ aisles: string; items: string }>,
+          ];
+        },
+      );
 
       const parsed = recipes.results.map(parseRecipe);
 
@@ -79,7 +92,96 @@ function api(request: Request, env: WebsiteEnv) {
         meals: meals.results,
         extras: extras.results,
         checks: checks.results,
+        groceries: groceries.results.map(parseGrocery),
+        shoppingOrder: shoppingOrder.results[0]
+          ? {
+              aisles: JSON.parse(shoppingOrder.results[0].aisles),
+              items: JSON.parse(shoppingOrder.results[0].items),
+            }
+          : { aisles: [], items: [] },
       } satisfies Household);
+    }
+
+    if (method === "PUT" && path === "/api/groceries") {
+      const item = yield* Schema.decodeUnknownEffect(GroceryItemSchema)(yield* readJson(request)).pipe(
+        Effect.mapError(() => invalid("Invalid grocery item.")),
+      );
+
+      if (!validateGrocery(item))
+        return yield* Effect.fail(invalid("Check the grocery name, package quantity, unit, and URL."));
+      yield* database(() =>
+        db
+          .prepare(`INSERT INTO groceries(id,name,url,aisle,quantity,unit,aliases) VALUES(?,?,?,?,?,?,?)
+        ON CONFLICT(id) DO UPDATE SET name=excluded.name,url=excluded.url,aisle=excluded.aisle,quantity=excluded.quantity,unit=excluded.unit,aliases=excluded.aliases`)
+          .bind(
+            item.id,
+            item.name.trim(),
+            item.url,
+            item.aisle.trim(),
+            item.quantity,
+            item.unit,
+            JSON.stringify(item.aliases),
+          )
+          .run(),
+      );
+
+      return Response.json({ ok: true });
+    }
+
+    if (method === "DELETE" && path.startsWith("/api/groceries/")) {
+      const id = yield* decodeId(path, "/api/groceries/");
+
+      const result = yield* database(() =>
+        db
+          .prepare(`DELETE FROM groceries WHERE id=? AND NOT EXISTS
+        (SELECT 1 FROM recipes,json_each(recipes.ingredients) AS ingredient WHERE json_extract(ingredient.value,'$.groceryItemId')=?)`)
+          .bind(id, id)
+          .run(),
+      );
+
+      if (!result.meta.changes)
+        return yield* Effect.fail(
+          new ApiError({ status: 409, message: "This grocery is used by a recipe or no longer exists." }),
+        );
+
+      return Response.json({ ok: true });
+    }
+
+    if (method === "PUT" && path === "/api/shopping-order") {
+      const order = yield* Schema.decodeUnknownEffect(ShoppingOrderSchema)(yield* readJson(request)).pipe(
+        Effect.mapError(() => invalid("Invalid shopping order.")),
+      );
+
+      if (!validateShoppingOrder(order))
+        return yield* Effect.fail(invalid("Shopping order must contain unique strings."));
+      yield* database(() =>
+        db
+          .prepare(
+            "INSERT INTO shopping_order(id,aisles,items) VALUES(1,?,?) ON CONFLICT(id) DO UPDATE SET aisles=excluded.aisles,items=excluded.items",
+          )
+          .bind(JSON.stringify(order.aisles), JSON.stringify(order.items))
+          .run(),
+      );
+
+      return Response.json({ ok: true });
+    }
+
+    if (method === "POST" && path === "/api/groceries/match") {
+      yield* database(async () => {
+        const rows = await db.prepare("SELECT * FROM recipes").all<RecipeRow>();
+        const recipes = await matchRecipeIngredients(db, rows.results.map(parseRecipe));
+
+        if (recipes.length)
+          await db.batch(
+            recipes.map((recipe, index) =>
+              db
+                .prepare("UPDATE recipes SET ingredients=? WHERE id=? AND ingredients=?")
+                .bind(JSON.stringify(recipe.ingredients), recipe.id, rows.results[index].ingredients),
+            ),
+          );
+      });
+
+      return Response.json({ ok: true });
     }
 
     if (method === "PUT" && path === "/api/collections") {
@@ -171,7 +273,10 @@ function api(request: Request, env: WebsiteEnv) {
           return yield* Effect.fail(invalid("That collection no longer exists. Choose another collection."));
       }
 
-      yield* database(() => recipeStatement(db, recipe).run());
+      yield* database(async () => {
+        const [linked] = await matchRecipeIngredients(db, [recipe]);
+        await recipeStatement(db, linked).run();
+      });
 
       return Response.json({ ok: true });
     }
@@ -320,9 +425,10 @@ function api(request: Request, env: WebsiteEnv) {
         db.prepare("SELECT name FROM collections").all<{ name: string }>(),
       );
 
+      const linkedSamples = yield* database(() => matchRecipeIngredients(db, sampleRecipes));
       yield* database(() =>
         db.batch([
-          ...sampleRecipes.map((recipe) =>
+          ...linkedSamples.map((recipe) =>
             recipeStatement(db, {
               ...recipe,
               category: collections.results.some((collection) => collection.name === recipe.category)

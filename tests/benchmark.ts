@@ -77,12 +77,12 @@ for (const [name, recipeCount, mealCount, photoBytes] of [
   const items = shoppingList(recipes, meals, "2026-09-01", "2026-09-28");
   // Independently computed total: sum of 0.5, 1.5, ..., 11.5 is 72.
   assert.equal(
-    items.reduce((sum, item) => sum + item.quantity, 0),
+    items.reduce((sum, item) => sum + item.needs[0].quantity, 0),
     72 * meals.reduce((sum, meal) => sum + meal.scale, 0),
   );
   await measure(`${name}/shopping-week`, () => shoppingList(recipes, meals, "2026-09-21", "2026-09-27"), 10);
   await measure(`${name}/shopping-month`, () => shoppingList(recipes, meals, "2026-09-01", "2026-09-28"), 10);
-  await measure(`${name}/format-list`, () => items.map(displayAmount), 10);
+  await measure(`${name}/format-list`, () => items.map((item) => item.needs.map(displayAmount)), 10);
 
   const worker = new Miniflare(
     convertV4MiniflareOptions({

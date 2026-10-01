@@ -51,6 +51,9 @@ tasks:
   timers:smoke:
     desc: Browser E2E with a real one-minute expiry (requires agent-browser and running local dev; optional -- local URL)
     cmds: ["node tools/timers-smoke.ts {{.CLI_ARGS}}"]
+  groceries:smoke:
+    desc: Grocery browser E2E (requires agent-browser and an empty disposable local household; optional -- local URL)
+    cmds: ["node tools/groceries-smoke.ts {{.CLI_ARGS}}"]
   format:
     desc: Format source files (optional -- paths or flags)
     cmds: ["npm run format -- {{.CLI_ARGS}}"]

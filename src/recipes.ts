@@ -1,5 +1,6 @@
 import { Schema } from "effect";
 import { RecipeSchema, units, type Recipe } from "./domain";
+import { getGroceries, linkIngredients, GroceryInputError } from "./groceries";
 
 export type RecipeRow = Omit<Recipe, "ingredients" | "instructions"> & {
   ingredients: string;
@@ -96,6 +97,20 @@ export async function getRecipes(db: D1Database, ids: string[]) {
 
 export class RecipeInputError extends Error {}
 
+export async function matchRecipeIngredients(db: D1Database, recipes: readonly Recipe[]): Promise<Recipe[]> {
+  const groceries = await getGroceries(db);
+
+  try {
+    return recipes.map((recipe) => ({
+      ...recipe,
+      ingredients: linkIngredients(recipe.ingredients, groceries),
+    }));
+  } catch (error) {
+    if (error instanceof GroceryInputError) throw new RecipeInputError(error.message);
+    throw error;
+  }
+}
+
 async function validateCollections(db: D1Database, names: readonly string[]) {
   if (!names.some((name) => name !== "")) return;
   const collections = await db.prepare("SELECT name FROM collections").all<{ name: string }>();
@@ -108,7 +123,10 @@ async function validateCollections(db: D1Database, names: readonly string[]) {
 }
 
 export async function createRecipes(db: D1Database, inputs: Omit<Recipe, "id">[]) {
-  const recipes = inputs.map((input) => ({ ...input, id: crypto.randomUUID(), title: input.title.trim() }));
+  const recipes = await matchRecipeIngredients(
+    db,
+    inputs.map((input) => ({ ...input, id: crypto.randomUUID(), title: input.title.trim() })),
+  );
 
   if (recipes.some((recipe) => !validateRecipe(recipe)))
     throw new RecipeInputError(
@@ -141,6 +159,21 @@ export async function updateRecipes(
     throw new RecipeInputError(
       `Recipes not found: ${current.missingIds.join(", ")}. No recipes were updated.`,
     );
+  const groceries = await getGroceries(db);
+
+  try {
+    updates = updates.map((update) => ({
+      ...update,
+      changes:
+        update.changes.ingredients === undefined
+          ? update.changes
+          : { ...update.changes, ingredients: linkIngredients(update.changes.ingredients, groceries) },
+    }));
+  } catch (error) {
+    if (error instanceof GroceryInputError) throw new RecipeInputError(error.message);
+    throw error;
+  }
+
   const recipes = updates.map((update, index) => ({ ...current.recipes[index], ...update.changes }));
 
   if (recipes.some((recipe) => !validateRecipe(recipe)))
