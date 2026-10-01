@@ -20,7 +20,12 @@ import { importRecipe } from "./recipe-import";
 import { parseRecipe, recipeStatement, validateRecipe, type RecipeRow } from "./recipes";
 import { matchRecipeIngredients, RecipeInputError } from "./recipes";
 import { parseGrocery, validateGrocery, validateShoppingOrder, type GroceryRow } from "./groceries";
-import { matchIngredients } from "./ingredient-matching";
+import {
+  matchIngredients,
+  matchingFailureReason,
+  normalizationModel,
+  selectionModel,
+} from "./ingredient-matching";
 
 class ApiError extends Data.TaggedError("ApiError")<{ status: number; message: string }> {}
 
@@ -167,7 +172,29 @@ function api(request: Request, db: D1Database, ai?: Ai) {
     }
 
     if (method === "POST" && path === "/api/groceries/match") {
-      if (!ai)
+      const started = performance.now();
+      const runId = crypto.randomUUID();
+      const ray = request.headers.get("Cf-Ray");
+      console.info(
+        JSON.stringify({
+          event: "ingredient_matching_started",
+          runId,
+          cfRay: ray && /^[a-f0-9]{16}-[A-Z]{3}$/.test(ray) ? ray : null,
+          normalizationModel,
+          selectionModel,
+        }),
+      );
+
+      if (!ai) {
+        console.error(
+          JSON.stringify({
+            event: "ingredient_matching_failed",
+            runId,
+            stage: "setup",
+            reason: "ai_unavailable",
+          }),
+        );
+
         return yield* Effect.fail(
           new ApiError({
             status: 503,
@@ -175,56 +202,101 @@ function api(request: Request, db: D1Database, ai?: Ai) {
               "AI ingredient matching requires a Cloudflare deployment. Local recipe saves still use exact matching.",
           }),
         );
-      const started = performance.now();
+      }
+
+      let stage = "snapshot";
+
       const report = yield* database(async () => {
-        const snapshot = await db.batch([
-          db.prepare("SELECT * FROM recipes"),
-          db.prepare("SELECT * FROM groceries ORDER BY name,id"),
-          db.prepare("SELECT version FROM grocery_revision WHERE id=1"),
-        ]);
-        // SAFETY: These fixed SELECTs return recipe rows, grocery rows and the catalog revision in order.
-        const [rows, products, revision] = snapshot as [
-          D1Result<RecipeRow>,
-          D1Result<GroceryRow>,
-          D1Result<{ version: number }>,
-        ];
-        const originals = rows.results.map(parseRecipe);
-        const result = await matchIngredients(ai, originals, products.results.map(parseGrocery), db);
-        const changed = result.recipes.flatMap((recipe, index) => {
-          const links = recipe.ingredients.filter(
-            (ingredient, position) =>
-              ingredient.groceryItemId !== originals[index].ingredients[position].groceryItemId,
-          ).length;
-          return links ? [{ recipe, before: rows.results[index], links }] : [];
-        });
-        if (!changed.length) return result.report;
-        const writes = await db.batch(
-          changed.map(({ recipe, before }) =>
-            db
-              .prepare(
-                "UPDATE recipes SET ingredients=? WHERE id=? AND ingredients=? AND title=? AND description=? AND instructions=? AND (SELECT version FROM grocery_revision WHERE id=1)=?",
-              )
-              .bind(
-                JSON.stringify(recipe.ingredients),
-                recipe.id,
-                before.ingredients,
-                before.title,
-                before.description,
-                before.instructions,
-                revision.results[0].version,
-              ),
-          ),
-        );
-        for (const [index, saved] of writes.entries()) {
-          if (!saved.meta.changes) {
-            const { links } = changed[index];
-            result.report.matched -= links;
-            result.report.conflicts += links;
+        try {
+          const snapshot = await db.batch([
+            db.prepare("SELECT * FROM recipes"),
+            db.prepare("SELECT * FROM groceries ORDER BY name,id"),
+            db.prepare("SELECT version FROM grocery_revision WHERE id=1"),
+          ]);
+
+          // SAFETY: These fixed SELECTs return recipe rows, grocery rows and the catalog revision in order.
+          const [rows, products, revision] = snapshot as [
+            D1Result<RecipeRow>,
+            D1Result<GroceryRow>,
+            D1Result<{ version: number }>,
+          ];
+
+          const originals = rows.results.map(parseRecipe);
+          stage = "matching";
+          const result = await matchIngredients(ai, originals, products.results.map(parseGrocery), db, runId);
+          stage = "persistence";
+
+          const changed = result.recipes.flatMap((recipe, index) => {
+            const links = recipe.ingredients.filter(
+              (ingredient, position) =>
+                ingredient.groceryItemId !== originals[index].ingredients[position].groceryItemId,
+            ).length;
+
+            return links ? [{ recipe, before: rows.results[index], links }] : [];
+          });
+
+          console.info(
+            JSON.stringify({
+              event: "ingredient_matching_persisting",
+              runId,
+              changedRecipes: changed.length,
+              proposedMatches: result.report.matched,
+              elapsedMs: Math.round(performance.now() - started),
+            }),
+          );
+
+          if (!changed.length) return result.report;
+
+          const writes = await db.batch(
+            changed.map(({ recipe, before }) =>
+              db
+                .prepare(
+                  "UPDATE recipes SET ingredients=? WHERE id=? AND ingredients=? AND title=? AND description=? AND instructions=? AND (SELECT version FROM grocery_revision WHERE id=1)=?",
+                )
+                .bind(
+                  JSON.stringify(recipe.ingredients),
+                  recipe.id,
+                  before.ingredients,
+                  before.title,
+                  before.description,
+                  before.instructions,
+                  revision.results[0].version,
+                ),
+            ),
+          );
+
+          for (const [index, saved] of writes.entries()) {
+            if (!saved.meta.changes) {
+              const { links } = changed[index];
+              result.report.matched -= links;
+              result.report.conflicts += links;
+            }
           }
+
+          return result.report;
+        } catch (error) {
+          console.error(
+            JSON.stringify({
+              event: "ingredient_matching_failed",
+              runId,
+              stage,
+              reason: matchingFailureReason(error),
+              elapsedMs: Math.round(performance.now() - started),
+            }),
+          );
+          throw error;
         }
-        return result.report;
       });
+
       report.totalMs = performance.now() - started;
+      console.info(
+        JSON.stringify({
+          event: "ingredient_matching_completed",
+          runId,
+          outcome: report.failed || report.conflicts ? "partial" : "complete",
+          ...report,
+        }),
+      );
 
       return Response.json({ ok: true, report });
     }

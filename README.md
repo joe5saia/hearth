@@ -92,6 +92,21 @@ reads/writes but excluding HTTP/Access transit. These are small same-orb observa
 API reports include model-call/cache-hit counts, candidates, stage times, and total matching time;
 stage times sum overlapping calls and can exceed elapsed total time.
 
+Matching also emits structured Cloudflare Worker logs with an `ingredient_matching_` event prefix and
+a shared `runId`. `started` includes model names and a validated Cloudflare Ray ID; `batch_started`
+records recipe/catalog/ingredient counts and the eligible backlog. `progress` records completed,
+remaining, in-flight, proposed-match, failure, and model/cache counts every 25 completed ingredients,
+at the end, or on the next ingredient completion after 15 seconds. It is not a heartbeat during a stall.
+`persisting` records proposed writes; only `completed` reports the final saved `matched` count,
+concurrent-edit `conflicts`, full timings, and a `complete` or `partial` outcome. `complete` means the
+run finished without failures/conflicts, not that every ingredient found a product. `ingredient_failed`
+includes snapshot-relative recipe/ingredient indexes, stage, candidate count, elapsed time, and a fixed
+failure category. `failed` marks a request-level failure, including snapshot/persistence errors.
+Logs exclude recipe/product text, raw exceptions/model responses, cache keys, and credentials.
+An HTTP 200 alone does not establish matching success; inspect `completed`. A start without a terminal
+event is inconclusive (the request may still be running, interrupted, or missing logs). These logs do
+not detect page navigation or turn the request into a durable background job.
+
 Compatible shopping units convert within physical families: kg/g/lb/oz for mass, and l/ml/cup/tbsp/tsp for volume (US customary measures). `oz` means weight, not fluid ounces. Counts such as each, can, clove, bunch, or slice only convert to the same unit. For example, a recipe requiring two limes cannot be converted to a 2 lb bag without knowing their weight; the list says **Check amount**, shows the recipe needs, and does not invent a purchase count. If any requirement for a product is incompatible, its entire purchase count needs review. Counts assume no pantry stock and one chosen package size per product, not price optimization. Notes such as “add chicken” are shown but **do not invent quantities**; add that chicken as an extra or recipe ingredient. Instruction text stays as written when scaling.
 
 The app uses one shared household, with no per-person app accounts or roles. Household changes are saved to the server; kitchen timers are the device-local exception. Reload to see another household member's latest edits; simultaneous edits use last-write-wins. Browser calendar dates are used without UTC conversion. Local development is network-independent after dependencies are installed; this is not an offline-sync PWA.
