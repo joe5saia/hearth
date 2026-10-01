@@ -125,6 +125,7 @@ export const Mcp = Cloudflare.Worker(
       // No Worker `access` enrollment: only /authorize belongs behind Access.
       env: {
         DB: Database,
+        AI: Cloudflare.Workers.AI(),
         OAUTH_KV: McpOAuth,
         MCP_ORIGIN: `https://${hostname}`,
         ACCESS_AUD: access.aud,

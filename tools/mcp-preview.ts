@@ -93,6 +93,7 @@ async function main() {
   const config = { name: parent, main: resolve("tools/mcp-preview-worker.ts"), compatibility_date: "2026-09-08", compatibility_flags: ["nodejs_compat", "global_fetch_strictly_public"],
     previews: { vars: { MCP_ORIGIN: state.url, ACCESS_AUD: state.aud, PREVIEW_CLIENT_ID: state.client_id,
       AMP_EVAL_PROJECT_ID: identity.project_id, AMP_EVAL_USER_ID: identity.user_id },
+      ai: { binding: "AI" },
       d1_databases: [{ binding: "DB", database_id: state.db, database_name: `hearth-${name}` }], kv_namespaces: [{ binding: "OAUTH_KV", id: state.kv }] } };
   const configPath = resolve(directory, "wrangler.json");
   await writeFile(configPath, JSON.stringify(config));

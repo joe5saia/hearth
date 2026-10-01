@@ -109,6 +109,25 @@ const household = z.object({
 
 const ok = z.object({ ok: z.literal(true) });
 
+const matchingOutput = ok.extend({
+  report: z.object({
+    attempted: z.number(),
+    matched: z.number(),
+    unmatched: z.number(),
+    failed: z.number(),
+    conflicts: z.number(),
+    normalizationCalls: z.number(),
+    selectionCalls: z.number(),
+    normalizationCacheHits: z.number(),
+    selectionCacheHits: z.number(),
+    candidates: z.number(),
+    normalizationMs: z.number(),
+    retrievalMs: z.number(),
+    selectionMs: z.number(),
+    totalMs: z.number(),
+  }),
+});
+
 // No network request or user-supplied route: invoke the website's validated API
 // internally, after MCP authentication, and check its response before composing it.
 async function api<T extends z.ZodType>(
@@ -117,12 +136,13 @@ async function api<T extends z.ZodType>(
   path: string,
   method = "GET",
   body?: string,
+  ai?: Ai,
 ): Promise<z.output<T>> {
   const init: RequestInit = { method, headers: { "Content-Type": "application/json" } };
 
   if (body !== undefined) init.body = body;
 
-  const response = await householdApi(new Request(`https://hearth.internal/api/${path}`, init), db);
+  const response = await householdApi(new Request(`https://hearth.internal/api/${path}`, init), db, ai);
 
   // A failed storage response does not establish whether a write committed.
   // Keep it on result()'s read-before-retry path, not the API's generic retry advice.
@@ -163,7 +183,7 @@ async function result<T extends Record<string, unknown>>(operation: () => Promis
   }
 }
 
-export function recipeMcp(db: D1Database) {
+export function recipeMcp(db: D1Database, ai?: Ai) {
   return createMcpHandler(
     () => {
       const server = new McpServer(
@@ -376,17 +396,25 @@ export function recipeMcp(db: D1Database) {
         "match_groceries",
         {
           description:
-            "Auto-link all recipe ingredients whose groceryItemId is omitted using exact normalized grocery names or aliases. Ambiguous matches remain unlinked; existing links and explicit null (deliberately unlinked) are preserved. Does not use fuzzy matching. Read recipes afterwards to inspect links.",
+            "Run the app's bulk AI ingredient matching for all ingredients whose groceryItemId is omitted. Sends recipe context and candidate catalog products to Cloudflare AI; consumes AI credits. Normalizes names, searches broadly (including typos), then selects confident matches. Existing links and explicit null (deliberately unlinked) are preserved. Requires a Cloudflare AI binding. Returns {ok,report} with attempted, matched, unmatched (needs review), failed, conflicts (concurrent edits skipped), model-call/cache-hit counts and timing in milliseconds. ok means the run completed, not that every ingredient matched; inspect report and reread recipes before retrying or changing links. Recipe saves still use exact matching without AI.",
           inputSchema: z.strictObject({}),
-          outputSchema: ok,
+          outputSchema: matchingOutput,
           annotations: {
             readOnlyHint: false,
             destructiveHint: true,
-            idempotentHint: true,
-            openWorldHint: false,
+            idempotentHint: false,
+            openWorldHint: true,
           },
         },
-        () => result(() => api(db, ok, "groceries/match", "POST")),
+        () =>
+          result(() => {
+            if (!ai)
+              throw new RecipeInputError(
+                "AI ingredient matching requires a Cloudflare deployment with an AI binding. Recipe saves still use exact matching.",
+              );
+
+            return api(db, matchingOutput, "groceries/match", "POST", undefined, ai);
+          }),
       );
 
       server.registerTool(

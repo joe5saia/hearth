@@ -51,7 +51,7 @@ function mealStatement(db: WebsiteEnv["DB"], meal: Meal) {
     .bind(meal.id, meal.recipeId, meal.date, meal.slot, meal.scale, meal.note);
 }
 
-function api(request: Request, db: D1Database) {
+function api(request: Request, db: D1Database, ai?: Ai) {
   return Effect.gen(function* () {
     const url = new URL(request.url);
     const path = url.pathname;
@@ -167,7 +167,7 @@ function api(request: Request, db: D1Database) {
     }
 
     if (method === "POST" && path === "/api/groceries/match") {
-      if (!("AI" in env) || !env.AI)
+      if (!ai)
         return yield* Effect.fail(
           new ApiError({
             status: 503,
@@ -175,7 +175,6 @@ function api(request: Request, db: D1Database) {
               "AI ingredient matching requires a Cloudflare deployment. Local recipe saves still use exact matching.",
           }),
         );
-      const ai = env.AI;
       const started = performance.now();
       const report = yield* database(async () => {
         const snapshot = await db.batch([
@@ -496,9 +495,9 @@ function api(request: Request, db: D1Database) {
 
 // Internal transport shared by the authenticated website and MCP entrypoints.
 // Authentication stays at each entrypoint; this function is never a public route.
-export function householdApi(request: Request, db: D1Database): Promise<Response> {
+export function householdApi(request: Request, db: D1Database, ai?: Ai): Promise<Response> {
   return Effect.runPromise(
-    api(request, db).pipe(
+    api(request, db, ai).pipe(
       Effect.catchTag("ApiError", (error) =>
         Effect.succeed(Response.json({ error: error.message }, { status: error.status })),
       ),
@@ -593,6 +592,6 @@ export default {
       return Response.json({ error: "Use application/json." }, { status: 415 });
     }
 
-    return householdApi(request, env.DB);
+    return householdApi(request, env.DB, env.AI);
   },
 };

@@ -11,6 +11,7 @@ import { consentPage } from "./mcp-consent";
 
 export interface McpEnv {
   DB: D1Database;
+  AI?: Ai;
   OAUTH_KV: KVNamespace;
   MCP_ORIGIN: string;
   ACCESS_AUD: string;
@@ -112,7 +113,7 @@ export default {
 
           if (!auth.scope.includes("recipes")) return insufficientScope(auth, ["recipes"]);
 
-          return recipeMcp(env.DB).fetch(request, {
+          return recipeMcp(env.DB, env.AI).fetch(request, {
             authInfo: {
               token: auth.token,
               clientId: auth.clientId ?? "",

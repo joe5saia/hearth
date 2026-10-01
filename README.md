@@ -73,9 +73,10 @@ atomic recipe/context and catalog-revision check: changes made during inference 
 links are reported as skipped. A retry processes the latest saved data.
 
 Bulk AI matching requires a Cloudflare deployment with the `AI` binding and sufficient **AI Gateway
-credits for Jev**. The production configuration and disposable website Previews provide that binding.
+credits for Jev**. The production website/MCP configuration and their disposable Previews provide that binding.
 Local development remains network-independent: recipe saves use exact matching, and the AI button
-explains that a Cloudflare deployment is required. Recipe saves and MCP writes never invoke the models.
+explains that a Cloudflare deployment is required. Recipe saves, including MCP recipe writes, never
+invoke the models; the explicit `match_groceries` MCP tool does.
 
 An exploratory nine-case live evaluation covered typos, 65 onion candidates, aliases, dietary qualifiers,
 fresh/canned context, and unsuitable substitutions. The final pipeline made **9/9 correct decisions**.
@@ -381,15 +382,15 @@ remain in the browser; this is shared-state coverage, not literal remote browser
 | `delete_recipe`         | One ID; fails if missing or referenced by a meal. Remove dependent meals first.                                                                                                                                                                                                                  |
 | `delete_collection`     | Collection ID; missing IDs fail. Recipes survive and become Uncollected.                                                                                                                                                                                                                         |
 
-| Grocery catalog and meal plan | Contract                                                                                                                                                                                                               |
-| ----------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `list_groceries`              | No arguments. Complete `{groceries}` catalog, including unused products, ordered by name then ID.                                                                                                                      |
-| `save_grocery`                | Fully replace `{name,url,aisle,quantity,unit,aliases,id?}`; returns `{grocery}`. Quantity/unit describe **one package**, not a shopping total.                                                                         |
-| `match_groceries`             | No arguments. Exact normalized name/alias matching for ingredients with omitted `groceryItemId`; ambiguous matches stay unlinked. Existing links and explicit `null` are preserved; reread recipes to inspect results. |
-| `delete_grocery`              | One ID; fails if missing or used by a recipe. Fetch full ingredient arrays and explicitly unlink dependencies with `update_recipes` (`groceryItemId:null`) first.                                                      |
-| `list_meals`                  | Explicit `{start,end}` → `{meals}`, ordered by date, slot then ID; fetch referenced recipes with `get_recipes`.                                                                                                        |
-| `save_meal`                   | Fully replace `{recipeId,date,slot,scale,note,id?}`; returns `{meal}`. Reuse ID to move/edit; multiple meals per slot are allowed. **`scale = desired servings / recipe.servings`**, not servings.                     |
-| `delete_meal`                 | One ID; missing IDs succeed. Preserves recipe; recompute shopping afterwards.                                                                                                                                          |
+| Grocery catalog and meal plan | Contract                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| ----------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `list_groceries`              | No arguments. Complete `{groceries}` catalog, including unused products, ordered by name then ID.                                                                                                                                                                                                                                                                                                                                 |
+| `save_grocery`                | Fully replace `{name,url,aisle,quantity,unit,aliases,id?}`; returns `{grocery}`. Quantity/unit describe **one package**, not a shopping total.                                                                                                                                                                                                                                                                                    |
+| `match_groceries`             | No arguments. Bulk AI matching for ingredients with omitted `groceryItemId`; consumes Cloudflare AI credits and sends recipe context/catalog candidates to the models. Existing links and explicit `null` are preserved. Returns `{ok,report}` with matched, unmatched, failed and concurrent-conflict counts plus call/cache/timing metrics. Inspect the report and reread recipes; `ok` does not mean every ingredient matched. |
+| `delete_grocery`              | One ID; fails if missing or used by a recipe. Fetch full ingredient arrays and explicitly unlink dependencies with `update_recipes` (`groceryItemId:null`) first.                                                                                                                                                                                                                                                                 |
+| `list_meals`                  | Explicit `{start,end}` → `{meals}`, ordered by date, slot then ID; fetch referenced recipes with `get_recipes`.                                                                                                                                                                                                                                                                                                                   |
+| `save_meal`                   | Fully replace `{recipeId,date,slot,scale,note,id?}`; returns `{meal}`. Reuse ID to move/edit; multiple meals per slot are allowed. **`scale = desired servings / recipe.servings`**, not servings.                                                                                                                                                                                                                                |
+| `delete_meal`                 | One ID; missing IDs succeed. Preserves recipe; recompute shopping afterwards.                                                                                                                                                                                                                                                                                                                                                     |
 
 | Shopping and setup      | Contract                                                                                                                                                                                                                                                 |
 | ----------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -490,8 +491,9 @@ a partial deployment or tear it down. `up` preserves its URL and data on subsequ
 Run `down` when review ends; the name's date is a cleanup reminder, not an automatic TTL.
 `down` also removes the disposable parent, Access app/service token, D1 and KV.
 The live test exercises CIMD/PKCE consent and all 22 tools against disposable data, including
-meal scaling, package rounding, check invalidation, route/extras, collection propagation and
-deletion guards. Import's successful parsing is covered locally with a saved NYT fixture; the live
+real AI matching (consuming model credits), returned matching reports, meal scaling, package rounding,
+check invalidation, route/extras, collection propagation and deletion guards.
+Import's successful parsing is covered locally with a saved NYT fixture; the live
 test checks unsupported-URL rejection, not third-party availability. It writes
 non-secret fixture metadata to `.wrangler/mcp-preview/evaluation.json`, not bearer-token settings.
 The preview-only entrypoint serves a CIMD fixture at `/test-client.json`; the production entrypoint

@@ -856,7 +856,16 @@ it("manages a collection, matched products, inclusive meal plan and shopping lif
     url: "https://example.com/rice",
     aisle: "Pantry",
   });
-  await success("match_groceries", {});
+  const unavailable = await call("match_groceries", {});
+  expect(unavailable.isError).toBe(true);
+  expect(unavailable.content[0].text).toContain("requires a Cloudflare deployment with an AI binding");
+  expect(
+    (await success("get_recipes", { ids: [a.id, b.id] })).recipes.map((r: any) => r.ingredients),
+  ).toEqual([a.ingredients, b.ingredients]);
+  // Local recipe saves still perform exact matching without any AI calls.
+  await success("update_recipes", {
+    updates: [a, b].map((r) => ({ id: r.id, changes: { ingredients: r.ingredients } })),
+  });
   const linked = (await success("get_recipes", { ids: [a.id, b.id] })).recipes;
   expect(linked[0].ingredients.map((i: any) => i.groceryItemId)).toEqual([rice.id, milk.id, null]);
   expect(linked[1].ingredients[0].groceryItemId).toBe(rice.id);

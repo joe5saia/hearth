@@ -98,6 +98,25 @@ for (const collection of [
 ]) assert.ok(collections.collections.some((saved: any) => saved.id === collection.id && saved.name === collection.name), "Default collection remains available alongside eval fixtures");
 const tag = `Evaluation ${Date.now()}`;
 const fixture = (i: number) => ({ title: `${tag} ${String(i).padStart(2, "0")}`, servings: 3, minutes: 24 + i, category: "Vegetarian", ingredients: [{ name: "Chickpeas", quantity: 1.5, unit: "can" }, { name: "Lemon", quantity: 0.5, unit: "each" }], instructions: ["Rinse chickpeas.", "Mix with lemon."] });
+// Exercise real AI through the same OAuth token before adding bulk unlinked fixtures.
+const { grocery: onion } = await call("save_grocery", { name: "White onion", url: "", aisle: "Produce", quantity: 1, unit: "each", aliases: [] });
+const { recipes: [matching] } = await call("create_recipes", { recipes: [{ ...fixture(98), title: `${tag} onion salad`, instructions: ["Finely chop the raw white onions and serve."], ingredients: [
+  { name: "Chopped white oninos", originalText: "2 white onions, finely chopped", quantity: 2, unit: "each" },
+  { name: "White onion", quantity: 1, unit: "each", groceryItemId: null },
+  { name: "White onion", quantity: 3, unit: "each", groceryItemId: onion.id },
+] }] });
+assert.equal(matching.ingredients[0].groceryItemId, undefined, "Typo is not an exact save-time match");
+const { report: matchingReport } = await call("match_groceries", {});
+assert.ok(matchingReport.matched >= 1, "AI matched an ingredient");
+assert.equal(matchingReport.failed, 0);
+assert.equal(matchingReport.conflicts, 0);
+assert.ok(matchingReport.normalizationCalls >= 1 && matchingReport.selectionCalls >= 1, "Both real models were invoked");
+assert.equal(typeof matchingReport.totalMs, "number");
+assert.deepEqual((await call("get_recipes", { ids: [matching.id] })).recipes[0], {
+  ...matching, ingredients: [{ ...matching.ingredients[0], groceryItemId: onion.id }, ...matching.ingredients.slice(1)],
+}, "Only the automatic ingredient link changed; amounts, context, existing links and explicit null survived");
+await call("delete_recipe", { id: matching.id });
+await call("delete_grocery", { id: onion.id });
 const a = await call("create_recipes", { recipes: Array.from({ length: 25 }, (_, i) => fixture(i)) });
 await call("create_recipes", { recipes: [fixture(25), fixture(26), fixture(27)] });
 const first = await call("search_recipes", { query: tag });
@@ -141,7 +160,6 @@ const { extra } = await call("save_shopping_extra", { name: `${tag} towels`, che
 await call("save_shopping_extra", { ...extra, checked: 1 });
 assert.ok((await call("get_shopping_list", range)).extras.some((entry: any) => entry.id === extra.id && entry.checked === 1));
 assert.ok((await call("list_groceries", {})).groceries.some((entry: any) => entry.id === grocery.id));
-await call("match_groceries", {});
 for (const [name, args] of [["delete_recipe", { id: planned.id }], ["delete_grocery", { id: grocery.id }], ["add_demo_data", { today: meal.date }], ["import_recipe", { url: "https://example.com/recipe" }]] as const) {
   assert.equal((await rpc(auth.token, "tools/call", { name, arguments: args })).isError, true, `${name} rejects unsafe operation`);
 }
@@ -154,5 +172,5 @@ await call("delete_shopping_extra", { id: extra.id });
 await call("set_shopping_checked", { key: item.checkKey, checked: false });
 await call("set_shopping_order", { aisles: [], items: [] });
 
-await writeFile(`${root}/evaluation.json`, JSON.stringify({ tag, count: 28, url: `${origin}/eval/mcp` }, null, 2));
-console.log(JSON.stringify({ checks: "Public discovery, Access-protected consent, live CIMD + PKCE exchange, unchanged recipes grant, 22 tools, structured/text parity, 25+3 pagination, ordered gets, field-preserving updates, collection propagation, grocery matching, meal scaling, package rounding, shopping checks and invalidation, route/extras, deletion guards and cleanup, invalid import and nonempty demo refusal", evaluationTag: tag, fixtures: 28, eval: `${origin}/eval/mcp`, credentials: "Eval orbs mint their own Amp identity; no copied bearer settings or tokens logged" }, null, 2));
+await writeFile(`${root}/evaluation.json`, JSON.stringify({ tag, count: 28, url: `${origin}/eval/mcp`, matchingReport }, null, 2));
+console.log(JSON.stringify({ checks: "Public discovery, Access-protected consent, live CIMD + PKCE exchange, unchanged recipes grant, 22 tools, structured/text parity, real AI matching and report, 25+3 pagination, ordered gets, field-preserving updates, collection propagation, grocery matching, meal scaling, package rounding, shopping checks and invalidation, route/extras, deletion guards and cleanup, invalid import and nonempty demo refusal", matchingReport, evaluationTag: tag, fixtures: 28, eval: `${origin}/eval/mcp`, credentials: "Eval orbs mint their own Amp identity; no copied bearer settings or tokens logged" }, null, 2));
