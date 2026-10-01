@@ -51,12 +51,11 @@ function mealStatement(db: WebsiteEnv["DB"], meal: Meal) {
     .bind(meal.id, meal.recipeId, meal.date, meal.slot, meal.scale, meal.note);
 }
 
-function api(request: Request, env: WebsiteEnv) {
+function api(request: Request, db: D1Database) {
   return Effect.gen(function* () {
     const url = new URL(request.url);
     const path = url.pathname;
     const method = request.method;
-    const db = env.DB;
 
     if (method === "GET" && path === "/api/household") {
       const [recipes, meals, extras, checks, collections, groceries, shoppingOrder] = yield* database(
@@ -495,6 +494,26 @@ function api(request: Request, env: WebsiteEnv) {
   });
 }
 
+// Internal transport shared by the authenticated website and MCP entrypoints.
+// Authentication stays at each entrypoint; this function is never a public route.
+export function householdApi(request: Request, db: D1Database): Promise<Response> {
+  return Effect.runPromise(
+    api(request, db).pipe(
+      Effect.catchTag("ApiError", (error) =>
+        Effect.succeed(Response.json({ error: error.message }, { status: error.status })),
+      ),
+      Effect.catchCause(() =>
+        Effect.succeed(Response.json({ error: "Something went wrong. Please try again." }, { status: 500 })),
+      ),
+      Effect.map((response) => {
+        response.headers.set("Cache-Control", "no-store");
+
+        return response;
+      }),
+    ),
+  );
+}
+
 const accessIssuer = "https://saiaai.cloudflareaccess.com";
 
 const accessKeys = createRemoteJWKSet(new URL(`${accessIssuer}/cdn-cgi/access/certs`));
@@ -574,22 +593,6 @@ export default {
       return Response.json({ error: "Use application/json." }, { status: 415 });
     }
 
-    return Effect.runPromise(
-      api(request, env).pipe(
-        Effect.catchTag("ApiError", (error) =>
-          Effect.succeed(Response.json({ error: error.message }, { status: error.status })),
-        ),
-        Effect.catchCause(() =>
-          Effect.succeed(
-            Response.json({ error: "Something went wrong. Please try again." }, { status: 500 }),
-          ),
-        ),
-        Effect.map((response) => {
-          response.headers.set("Cache-Control", "no-store");
-
-          return response;
-        }),
-      ),
-    );
+    return householdApi(request, env.DB);
   },
 };

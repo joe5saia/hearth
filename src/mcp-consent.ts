@@ -49,7 +49,7 @@ export function consentPage(details: ConsentDescription, handle: string) {
 <body><main>
   <div class="brand" role="img" aria-label="Hearth">${logoSvg}</div>
   <section class="card" aria-labelledby="consent-title">
-    <div class="intro"><p class="eyebrow">App connection</p><h1 id="consent-title">Connect to Hearth</h1><p>Allow <strong>${escape(details.clientName)}</strong> to access your household recipes?</p>
+    <div class="intro"><p class="eyebrow">App connection</p><h1 id="consent-title">Connect to Hearth</h1><p>Allow <strong>${escape(details.clientName)}</strong> to manage your household in Hearth?</p>
       <p class="identity">${details.clientDomain ? `Client domain: <strong>${escape(details.clientDomain)}</strong>` : "This app’s name is unverified. It was supplied by the app, not verified by Hearth."}</p>
     </div>
     <form method="post" action="/authorize">
@@ -57,11 +57,11 @@ export function consentPage(details: ConsentDescription, handle: string) {
       <fieldset><legend>Choose what this app can do</legend>
         ${details.scope
           .map((scope) => {
-            const title = scope === "recipes" ? "Manage household recipes" : scope;
+            const title = scope === "recipes" ? "Manage your household" : scope;
 
             const description =
               scope === "recipes"
-                ? "Search, view, create and edit your household recipes."
+                ? "View, create, edit and delete recipes, collections, planned meals, groceries and shopping items. Import recipes and add sample content."
                 : "Allow this requested permission.";
 
             return `<label class="permission"><input type="checkbox" name="scope" value="${escape(scope)}" checked><span><strong>${escape(title)}</strong><small>${description}</small></span></label>`;

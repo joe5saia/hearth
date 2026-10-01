@@ -33,6 +33,8 @@ async function login() {
   const html = await page.text();
   const handle = html.match(/name="handle" value="([^"]+)"/)?.[1];
   assert.ok(handle, "Consent form handle");
+  // Inert, credential-free capture for browser inspection; never persist a live consent handle.
+  await writeFile(`${root}/consent.html`, html.replace(handle, "visual-inspection-only").replace('<form method="post" action="/authorize">', '<form onsubmit="return false">'));
   const cookies = page.headers.getSetCookie().map((cookie) => cookie.split(";")[0]).join("; ");
   const form = new URLSearchParams({ handle, decision: "approve" });
   scopes.forEach((scope) => form.append("scope", scope));
@@ -69,8 +71,18 @@ assert.equal((await request("/mcp")).status, 401, "Anonymous MCP denied without 
 assert.ok([302, 401, 403].includes((await request("/authorize")).status), "Anonymous consent denied");
 const auth = await login();
 const tools = (await rpc(auth.token, "tools/list")).tools;
-assert.deepEqual(tools.map((tool: any) => tool.name).sort(), ["create_recipes", "get_recipes", "list_collections", "search_recipes", "update_recipes"]);
+assert.deepEqual(tools.map((tool: any) => tool.name).sort(), [
+  "add_demo_data", "create_recipes", "delete_collection", "delete_grocery", "delete_meal",
+  "delete_recipe", "delete_shopping_extra", "get_recipes", "get_shopping_list", "import_recipe",
+  "list_collections", "list_groceries", "list_meals", "match_groceries", "save_collection",
+  "save_grocery", "save_meal", "save_shopping_extra", "search_recipes", "set_shopping_checked",
+  "set_shopping_order", "update_recipes",
+]);
 assert.ok(tools.every((tool: any) => tool.outputSchema?.type === "object"));
+const ingredientProperties = tools.find((tool: any) => tool.name === "create_recipes").inputSchema.properties.recipes.items.properties.ingredients.items.properties;
+assert.equal(ingredientProperties.name.type, "string", "Ingredient name is typed on the wire");
+assert.equal(ingredientProperties.quantity.type, "number", "Ingredient quantity is typed on the wire");
+assert.equal(ingredientProperties.unit.type, "string", "Ingredient unit is typed on the wire");
 const call = async (name: string, args: object) => {
   const result = await rpc(auth.token, "tools/call", { name, arguments: args });
   assert.ok(!result.isError, `${name} succeeded`);
@@ -78,12 +90,12 @@ const call = async (name: string, args: object) => {
   return result.structuredContent;
 };
 const collections = await call("list_collections", {});
-assert.deepEqual(collections.collections, [
+for (const collection of [
   { id: "comfort", name: "Comfort food" },
   { id: "special", name: "Something special" },
   { id: "vegetarian", name: "Vegetarian" },
   { id: "weeknight", name: "Weeknight favorites" },
-]);
+]) assert.ok(collections.collections.some((saved: any) => saved.id === collection.id && saved.name === collection.name), "Default collection remains available alongside eval fixtures");
 const tag = `Evaluation ${Date.now()}`;
 const fixture = (i: number) => ({ title: `${tag} ${String(i).padStart(2, "0")}`, servings: 3, minutes: 24 + i, category: "Vegetarian", ingredients: [{ name: "Chickpeas", quantity: 1.5, unit: "can" }, { name: "Lemon", quantity: 0.5, unit: "each" }], instructions: ["Rinse chickpeas.", "Mix with lemon."] });
 const a = await call("create_recipes", { recipes: Array.from({ length: 25 }, (_, i) => fixture(i)) });
@@ -105,5 +117,42 @@ assert.deepEqual(categorized.recipes[0], { ...a.recipes[2], category: "Comfort f
 const uncategorized = await call("update_recipes", { updates: [{ id: a.recipes[2].id, changes: { category: "" } }] });
 assert.deepEqual(uncategorized.recipes[0], { ...a.recipes[2], category: "" });
 
+// Exercise new shared-state capabilities through the same recipes OAuth grant.
+const { collection } = await call("save_collection", { name: `${tag} collection` });
+const { grocery } = await call("save_grocery", { name: `${tag} rice`, url: "", aisle: "Pantry", quantity: 400, unit: "g", aliases: [`${tag} grain`] });
+const { recipes: [planned] } = await call("create_recipes", { recipes: [{ ...fixture(99), category: collection.name, ingredients: [{ name: `${tag} grain`, quantity: 250, unit: "g" }] }] });
+assert.equal(planned.ingredients[0].groceryItemId, grocery.id);
+await call("save_collection", { id: collection.id, name: `${tag} renamed` });
+assert.equal((await call("get_recipes", { ids: [planned.id] })).recipes[0].category, `${tag} renamed`);
+const { meal } = await call("save_meal", { recipeId: planned.id, date: "2035-06-04", slot: "Dinner", scale: 2.5, note: "Live OAuth workflow" });
+const range = { start: meal.date, end: meal.date };
+assert.ok((await call("list_meals", range)).meals.some((entry: any) => entry.id === meal.id));
+let shopping = await call("get_shopping_list", range);
+const item = shopping.items.find((entry: any) => entry.grocery?.id === grocery.id);
+assert.equal(item.needs[0].quantity, 625); assert.equal(item.packages, 2);
+await call("set_shopping_checked", { key: item.checkKey, checked: true });
+assert.equal((await call("get_shopping_list", range)).items.find((entry: any) => entry.key === item.key).checked, true);
+await call("save_meal", { ...meal, scale: 3 });
+shopping = await call("get_shopping_list", range);
+assert.equal(shopping.items.find((entry: any) => entry.key === item.key).checked, false);
+await call("set_shopping_order", { aisles: ["Pantry"], items: [item.key] });
+assert.deepEqual((await call("get_shopping_list", range)).shoppingOrder, { aisles: ["Pantry"], items: [item.key] });
+const { extra } = await call("save_shopping_extra", { name: `${tag} towels`, checked: 0 });
+await call("save_shopping_extra", { ...extra, checked: 1 });
+assert.ok((await call("get_shopping_list", range)).extras.some((entry: any) => entry.id === extra.id && entry.checked === 1));
+assert.ok((await call("list_groceries", {})).groceries.some((entry: any) => entry.id === grocery.id));
+await call("match_groceries", {});
+for (const [name, args] of [["delete_recipe", { id: planned.id }], ["delete_grocery", { id: grocery.id }], ["add_demo_data", { today: meal.date }], ["import_recipe", { url: "https://example.com/recipe" }]] as const) {
+  assert.equal((await rpc(auth.token, "tools/call", { name, arguments: args })).isError, true, `${name} rejects unsafe operation`);
+}
+await call("delete_collection", { id: collection.id });
+assert.equal((await call("get_recipes", { ids: [planned.id] })).recipes[0].category, "");
+await call("delete_meal", { id: meal.id });
+await call("delete_recipe", { id: planned.id });
+await call("delete_grocery", { id: grocery.id });
+await call("delete_shopping_extra", { id: extra.id });
+await call("set_shopping_checked", { key: item.checkKey, checked: false });
+await call("set_shopping_order", { aisles: [], items: [] });
+
 await writeFile(`${root}/evaluation.json`, JSON.stringify({ tag, count: 28, url: `${origin}/eval/mcp` }, null, 2));
-console.log(JSON.stringify({ checks: "Public discovery, Access-protected consent, live CIMD + PKCE exchange, single household scope, five tools, collection discovery and category updates, structured/text parity, 25+3 pagination, empty pagination, ordered gets, missing IDs, field-preserving batch updates", evaluationTag: tag, fixtures: 28, eval: `${origin}/eval/mcp`, credentials: "Eval orbs mint their own Amp identity; no copied bearer settings or tokens logged" }, null, 2));
+console.log(JSON.stringify({ checks: "Public discovery, Access-protected consent, live CIMD + PKCE exchange, unchanged recipes grant, 22 tools, structured/text parity, 25+3 pagination, ordered gets, field-preserving updates, collection propagation, grocery matching, meal scaling, package rounding, shopping checks and invalidation, route/extras, deletion guards and cleanup, invalid import and nonempty demo refusal", evaluationTag: tag, fixtures: 28, eval: `${origin}/eval/mcp`, credentials: "Eval orbs mint their own Amp identity; no copied bearer settings or tokens logged" }, null, 2));
