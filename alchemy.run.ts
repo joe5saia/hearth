@@ -66,6 +66,13 @@ export const Website = Cloudflare.Worker(
       }).pipe(Namespace.push("Website"));
     }
 
+    const env = {
+      DB: Database,
+      LOCAL_DEV: dev ? "true" : "false",
+      ACCESS_AUD: access?.aud ?? "",
+      SMOKE_CLIENT_ID: smoke?.clientId ?? "",
+    } as const;
+
     return {
       main: workerRuntime.main,
       access,
@@ -73,17 +80,13 @@ export const Website = Cloudflare.Worker(
       compatibility: { date: workerRuntime.compatibilityDate },
       dev: { port: 8787 },
       assets: workerRuntime.assets,
-      env: {
-        DB: Database,
-        LOCAL_DEV: dev ? "true" : "false",
-        ACCESS_AUD: access?.aud ?? "",
-        SMOKE_CLIENT_ID: smoke?.clientId ?? "",
-      },
+      env: dev ? env : { ...env, AI: Cloudflare.Workers.AI() },
     } as const;
   }),
 );
 
-export type WebsiteEnv = Cloudflare.InferEnv<typeof Website>;
+// InferEnv keeps common bindings across the local/cloud union; AI exists only in cloud deployments.
+export type WebsiteEnv = Cloudflare.InferEnv<typeof Website> & { AI?: Ai };
 
 export const McpOAuth = Cloudflare.KV.Namespace("McpOAuth");
 

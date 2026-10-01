@@ -370,9 +370,14 @@ describe("real Worker with disposable SQLite D1", () => {
     }).run();
     await put("groceries", { ...item, aliases: ["White rice", "Ambiguous"] });
     await put("groceries", { ...item, id: "other", name: "Other", aliases: ["Ambiguous"] });
-    expect((await send("groceries/match", "POST", "")).status).toBe(200);
+    const unavailable = await send("groceries/match", "POST", "");
+    expect(unavailable.status).toBe(503);
+    expect(await unavailable.json()).toHaveProperty(
+      "error",
+      expect.stringContaining("Cloudflare deployment"),
+    );
     expect((await state()).recipes[0].ingredients.map((i) => i.groceryItemId)).toEqual([
-      "rice",
+      undefined,
       null,
       undefined,
       undefined,
@@ -796,6 +801,7 @@ describe("real Worker with disposable SQLite D1", () => {
     expect(await db.prepare("SELECT count(*) AS count FROM recipes").first()).toEqual({ count: 0 });
     expect(result.recipe).toMatchObject({ title: "Coq au Vin", source, minutes: 120, servings: 4 });
     expect(result.recipe.ingredients).toHaveLength(20);
+    expect(result.recipe.ingredients[0].originalText).toBe("3 pounds chicken legs and thighs");
     expect(result.recipe.instructions).toHaveLength(9);
     expect((await send("recipes", "PUT", JSON.stringify(result.recipe))).status).toBe(200);
 

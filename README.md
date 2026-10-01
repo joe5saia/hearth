@@ -37,12 +37,59 @@ In an Amp orb, `.agents/setup` installs the pinned Node version and dependencies
 - **Recipes:** create, edit, search by title or ingredient, filter collections, and delete unplanned recipes. Store a source URL, instructions, servings, cooking time, and a photo URL or upload. Uploaded JPG, PNG, and WebP photos up to 1.2 MB are stored in SQLite; no external object storage is needed. Bundled photos and fonts also work offline. External photo URLs naturally require a network connection.
 - **Meal plan:** Monday–Sunday calendar on desktop and a vertical agenda on narrow screens. Navigate weeks or jump directly to a date. “Add a meal” suggests the next open dinner in the selected week, starting today for the current week; if no dinner is open, it keeps you within that week. Breakfast/lunch/dinner display in order, with multiple meals per day, decimal scales, and notes. Edit a meal to move or remove it. Opening its recipe preserves unsaved meal edits and previews its scale; “Back to meal” returns to the draft. Recipe-detail scaling is a preview; the calendar meal's scale controls shopping quantities.
 - **Shopping:** inclusive start/end dates; linked grocery products combine quantities across recipes and meal scales, then round up to whole packages. **Shopping mode** gives a larger aisle checklist and sticky progress controls. Numeric aisles sort before labels such as Bakery; **Arrange route** saves aisle order and within-aisle product order for future trips, including products not needed this week. Reset restores numeric/alphabetical order. Missing links remain in **Needs linking**; incompatible units and purchases at least twice the required quantity show warnings. The remaining count includes household extras, and “Hide checked items” applies to both sections. Add/remove extras or export the ordered checklist with purchase counts and warnings. Extras persist independently of the selected date range. A changed total, package size, or date range gets a new checkmark identity; changing the route does not.
-- **Grocery items:** one household catalog for your preferred store. Save each store product’s name, URL, aisle (number or label), and the quantity/unit in one package, using the same units as recipes. URLs and aisles can be filled in later; the catalog reports setup gaps. Product pages are not fetched, and prices/availability are not tracked. Add alternate ingredient names, one per line, for exact automatic matching. **Recipe coverage** identifies missing links; **Match ingredients** retries existing ingredients that are set to automatic matching. Recipe editors let you select, create, or edit a product without losing the recipe draft; save the recipe to persist its links. Catalog edits are shared across all recipes immediately. Linked products cannot be deleted until their recipe links are removed or changed.
+- **Grocery items:** one household catalog for your preferred store. Save each store product’s name, URL, aisle (number or label), and the quantity/unit in one package, using the same units as recipes. URLs and aisles can be filled in later; the catalog reports setup gaps. Product pages are not fetched, and prices/availability are not tracked. Add alternate ingredient names, one per line, for exact matching on recipe saves and broader AI search. **Recipe coverage** identifies missing links; **Match ingredients** uses Cloudflare AI to retry ingredients still set to automatic matching, preserving existing links and manual exclusions. Its result reports linked, review-needed, failed, and concurrently changed ingredients. Recipe editors let you select, create, or edit a product without losing the recipe draft; save the recipe to persist its links. Catalog edits are shared across all recipes immediately. Linked products cannot be deleted until their recipe links are removed or changed.
 - **Kitchen timers:** tap the header timer to expand/collapse a left drawer. Names default to the open recipe’s title (first 25 characters), or the first unused **Timer I**, **Timer II**, **Timer III**, etc. when no recipe is open. Names remain editable; the 25-character limit applies only to recipe defaults. Set whole hours (0–99) and minutes (0–59), totaling at least one minute. Each timer shows its local start/end date and time and an hours:minutes:seconds countdown. The header always shows the earliest deadline, including a finished timer until dismissed. Finished timers gently pulse amber and play a quiet two-note chime every 12 seconds until **Done**; reduced-motion settings use a static highlight. Cancel removes a running timer. Timers survive reloads in this browser and synchronize between its same-origin tabs, but are not shared across devices. After reloading, tap the header to re-enable sound. **Test chime** lets you check your volume. Keep Hearth open and the device awake: browsers/iPadOS may suspend audio and background execution when locked or inactive. On returning, timers catch up from their saved deadlines; this is not a system alarm. Landscape iPad layouts use 44-pixel timer controls and leave the header visible above the drawer.
 
 When a timer is active, the header has **×**, **+1m**, and **+5m** controls for the timer it displays. Dismiss removes that timer and promotes the next one; adding time updates its deadline without opening the drawer. A finished timer restarts with one or five minutes from now and stops flashing. Extensions preserve the original start time, persist across reloads, and can change which timer is due next. These controls also appear in recipe/dialog headers and have accessible labels and 44-pixel touch targets.
 
 Ingredient names and grocery aliases match after trimming, whitespace normalization, and case folding. Only a single unambiguous catalog match links automatically when saving recipes (including reviewed imports and MCP writes); ambiguous or absent matches remain unlinked. Choosing **Leave unlinked** disables automatic matching for that ingredient until you choose **Auto-match** or a product again. Existing recipes are preserved by the catalog migration; use **Match ingredients** after building the catalog to link them.
+
+### AI ingredient matching
+
+The bulk button follows three stages in `src/ingredient-matching.ts`:
+
+1. **Normalize:** Workers AI's `@cf/meta/llama-3.2-3b-instruct` removes amounts and preparation words,
+   corrects obvious spelling errors, and retains variety, dietary qualifiers, and essential product form.
+   For example, “Chopped White Onions” becomes “White Onion”.
+2. **Retrieve broadly:** search both the original name and the cleaned phrase against all saved product
+   names and aliases. Unicode/accent normalization, plural variants, shared words, and up to two edits
+   on words at least four letters long collect possible matches. There is **no top-N candidate cap**.
+   This is indexed lexical search, not embeddings; unrelated synonyms need aliases in the catalog.
+3. **Choose:** `typesafe/jev` receives every candidate plus the original ingredient line, parsed amount,
+   recipe title/description, and **all instructions**. It selects a product or explicitly chooses none.
+   Only valid selections with confidence at least 0.7 are linked. This threshold is a conservative
+   starting point, not a calibrated guarantee of accuracy. Quantities and instructions are unchanged.
+
+Imported recipes retain the original ingredient line, including preparation notes; older or manually
+entered recipes fall back to their saved ingredient names. Editing the name clears stale original text.
+Oversized candidate sets are compared in batches and their winners compared again, rather than dropping
+candidates. Recipe context is never silently truncated; context that cannot fit is reported as failed.
+
+The implementation indexes catalog words once per run, keeps candidate prompts compact, and runs up to
+three independent ingredients concurrently. Identical in-flight work is shared. Normalization and Jev
+decisions are cached in D1 for seven days; selection keys include the complete recipe context and candidate
+data, so relevant edits invalidate them. Model failures are not persisted in the cache. Saving uses an
+atomic recipe/context and catalog-revision check: changes made during inference are preserved, and stale
+links are reported as skipped. A retry processes the latest saved data.
+
+Bulk AI matching requires a Cloudflare deployment with the `AI` binding and sufficient **AI Gateway
+credits for Jev**. The production configuration and disposable website Previews provide that binding.
+Local development remains network-independent: recipe saves use exact matching, and the AI button
+explains that a Cloudflare deployment is required. Recipe saves and MCP writes never invoke the models.
+
+An exploratory nine-case live evaluation covered typos, 65 onion candidates, aliases, dietary qualifiers,
+fresh/canned context, and unsuitable substitutions. The final pipeline made **9/9 correct decisions**.
+The cheaper 3B normalizer retained the right ingredient identities but produced singular phrases in only
+7/9 cases; retrieval handles the remaining plurals. A 1B alternative rejected JSON-schema output, and
+an 8B alternative dropped “toasted”, so neither replaced the 3B model. This small fixture is not proof of
+general accuracy; review saved links, especially dietary restrictions.
+
+Compact Jev candidates reduced observed input tokens from 10,610 to 7,585 (about 28%). A sequential
+uncached direct-model pass took 3.93 s; concurrent optimized passes took 1.89–2.40 s. The final fresh Preview
+recorded 4.15 s uncached and 0.80 s on a repeated, cached pass with **zero model calls**, including D1
+reads/writes but excluding HTTP/Access transit. These are small same-orb observations, not latency guarantees.
+API reports include model-call/cache-hit counts, candidates, stage times, and total matching time;
+stage times sum overlapping calls and can exceed elapsed total time.
 
 Compatible shopping units convert within physical families: kg/g/lb/oz for mass, and l/ml/cup/tbsp/tsp for volume (US customary measures). `oz` means weight, not fluid ounces. Counts such as each, can, clove, bunch, or slice only convert to the same unit. For example, a recipe requiring two limes cannot be converted to a 2 lb bag without knowing their weight; the list says **Check amount**, shows the recipe needs, and does not invent a purchase count. If any requirement for a product is incompatible, its entire purchase count needs review. Counts assume no pantry stock and one chosen package size per product, not price optimization. Notes such as “add chicken” are shown but **do not invent quantities**; add that chicken as an extra or recipe ingredient. Instruction text stays as written when scaling.
 
@@ -85,6 +132,28 @@ With an **empty disposable local household**, running local services, and `agent
 With local development running and `agent-browser` installed, `npx task timers:smoke` exercises the actual timer UI, browser storage, and native Web Audio. It checks validation, hour/minute conversion, deadline ordering, start/end times, landscape/narrow layouts, touch-target sizing, collapse/focus, navigation, reload recovery, a real one-minute expiry, audible-tone scheduling, flashing/reduced motion, dismissal, and cancellation. It uses an isolated browser session and closes it afterward. Chromium layout checks do not replace testing sound, touch, and background behavior on a physical iPad in Safari.
 
 `npx task test` runs integration smoke tests that bundle the actual Workers with Rolldown and exercise disposable local D1/KV via Miniflare. They cover API CRUD, SQL persistence, validation, delete protection, seeding, signed Access tokens, CSRF rejection, and MCP OAuth and recipe operations. Authentication tests verify valid tokens and reject forged signatures, incorrect issuers or audiences, expired or not-yet-valid tokens, and missing expiry or audience configuration. Tests do not use the development household database. Use browser or isolated Preview end-to-end testing for changes needing UI or real Cloudflare coverage.
+
+Matching integration smoke coverage exercises actual Worker/D1 persistence with upstream wire fixtures,
+including broad retrieval, original context, uncertain/malformed/outage responses, concurrent edits,
+in-flight deduplication, bounded concurrency, cache expiry/invalidation, and oversized inputs. For live
+model accuracy and complete Preview/browser coverage, use:
+
+```sh
+npx task matching:eval -- models .amp/in/artifacts/matching-models.json
+npx task preview -- up
+npx task matching:eval -- preview-ui .amp/in/artifacts/matching-browser.json
+npx task preview -- down
+npx task preview -- list
+```
+
+Live evaluation consumes real Cloudflare credits. Preview modes require an **empty owning thread Preview**,
+create and remove their own fixtures, and never use production. They perform two persisted matching passes
+to measure cache reuse; existing seven-day cache entries may make the first pass warm. `models` is uncached.
+Use `normalization` instead of `models` to enforce strict singular-phrase quality independently, optionally
+passing a normalizer model as the third argument. This stricter exploratory check currently fails 2/9 cases
+on plural wording; the complete pipeline handles those cases correctly. Reports include raw model outputs
+for diagnosis. Browser mode also checks loading, persisted coverage refresh, and narrow layouts, and saves
+screenshots to `.amp/in/artifacts/`. Always tear down the Preview when testing ends, including after failure.
 
 All generic [anti-slop](https://github.com/dmmulroy/anti-slop) rules are enabled in `oxlint.config.ts`. Their source, CLI integration test, license, and upstream revision are vendored under `tools/oxlint/anti-slop`; unit tests are omitted. Do not modify the vendored snapshot during formatting.
 

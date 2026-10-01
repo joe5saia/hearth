@@ -7,6 +7,12 @@ const id = z.string().min(1).max(100);
 
 const ingredient = z.strictObject({
   name: z.string().min(1).max(150),
+  originalText: z
+    .string()
+    .min(1)
+    .max(4000)
+    .optional()
+    .describe("Original ingredient line, including preparation notes, when available."),
   quantity: z.number().positive().max(1_000_000),
   unit: z.enum(units),
   groceryItemId: id

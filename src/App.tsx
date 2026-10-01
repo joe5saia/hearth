@@ -4,6 +4,7 @@ import { KitchenTimers } from "./KitchenTimers";
 import { GroceryForm, GroceryManager } from "./GroceryManager";
 import { ShoppingItems } from "./ShoppingItems";
 import { matchGrocery } from "./groceries";
+import { MatchReportSchema } from "./domain";
 import {
   ArrowDownToLine,
   ArrowRight,
@@ -321,6 +322,21 @@ export function App() {
     }
   };
 
+  const matchGroceries = async () => {
+    setBusy(true);
+    setError("");
+    try {
+      const response = await api("groceries/match", "POST");
+      const result = Schema.decodeUnknownSync(Schema.Struct({ report: MatchReportSchema }))(
+        await response.json(),
+      );
+      await refresh();
+      return result.report;
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const addMeal = (date = nextDinnerDate(data.meals, week), recipeId = data.recipes[0]?.id ?? "") =>
     setModal({
       kind: "meal",
@@ -503,7 +519,7 @@ export function App() {
                 add={() => setModal({ kind: "grocery", item: newGrocery() })}
                 edit={(item) => setModal({ kind: "grocery", item })}
                 editRecipe={(recipe) => setModal({ kind: "editor", recipe })}
-                match={() => mutate("groceries/match", "POST", undefined, "Ingredient matches updated")}
+                match={matchGroceries}
               />
             )}
             {data.recipes.length === 0 && (
@@ -1938,7 +1954,9 @@ function RecipeForm({
                   maxLength={150}
                   required
                   value={item.name}
-                  onChange={(event) => updateIngredient(index, { ...item, name: event.target.value })}
+                  onChange={(event) =>
+                    updateIngredient(index, { ...item, name: event.target.value, originalText: undefined })
+                  }
                 />
                 <input
                   aria-label={`Ingredient ${index + 1} quantity`}

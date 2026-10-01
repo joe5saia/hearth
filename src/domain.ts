@@ -2,6 +2,7 @@ import { Schema } from "effect";
 
 export const IngredientSchema = Schema.Struct({
   name: Schema.String,
+  originalText: Schema.optional(Schema.String),
   quantity: Schema.Number,
   unit: Schema.String,
   groceryItemId: Schema.optional(Schema.NullOr(Schema.String)),
@@ -57,6 +58,27 @@ export const GroceryItemSchema = Schema.Struct({
 });
 
 export type GroceryItem = typeof GroceryItemSchema.Type;
+
+export const MatchReportSchema = Schema.Struct({
+  attempted: Schema.Number,
+  matched: Schema.Number,
+  unmatched: Schema.Number,
+  failed: Schema.Number,
+  conflicts: Schema.Number,
+  normalizationCalls: Schema.Number,
+  selectionCalls: Schema.Number,
+  normalizationCacheHits: Schema.Number,
+  selectionCacheHits: Schema.Number,
+  candidates: Schema.Number,
+  normalizationMs: Schema.Number,
+  retrievalMs: Schema.Number,
+  selectionMs: Schema.Number,
+  totalMs: Schema.Number,
+});
+
+export type MatchReport = {
+  -readonly [Key in keyof typeof MatchReportSchema.Type]: (typeof MatchReportSchema.Type)[Key];
+};
 
 export const ShoppingOrderSchema = Schema.Struct({
   aisles: Schema.Array(Schema.String),

@@ -51,6 +51,7 @@ export function validateRecipe(recipe: Recipe): boolean {
       (i) =>
         !!i.name.trim() &&
         i.name.length <= 150 &&
+        (i.originalText === undefined || (!!i.originalText.trim() && i.originalText.length <= 4000)) &&
         i.quantity > 0 &&
         i.quantity <= 1_000_000 &&
         units.includes(i.unit),

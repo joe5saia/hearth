@@ -20,6 +20,7 @@ import { importRecipe } from "./recipe-import";
 import { parseRecipe, recipeStatement, validateRecipe, type RecipeRow } from "./recipes";
 import { matchRecipeIngredients, RecipeInputError } from "./recipes";
 import { parseGrocery, validateGrocery, validateShoppingOrder, type GroceryRow } from "./groceries";
+import { matchIngredients } from "./ingredient-matching";
 
 class ApiError extends Data.TaggedError("ApiError")<{ status: number; message: string }> {}
 
@@ -167,21 +168,67 @@ function api(request: Request, env: WebsiteEnv) {
     }
 
     if (method === "POST" && path === "/api/groceries/match") {
-      yield* database(async () => {
-        const rows = await db.prepare("SELECT * FROM recipes").all<RecipeRow>();
-        const recipes = await matchRecipeIngredients(db, rows.results.map(parseRecipe));
-
-        if (recipes.length)
-          await db.batch(
-            recipes.map((recipe, index) =>
-              db
-                .prepare("UPDATE recipes SET ingredients=? WHERE id=? AND ingredients=?")
-                .bind(JSON.stringify(recipe.ingredients), recipe.id, rows.results[index].ingredients),
-            ),
-          );
+      if (!("AI" in env) || !env.AI)
+        return yield* Effect.fail(
+          new ApiError({
+            status: 503,
+            message:
+              "AI ingredient matching requires a Cloudflare deployment. Local recipe saves still use exact matching.",
+          }),
+        );
+      const ai = env.AI;
+      const started = performance.now();
+      const report = yield* database(async () => {
+        const snapshot = await db.batch([
+          db.prepare("SELECT * FROM recipes"),
+          db.prepare("SELECT * FROM groceries ORDER BY name,id"),
+          db.prepare("SELECT version FROM grocery_revision WHERE id=1"),
+        ]);
+        // SAFETY: These fixed SELECTs return recipe rows, grocery rows and the catalog revision in order.
+        const [rows, products, revision] = snapshot as [
+          D1Result<RecipeRow>,
+          D1Result<GroceryRow>,
+          D1Result<{ version: number }>,
+        ];
+        const originals = rows.results.map(parseRecipe);
+        const result = await matchIngredients(ai, originals, products.results.map(parseGrocery), db);
+        const changed = result.recipes.flatMap((recipe, index) => {
+          const links = recipe.ingredients.filter(
+            (ingredient, position) =>
+              ingredient.groceryItemId !== originals[index].ingredients[position].groceryItemId,
+          ).length;
+          return links ? [{ recipe, before: rows.results[index], links }] : [];
+        });
+        if (!changed.length) return result.report;
+        const writes = await db.batch(
+          changed.map(({ recipe, before }) =>
+            db
+              .prepare(
+                "UPDATE recipes SET ingredients=? WHERE id=? AND ingredients=? AND title=? AND description=? AND instructions=? AND (SELECT version FROM grocery_revision WHERE id=1)=?",
+              )
+              .bind(
+                JSON.stringify(recipe.ingredients),
+                recipe.id,
+                before.ingredients,
+                before.title,
+                before.description,
+                before.instructions,
+                revision.results[0].version,
+              ),
+          ),
+        );
+        for (const [index, saved] of writes.entries()) {
+          if (!saved.meta.changes) {
+            const { links } = changed[index];
+            result.report.matched -= links;
+            result.report.conflicts += links;
+          }
+        }
+        return result.report;
       });
+      report.totalMs = performance.now() - started;
 
-      return Response.json({ ok: true });
+      return Response.json({ ok: true, report });
     }
 
     if (method === "PUT" && path === "/api/collections") {

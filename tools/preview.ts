@@ -102,6 +102,7 @@ export function previewConfig(worker: string, db: Database, audience: string, cl
     },
     previews: {
       vars: { LOCAL_DEV: "false", ACCESS_AUD: audience, PREVIEW_CLIENT_ID: clientId },
+      ai: { binding: "AI" },
       d1_databases: [{ binding: "DB", database_name: db.name, database_id: db.uuid }],
       observability: { enabled: true, logs: { enabled: true, invocation_logs: true } },
     },

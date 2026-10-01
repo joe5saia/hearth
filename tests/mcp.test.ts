@@ -148,15 +148,21 @@ it("auto-links MCP ingredient writes and rejects invalid references atomically",
       "INSERT INTO groceries(id,name,url,aisle,quantity,unit,aliases) VALUES('mcp-lemon','Lemon','','',1,'each','[]')",
     )
     .run();
-  const created = await call("create_recipes", { recipes: [draft("Linked MCP")] });
+  const input = draft("Linked MCP");
+  const originalText = "1 can chickpeas, drained and rinsed";
+  const created = await call("create_recipes", {
+    recipes: [{ ...input, ingredients: [{ ...input.ingredients[0], originalText }, input.ingredients[1]] }],
+  });
   const recipe = created.structuredContent.recipes[0];
   expect(recipe.ingredients[1].groceryItemId).toBe("mcp-lemon");
+  expect(recipe.ingredients[0].originalText).toBe(originalText);
 
   const updated = await call("update_recipes", {
     updates: [{ id: recipe.id, changes: { title: "Preserved MCP" } }],
   });
 
   expect(updated.structuredContent.recipes[0].ingredients[1].groceryItemId).toBe("mcp-lemon");
+  expect(updated.structuredContent.recipes[0].ingredients[0].originalText).toBe(originalText);
 
   const failed = await call("create_recipes", {
     recipes: [

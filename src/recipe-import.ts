@@ -213,7 +213,10 @@ export function parseRecipeHtml(html: string, source: string) {
           source,
           photo: Option.isSome(photo) ? photo.value : Option.isSome(imageObject) ? imageObject.value.url : "",
           rating: "neutral" as const,
-          ingredients: ingredients.map((item) => item.ingredient),
+          ingredients: ingredients.map((item, index) => ({
+            ...item.ingredient,
+            originalText: plainText(data.recipeIngredient[index]),
+          })),
           instructions: data.recipeInstructions.flatMap((step) => {
             if (Schema.is(Schema.String)(step)) return [plainText(step)];
 

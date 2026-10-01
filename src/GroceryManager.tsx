@@ -1,6 +1,7 @@
 import { useId, useState } from "react";
 import { Link2, Pencil, Plus, RefreshCw, Search } from "lucide-react";
 import { displayAmount, units, type GroceryItem, type Recipe } from "./domain";
+import type { MatchReport } from "./domain";
 import "./grocery-manager.css";
 
 export type GroceryFormProps = {
@@ -224,7 +225,7 @@ export type GroceryManagerProps = {
   add: () => void;
   edit: (item: GroceryItem) => void;
   editRecipe: (recipe: Recipe) => void;
-  match: () => Promise<boolean>;
+  match: () => Promise<Readonly<MatchReport>>;
 };
 
 export function GroceryManager({
@@ -272,16 +273,16 @@ export function GroceryManager({
     setMatchMessage("");
 
     try {
-      const success = await match();
-      setMatchFailed(!success);
+      const report = await match();
+      setMatchFailed(report.failed > 0 || report.conflicts > 0);
       setMatchMessage(
-        success
-          ? "Automatic matching completed. Review recipe coverage below."
-          : "Could not match ingredients. Please try again.",
+        `Matching completed: ${report.matched} linked · ${report.unmatched} need review · ${report.failed} failed · ${report.conflicts} skipped because data changed. Existing links and manual exclusions were kept.${report.failed ? " Check Cloudflare AI billing/access and retry failed ingredients." : ""}`,
       );
-    } catch {
+    } catch (error) {
       setMatchFailed(true);
-      setMatchMessage("Could not match ingredients. Please try again.");
+      setMatchMessage(
+        error instanceof Error ? error.message : "Could not match ingredients. Please try again.",
+      );
     } finally {
       setMatching(false);
     }
@@ -389,8 +390,9 @@ export function GroceryManager({
           may have both gaps.
         </p>
         <p className="grocery-note">
-          Automatic matching uses product and alternate ingredient names. Edit a recipe to review or change
-          its links.
+          Match ingredients uses AI to search product and alternate names, then chooses a suitable product
+          using the original ingredient and recipe instructions. Uncertain matches stay unlinked. Edit a
+          recipe to review or change its links.
         </p>
         {!recipes.length ? (
           <p className="grocery-empty">Add recipes to see ingredient coverage here.</p>
