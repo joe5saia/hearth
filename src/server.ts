@@ -40,8 +40,15 @@ const database = <A>(run: () => Promise<A>) =>
         : new ApiError({ status: 500, message: "We couldn’t save that change. Please try again." }),
   });
 
-const readJson = (request: Request) =>
-  Effect.tryPromise({ try: () => request.json(), catch: () => invalid("Please send valid JSON.") });
+const readJson = <S extends Schema.Constraint>(request: Request, schema: S, message: string) =>
+  Effect.gen(function* () {
+    const body = yield* Effect.tryPromise({
+      try: () => request.json(),
+      catch: () => invalid("Please send valid JSON."),
+    });
+
+    return yield* Schema.decodeUnknownEffect(schema)(body).pipe(Effect.mapError(() => invalid(message)));
+  });
 
 const decodeId = (path: string, prefix: string) =>
   Effect.try({
@@ -108,12 +115,10 @@ function api(request: Request, db: D1Database, ai?: Ai) {
     }
 
     if (method === "PUT" && path === "/api/groceries") {
-      const item = yield* Schema.decodeUnknownEffect(GroceryItemSchema)(yield* readJson(request)).pipe(
-        Effect.mapError(() => invalid("Invalid grocery item.")),
-      );
+      const item = yield* readJson(request, GroceryItemSchema, "Invalid grocery item.");
 
       if (!validateGrocery(item))
-        return yield* Effect.fail(invalid("Check the grocery name, package quantity, unit, and URL."));
+        return yield* invalid("Check the grocery name, package quantity, unit, and URL.");
       yield* database(() =>
         db
           .prepare(`INSERT INTO groceries(id,name,url,aisle,quantity,unit,aliases) VALUES(?,?,?,?,?,?,?)
@@ -145,20 +150,18 @@ function api(request: Request, db: D1Database, ai?: Ai) {
       );
 
       if (!result.meta.changes)
-        return yield* Effect.fail(
-          new ApiError({ status: 409, message: "This grocery is used by a recipe or no longer exists." }),
-        );
+        return yield* new ApiError({
+          status: 409,
+          message: "This grocery is used by a recipe or no longer exists.",
+        });
 
       return Response.json({ ok: true });
     }
 
     if (method === "PUT" && path === "/api/shopping-order") {
-      const order = yield* Schema.decodeUnknownEffect(ShoppingOrderSchema)(yield* readJson(request)).pipe(
-        Effect.mapError(() => invalid("Invalid shopping order.")),
-      );
+      const order = yield* readJson(request, ShoppingOrderSchema, "Invalid shopping order.");
 
-      if (!validateShoppingOrder(order))
-        return yield* Effect.fail(invalid("Shopping order must contain unique strings."));
+      if (!validateShoppingOrder(order)) return yield* invalid("Shopping order must contain unique strings.");
       yield* database(() =>
         db
           .prepare(
@@ -195,13 +198,11 @@ function api(request: Request, db: D1Database, ai?: Ai) {
           }),
         );
 
-        return yield* Effect.fail(
-          new ApiError({
-            status: 503,
-            message:
-              "AI ingredient matching requires a Cloudflare deployment. Local recipe saves still use exact matching.",
-          }),
-        );
+        return yield* new ApiError({
+          status: 503,
+          message:
+            "AI ingredient matching requires a Cloudflare deployment. Local recipe saves still use exact matching.",
+        });
       }
 
       let stage = "snapshot";
@@ -302,16 +303,12 @@ function api(request: Request, db: D1Database, ai?: Ai) {
     }
 
     if (method === "PUT" && path === "/api/collections") {
-      const body = yield* readJson(request);
-
-      const collection = yield* Schema.decodeUnknownEffect(CollectionSchema)(body).pipe(
-        Effect.mapError(() => invalid("Add a collection name.")),
-      );
+      const collection = yield* readJson(request, CollectionSchema, "Add a collection name.");
 
       const name = collection.name.trim();
 
       if (!collection.id || collection.id.length > 100 || !name || name.length > 100)
-        return yield* Effect.fail(invalid("Add a collection name of 100 characters or less."));
+        return yield* invalid("Add a collection name of 100 characters or less.");
 
       const result = yield* database(() =>
         db
@@ -323,9 +320,7 @@ function api(request: Request, db: D1Database, ai?: Ai) {
       );
 
       if (!result.meta.changes)
-        return yield* Effect.fail(
-          new ApiError({ status: 409, message: "A collection with that name already exists." }),
-        );
+        return yield* new ApiError({ status: 409, message: "A collection with that name already exists." });
 
       return Response.json({ ok: true });
     }
@@ -335,21 +330,19 @@ function api(request: Request, db: D1Database, ai?: Ai) {
       const result = yield* database(() => db.prepare("DELETE FROM collections WHERE id=?").bind(id).run());
 
       if (!result.meta.changes)
-        return yield* Effect.fail(
-          new ApiError({ status: 404, message: "That collection no longer exists." }),
-        );
+        return yield* new ApiError({ status: 404, message: "That collection no longer exists." });
 
       return Response.json({ ok: true });
     }
 
     if (method === "POST" && path === "/api/recipes/import") {
-      const body = yield* readJson(request);
-
-      const input = yield* Schema.decodeUnknownEffect(Schema.Struct({ url: Schema.String }))(body).pipe(
-        Effect.mapError(() => invalid("Paste a NYT Cooking recipe URL.")),
+      const input = yield* readJson(
+        request,
+        Schema.Struct({ url: Schema.String }),
+        "Paste a NYT Cooking recipe URL.",
       );
 
-      if (input.url.length > 4000) return yield* Effect.fail(invalid("That URL is too long."));
+      if (input.url.length > 4000) return yield* invalid("That URL is too long.");
 
       const result = yield* Effect.tryPromise({
         try: () => importRecipe(input.url.trim()),
@@ -360,25 +353,17 @@ function api(request: Request, db: D1Database, ai?: Ai) {
       });
 
       if (!validateRecipe(result.recipe))
-        return yield* Effect.fail(
-          invalid("This recipe contains missing or unsupported fields. Please add it manually."),
-        );
+        return yield* invalid("This recipe contains missing or unsupported fields. Please add it manually.");
 
       return Response.json(result);
     }
 
     if (method === "PUT" && path === "/api/recipes") {
-      const body = yield* readJson(request);
-
-      const recipe = yield* Schema.decodeUnknownEffect(RecipeSchema)(body).pipe(
-        Effect.mapError(() => invalid("The recipe is missing required fields.")),
-      );
+      const recipe = yield* readJson(request, RecipeSchema, "The recipe is missing required fields.");
 
       if (!validateRecipe(recipe))
-        return yield* Effect.fail(
-          invalid(
-            "Check your recipe: add a title, positive quantities, ingredients, instructions, and valid URLs.",
-          ),
+        return yield* invalid(
+          "Check your recipe: add a title, positive quantities, ingredients, instructions, and valid URLs.",
         );
 
       if (recipe.category) {
@@ -387,31 +372,30 @@ function api(request: Request, db: D1Database, ai?: Ai) {
         );
 
         if (!collection)
-          return yield* Effect.fail(invalid("That collection no longer exists. Choose another collection."));
+          return yield* invalid("That collection no longer exists. Choose another collection.");
       }
 
-      yield* database(async () => {
-        const [linked] = await matchRecipeIngredients(db, [recipe]);
-        await recipeStatement(db, linked).run();
-      });
+      const [linked] = yield* database(() => matchRecipeIngredients(db, [recipe]));
+      yield* database(() => recipeStatement(db, linked).run());
 
       return Response.json({ ok: true });
     }
 
     if (method === "PUT" && path.startsWith("/api/recipes/rating/")) {
       const id = yield* decodeId(path, "/api/recipes/rating/");
-      const body = yield* readJson(request);
 
-      const { rating } = yield* Schema.decodeUnknownEffect(
+      const { rating } = yield* readJson(
+        request,
         Schema.Struct({ rating: RecipeSchema.fields.rating }),
-      )(body).pipe(Effect.mapError(() => invalid("Choose a valid recipe rating.")));
+        "Choose a valid recipe rating.",
+      );
 
       const result = yield* database(() =>
         db.prepare("UPDATE recipes SET rating=? WHERE id=?").bind(rating, id).run(),
       );
 
       if (!result.meta.changes)
-        return yield* Effect.fail(new ApiError({ status: 404, message: "That recipe no longer exists." }));
+        return yield* new ApiError({ status: 404, message: "That recipe no longer exists." });
 
       return Response.json({ ok: true });
     }
@@ -428,22 +412,16 @@ function api(request: Request, db: D1Database, ai?: Ai) {
       );
 
       if (!result.meta.changes)
-        return yield* Effect.fail(
-          new ApiError({
-            status: 409,
-            message: "Remove this recipe from your meal plan before deleting it.",
-          }),
-        );
+        return yield* new ApiError({
+          status: 409,
+          message: "Remove this recipe from your meal plan before deleting it.",
+        });
 
       return Response.json({ ok: true });
     }
 
     if (method === "PUT" && path === "/api/meals") {
-      const body = yield* readJson(request);
-
-      const meal = yield* Schema.decodeUnknownEffect(MealSchema)(body).pipe(
-        Effect.mapError(() => invalid("The meal is missing required fields.")),
-      );
+      const meal = yield* readJson(request, MealSchema, "The meal is missing required fields.");
 
       if (
         !meal.id ||
@@ -453,13 +431,13 @@ function api(request: Request, db: D1Database, ai?: Ai) {
         meal.scale > 100 ||
         meal.note.length > 2000
       )
-        return yield* Effect.fail(invalid("Choose a valid date and a recipe scale between 0 and 100."));
+        return yield* invalid("Choose a valid date and a recipe scale between 0 and 100.");
 
       const recipe = yield* database(() =>
         db.prepare("SELECT id FROM recipes WHERE id=?").bind(meal.recipeId).first(),
       );
 
-      if (!recipe) return yield* Effect.fail(invalid("That recipe no longer exists. Choose another recipe."));
+      if (!recipe) return yield* invalid("That recipe no longer exists. Choose another recipe.");
       yield* database(() => mealStatement(db, meal).run());
 
       return Response.json({ ok: true });
@@ -473,11 +451,7 @@ function api(request: Request, db: D1Database, ai?: Ai) {
     }
 
     if (method === "PUT" && path === "/api/extras") {
-      const body = yield* readJson(request);
-
-      const extra = yield* Schema.decodeUnknownEffect(ExtraSchema)(body).pipe(
-        Effect.mapError(() => invalid("The item is missing required fields.")),
-      );
+      const extra = yield* readJson(request, ExtraSchema, "The item is missing required fields.");
 
       if (
         !extra.id ||
@@ -486,7 +460,7 @@ function api(request: Request, db: D1Database, ai?: Ai) {
         extra.name.length > 200 ||
         ![0, 1].includes(extra.checked)
       )
-        return yield* Effect.fail(invalid("Add an item name of 200 characters or less."));
+        return yield* invalid("Add an item name of 200 characters or less.");
       yield* database(() =>
         db
           .prepare(
@@ -507,14 +481,10 @@ function api(request: Request, db: D1Database, ai?: Ai) {
     }
 
     if (method === "PUT" && path === "/api/checks") {
-      const body = yield* readJson(request);
-
-      const check = yield* Schema.decodeUnknownEffect(CheckSchema)(body).pipe(
-        Effect.mapError(() => invalid("Invalid shopping item.")),
-      );
+      const check = yield* readJson(request, CheckSchema, "Invalid shopping item.");
 
       if (check.key.length > 1000 || ![0, 1].includes(check.checked))
-        return yield* Effect.fail(invalid("Invalid shopping item."));
+        return yield* invalid("Invalid shopping item.");
       yield* database(() =>
         check.checked
           ? db
@@ -530,13 +500,14 @@ function api(request: Request, db: D1Database, ai?: Ai) {
     if (method === "POST" && path === "/api/demo") {
       const today = url.searchParams.get("today") ?? "";
 
-      if (!validDate(today)) return yield* Effect.fail(invalid("Choose a valid sample week."));
+      if (!validDate(today)) return yield* invalid("Choose a valid sample week.");
       const existing = yield* database(() => db.prepare("SELECT id FROM recipes LIMIT 1").first());
 
       if (existing)
-        return yield* Effect.fail(
-          new ApiError({ status: 409, message: "Sample recipes are only added to an empty household." }),
-        );
+        return yield* new ApiError({
+          status: 409,
+          message: "Sample recipes are only added to an empty household.",
+        });
 
       const collections = yield* database(() =>
         db.prepare("SELECT name FROM collections").all<{ name: string }>(),
@@ -561,7 +532,7 @@ function api(request: Request, db: D1Database, ai?: Ai) {
       return Response.json({ ok: true });
     }
 
-    return yield* Effect.fail(new ApiError({ status: 404, message: "That page couldn’t be found." }));
+    return yield* new ApiError({ status: 404, message: "That page couldn’t be found." });
   });
 }
 
@@ -576,11 +547,7 @@ export function householdApi(request: Request, db: D1Database, ai?: Ai): Promise
       Effect.catchCause(() =>
         Effect.succeed(Response.json({ error: "Something went wrong. Please try again." }, { status: 500 })),
       ),
-      Effect.map((response) => {
-        response.headers.set("Cache-Control", "no-store");
-
-        return response;
-      }),
+      Effect.tap((response) => Effect.sync(() => response.headers.set("Cache-Control", "no-store"))),
     ),
   );
 }

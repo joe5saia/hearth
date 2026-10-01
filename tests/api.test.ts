@@ -151,6 +151,64 @@ const send = (path: string, method: string, body: string) =>
   });
 
 describe("real Worker with disposable SQLite D1", () => {
+  it("distinguishes malformed JSON from schema failures and never caches API responses", async () => {
+    const routes = [
+      ["groceries", "PUT", "Invalid grocery item."],
+      ["shopping-order", "PUT", "Invalid shopping order."],
+      ["collections", "PUT", "Add a collection name."],
+      ["recipes/import", "POST", "Paste a NYT Cooking recipe URL."],
+      ["recipes", "PUT", "The recipe is missing required fields."],
+      ["recipes/rating/missing", "PUT", "Choose a valid recipe rating."],
+      ["meals", "PUT", "The meal is missing required fields."],
+      ["extras", "PUT", "The item is missing required fields."],
+      ["checks", "PUT", "Invalid shopping item."],
+    ];
+
+    for (const [path, method, message] of routes) {
+      for (const [body, error] of [
+        ["{", "Please send valid JSON."],
+        ["null", message],
+      ]) {
+        const response = await send(path, method, body);
+        expect(response.status).toBe(400);
+        expect(response.headers.get("Cache-Control")).toBe("no-store");
+        expect(await response.json()).toEqual({ error });
+      }
+    }
+
+    const missing = await worker.dispatchFetch("http://localhost/api/missing");
+    expect(missing.status).toBe(404);
+    expect(missing.headers.get("Cache-Control")).toBe("no-store");
+    expect(await missing.json()).toEqual({ error: "That page couldn’t be found." });
+    const success = await worker.dispatchFetch("http://localhost/api/household");
+    expect(success.status).toBe(200);
+    expect(success.headers.get("Cache-Control")).toBe("no-store");
+  });
+  it("maps D1 write failures and stored-data defects to distinct uncached server errors", async () => {
+    const db = await worker.getD1Database("DB");
+    await db
+      .prepare(
+        "CREATE TRIGGER reject_recipe BEFORE INSERT ON recipes BEGIN SELECT RAISE(ABORT, 'test write failure'); END",
+      )
+      .run();
+
+    try {
+      const failed = await send("recipes", "PUT", JSON.stringify(sampleRecipes[0]));
+      expect(failed.status).toBe(500);
+      expect(failed.headers.get("Cache-Control")).toBe("no-store");
+      expect(await failed.json()).toEqual({ error: "We couldn’t save that change. Please try again." });
+      expect(await db.prepare("SELECT count(*) AS count FROM recipes").first()).toEqual({ count: 0 });
+    } finally {
+      await db.prepare("DROP TRIGGER reject_recipe").run();
+    }
+
+    expect((await send("recipes", "PUT", JSON.stringify(sampleRecipes[0]))).status).toBe(200);
+    await db.prepare("UPDATE recipes SET instructions='[1]'").run();
+    const defect = await worker.dispatchFetch("http://localhost/api/household");
+    expect(defect.status).toBe(500);
+    expect(defect.headers.get("Cache-Control")).toBe("no-store");
+    expect(await defect.json()).toEqual({ error: "Something went wrong. Please try again." });
+  });
   it("calculates whole packages from saved links and scaled meals, preserving routes and quantity-sensitive checks", async () => {
     const put = async (
       path: string,
