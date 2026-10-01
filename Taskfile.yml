@@ -24,6 +24,9 @@ tasks:
   build:
     desc: Build production assets
     cmds: [npm run build]
+  branding:generate:
+    desc: Regenerate production logo and device assets from the vector masters
+    cmds: [node tools/branding.ts]
   benchmark:
     desc: Measure local API, shopping CPU, and production bundle sizes (optional -- report.json)
     cmds:

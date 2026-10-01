@@ -131,26 +131,20 @@ small {
   z-index: 5;
 }
 .brand {
-  font-family: var(--serif);
-  font-size: 37px;
-  letter-spacing: -1.8px;
   display: flex;
   align-items: center;
-  gap: 9px;
 }
-.brand-icon {
-  display: flex;
-  color: #5c6b4d;
-}
-.brand-dot {
-  color: #795538;
-  margin-left: -10px;
+.brand img,
+.mobile-brand img {
+  display: block;
+  max-width: 100%;
+  height: auto;
 }
 .brand-caption {
   font-size: 10px;
   letter-spacing: 1.1px;
   color: #858878;
-  margin: 9px 0 48px 39px;
+  margin: 9px 0 48px 57px;
 }
 .sidebar nav {
   display: flex;
@@ -728,10 +722,8 @@ main {
   border-top: 1px solid var(--line);
   color: #a9ad9a;
 }
-.page-footer > span {
-  font-family: var(--serif);
-  font-size: 16px;
-  letter-spacing: -0.6px;
+.page-footer img {
+  display: block;
 }
 .page-footer p {
   font-size: 9px;
@@ -1797,15 +1789,13 @@ textarea::placeholder {
     width: 190px;
     padding: 35px 15px 20px;
   }
-  .brand {
-    font-size: 33px;
-  }
   .sidebar nav a {
     font-size: 12px;
     gap: 9px;
   }
   .brand-caption {
     font-size: 9px;
+    margin-left: 50px;
   }
   main {
     margin-left: 190px;
@@ -1889,20 +1879,11 @@ textarea::placeholder {
     width: 74px;
     padding: 30px 10px;
   }
-  .brand {
-    font-size: 0;
-    gap: 0;
-    justify-content: center;
-  }
-  .brand-dot,
   .brand-caption,
   .sidebar-bottom,
   .nav-count,
   .nav-dot {
     display: none;
-  }
-  .brand-icon {
-    margin-bottom: 32px;
   }
   .sidebar nav a {
     font-size: 0;
@@ -2559,7 +2540,6 @@ textarea::placeholder {
   .error,
   .delete-confirm,
   .toast,
-  .page-footer > span,
   .instruction-editor > span {
     font-size: 1rem;
     line-height: 1.5;
@@ -2635,9 +2615,6 @@ textarea::placeholder {
     display: inline-flex;
     align-items: center;
     min-height: 44px;
-    font: 500 1.75rem var(--serif);
-    letter-spacing: -1px;
-    color: var(--olive);
   }
   .week-navigation {
     width: 100%;
@@ -3032,7 +3009,13 @@ textarea::placeholder {
     padding-block: 12px;
   }
   .topbar .mobile-brand {
-    display: none;
+    display: inline-flex;
+    align-items: center;
+    flex-shrink: 0;
+    min-height: 44px;
+  }
+  .topbar .mobile-brand img {
+    width: 36px;
   }
 }
 @media (max-width: 600px) {
@@ -3045,6 +3028,9 @@ textarea::placeholder {
   .topbar .mobile-brand {
     display: inline-flex;
     order: 0;
+  }
+  .topbar .mobile-brand img {
+    width: 136px;
   }
   .topbar > .secondary {
     margin-left: auto;

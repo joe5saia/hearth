@@ -45,6 +45,29 @@ Ingredient names match after trimming, whitespace normalization, and case foldin
 
 The app uses one shared household, with no per-person app accounts or roles. Household changes are saved to the server; kitchen timers are the device-local exception. Reload to see another household member's latest edits; simultaneous edits use last-write-wins. Browser calendar dates are used without UTC conversion. Local development is network-independent after dependencies are installed; this is not an offline-sync PWA.
 
+## Logo and device assets
+
+Hearth's Roman mosaic ember identity uses outlined lettering and true vector artwork, not generated
+image crops. Review and download the kit at `/brand/` in production (household sign-in required),
+or `/brand/index.html` in Vite development. `src/brand.ts` owns the vector masters shared with MCP consent.
+Run `npx task branding:generate` after editing the masters, and commit the generated assets.
+Generation uses pinned resvg and needs no system fonts, Python, or ImageMagick.
+
+- `public/brand/`: transparent SVG and high-resolution PNG logos/icons; full-color, olive-only, and
+  cream-reversed treatments; detailed, small, and micro symbols; a 1200 × 630 sharing card and lettering license.
+- Browser tabs: SVG favicon, 16/32/48 px PNGs and multi-frame ICO; a single-color Safari pinned-tab mask.
+- Apple home screens: opaque 120/152/167/180 px PNGs, including the conventional `/apple-touch-icon.png`.
+- Web-app shortcuts: 192/512 px standard and separately padded maskable PNGs referenced by
+  `/site.webmanifest`. Maskable artwork fits within the central safe circle; no pre-rounded outer container.
+
+The manifest uses same-origin credentials so Cloudflare Access still protects the assets.
+It adds home-screen identity, not a service worker or offline support. Installation and icon refresh
+depend on the browser; actual iPhone/iPad/Android installation requires physical-device verification.
+Open Graph/Twitter metadata references the sharing card, but public crawlers cannot fetch the private
+website; distribute the downloadable card directly rather than bypassing Access for link previews.
+`npx task test` includes real Worker/Static Assets smoke coverage for metadata, MIME types, dimensions,
+ICO frames, vector delivery, and anonymous denial, alongside the MCP consent flow.
+
 ## Check the app
 
 ```sh

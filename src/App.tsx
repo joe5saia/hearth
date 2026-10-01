@@ -26,7 +26,6 @@ import {
   X,
   ExternalLink,
   Pencil,
-  House,
 } from "lucide-react";
 import {
   addDays,
@@ -343,11 +342,8 @@ export function App() {
   return (
     <div className="app-shell">
       <aside className="sidebar">
-        <a className="brand" href="#plan">
-          <span className="brand-icon">
-            <House size={26} strokeWidth={1.5} />
-          </span>{" "}
-          hearth<span className="brand-dot">.</span>
+        <a className="brand" href="#plan" aria-label="Hearth meal plan">
+          <img src="/brand/logo.svg" alt="Hearth" width="184" height="50" />
         </a>
         <p className="brand-caption">Our everyday table</p>
         <nav aria-label="Main navigation">
@@ -390,7 +386,10 @@ export function App() {
       <main>
         <div className="topbar">
           <a className="mobile-brand" href="#plan" aria-label="Hearth meal plan">
-            hearth.
+            <picture>
+              <source media="(min-width: 601px)" srcSet="/brand/icon-small.svg" />
+              <img src="/brand/logo.svg" alt="Hearth" width="136" height="37" />
+            </picture>
           </a>
           <div className="timer-slot" ref={setTimerHeaderHost} />
           <button
@@ -1014,7 +1013,9 @@ export function App() {
               </>
             )}
             <footer className="page-footer">
-              <span>hearth.</span>
+              <span>
+                <img src="/brand/logo-monochrome.svg" alt="Hearth" width="96" height="26" />
+              </span>
               <p>A little less “what’s for dinner?”</p>
               <Leaf size={15} />
             </footer>

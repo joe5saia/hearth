@@ -1,0 +1,360 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="robots" content="noindex" />
+    <title>Hearth — logo &amp; icon kit</title>
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <style>
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        background: #faf9f5;
+        color: #252e23;
+        font:
+          16px/1.6 system-ui,
+          sans-serif;
+      }
+      main {
+        max-width: 1100px;
+        margin: auto;
+        padding: 48px 24px;
+      }
+      h1 {
+        font:
+          42px/1.2 Georgia,
+          serif;
+        margin: 0 0 12px;
+      }
+      h2 {
+        font-size: 17px;
+        margin: 0 0 6px;
+      }
+      p {
+        margin: 0 0 16px;
+      }
+      .intro {
+        max-width: 720px;
+        color: #424c3b;
+      }
+      .grid {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 20px;
+        margin-block: 32px;
+      }
+      article {
+        border: 1px solid #e5e5db;
+        border-radius: 12px;
+        overflow: hidden;
+        background: #fff;
+      }
+      .stage {
+        min-height: 190px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 24px;
+        padding: 28px;
+        background: #faf9f5;
+      }
+      .stage img {
+        display: block;
+        max-width: 100%;
+        height: auto;
+      }
+      .dark {
+        background: #252e23;
+      }
+      .checker {
+        background-color: #fff;
+        background-image: conic-gradient(#ededeb 25%, transparent 0 50%, #ededeb 0 75%, transparent 0);
+        background-size: 20px 20px;
+      }
+      .info {
+        padding: 20px 24px;
+      }
+      .info p {
+        font-size: 14px;
+        color: #424c3b;
+      }
+      a {
+        color: #3f5136;
+        text-underline-offset: 4px;
+      }
+      a:focus-visible {
+        outline: 2px solid #b75c35;
+        outline-offset: 4px;
+      }
+      .links {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 12px 20px;
+      }
+      figure {
+        margin: 0;
+        text-align: center;
+      }
+      figure img {
+        margin: auto;
+      }
+      figcaption {
+        font-size: 12px;
+        margin-top: 10px;
+        color: #424c3b;
+      }
+      .tile {
+        border-radius: 22%;
+      }
+      .circle {
+        border-radius: 50%;
+      }
+      .sizes {
+        min-height: 120px;
+        flex-wrap: wrap;
+      }
+      .wide {
+        grid-column: 1 / -1;
+      }
+      .swatches {
+        display: flex;
+        gap: 16px;
+        flex-wrap: wrap;
+        margin-block: 24px;
+      }
+      .swatches span {
+        border: 1px solid #e5e5db;
+        border-left: 18px solid var(--color);
+        padding: 4px 8px;
+        font-size: 13px;
+      }
+      footer {
+        border-top: 1px solid #e5e5db;
+        padding-top: 24px;
+        color: #424c3b;
+        font-size: 14px;
+      }
+      @media (max-width: 650px) {
+        main {
+          padding: 28px 16px;
+        }
+        h1 {
+          font-size: 32px;
+        }
+        .grid {
+          grid-template-columns: 1fr;
+        }
+        .stage {
+          gap: 16px;
+          padding: 24px;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Hearth logo &amp; icon kit</h1>
+      <p class="intro">
+        The Roman mosaic ember: a warm household flame framed by olive tiles. These are the final vector
+        masters and their device-ready exports. The transparent versions below are shown on a checkerboard or
+        dark field.
+      </p>
+      <div class="swatches">
+        <span style="--color: #3f5136">Olive · #3f5136</span>
+        <span style="--color: #b75c35">Terracotta · #b75c35</span>
+        <span style="--color: #d7814f">Clay · #d7814f</span>
+        <span style="--color: #ce9b4c">Ochre · #ce9b4c</span>
+        <span style="--color: #faf9f5">Cream · #faf9f5</span>
+      </div>
+      <div class="grid">
+        <article>
+          <div class="stage checker">
+            <img src="/brand/logo.svg" width="368" height="100" alt="Full-color Hearth logo" />
+          </div>
+          <div class="info">
+            <h2>01 · Primary logo</h2>
+            <p>Transparent background. Outlined serif lettering stays identical without installed fonts.</p>
+            <div class="links">
+              <a href="/brand/logo.svg" download>SVG</a><a href="/brand/logo.png" download>PNG · 1840 px</a>
+            </div>
+          </div>
+        </article>
+        <article>
+          <div class="stage dark">
+            <img
+              src="/brand/logo-reversed.svg"
+              width="368"
+              height="100"
+              alt="Cream Hearth logo on dark background"
+            />
+          </div>
+          <div class="info">
+            <h2>02 · Reversed logo</h2>
+            <p>Cream-only artwork for dark backgrounds.</p>
+            <div class="links">
+              <a href="/brand/logo-reversed.svg" download>SVG</a
+              ><a href="/brand/logo-reversed.png" download>PNG</a>
+            </div>
+          </div>
+        </article>
+        <article>
+          <div class="stage">
+            <img src="/brand/icon.svg" width="128" height="128" alt="Detailed mosaic ember" />
+          </div>
+          <div class="info">
+            <h2>03 · Standalone icon</h2>
+            <p>The complete mosaic for larger placements and home-screen exports.</p>
+            <div class="links">
+              <a href="/brand/icon.svg" download>SVG</a><a href="/brand/icon.png" download>PNG · 1024 px</a>
+            </div>
+          </div>
+        </article>
+        <article>
+          <div class="stage">
+            <figure>
+              <img src="/brand/icon-small.svg" width="100" height="100" alt="Simplified mosaic ember" />
+              <figcaption>Small</figcaption>
+            </figure>
+            <figure>
+              <img src="/brand/icon-micro.svg" width="100" height="100" alt="Micro mosaic ember" />
+              <figcaption>Micro</figcaption>
+            </figure>
+          </div>
+          <div class="info">
+            <h2>04 · Small &amp; micro</h2>
+            <p>Six tiles for compact placements; four tiles and a single flame for tiny favicons.</p>
+            <div class="links">
+              <a href="/brand/icon-small.svg" download>Small SVG</a
+              ><a href="/brand/icon-small.png" download>Small PNG</a
+              ><a href="/brand/icon-micro.svg" download>Micro SVG</a
+              ><a href="/brand/icon-micro.png" download>Micro PNG</a>
+            </div>
+          </div>
+        </article>
+        <article>
+          <div class="stage">
+            <img
+              src="/brand/logo-monochrome.svg"
+              width="368"
+              height="100"
+              alt="Olive one-color Hearth logo"
+            />
+          </div>
+          <div class="info">
+            <h2>05 · One-color</h2>
+            <p>Single-ink artwork for print and monochrome contexts.</p>
+            <div class="links">
+              <a href="/brand/logo-monochrome.svg" download>Logo SVG</a
+              ><a href="/brand/logo-monochrome.png" download>Logo PNG</a
+              ><a href="/brand/icon-monochrome.svg" download>Icon SVG</a
+              ><a href="/brand/icon-monochrome.png" download>Icon PNG</a
+              ><a href="/brand/icon-reversed.svg" download>Reversed icon SVG</a
+              ><a href="/brand/icon-reversed.png" download>Reversed icon PNG</a>
+            </div>
+          </div>
+        </article>
+        <article>
+          <div class="stage">
+            <figure>
+              <img
+                class="tile"
+                src="/apple-touch-icon.png"
+                width="100"
+                height="100"
+                alt="Apple home-screen icon"
+              />
+              <figcaption>Apple</figcaption>
+            </figure>
+            <figure>
+              <img
+                class="circle"
+                src="/icons/maskable-512.png"
+                width="100"
+                height="100"
+                alt="Maskable icon preview under circular crop"
+              />
+              <figcaption>Maskable · circle crop</figcaption>
+            </figure>
+          </div>
+          <div class="info">
+            <h2>06 · Home-screen icons</h2>
+            <p>Opaque cream tiles; maskable artwork stays inside the central safe circle.</p>
+            <div class="links">
+              <a href="/apple-touch-icon.png" download>Apple · 180 px</a
+              ><a href="/icons/icon-192.png" download>Web · 192 px</a
+              ><a href="/icons/icon-512.png" download>Web · 512 px</a
+              ><a href="/icons/maskable-192.png" download>Maskable · 192 px</a
+              ><a href="/icons/maskable-512.png" download>Maskable · 512 px</a>
+            </div>
+          </div>
+        </article>
+        <article class="wide">
+          <div class="stage sizes">
+            <figure>
+              <img src="/icons/favicon-16.png" width="16" height="16" alt="16-pixel favicon" />
+              <figcaption>16 px</figcaption>
+            </figure>
+            <figure>
+              <img src="/icons/favicon-32.png" width="32" height="32" alt="32-pixel favicon" />
+              <figcaption>32 px</figcaption>
+            </figure>
+            <figure>
+              <img src="/icons/favicon-48.png" width="48" height="48" alt="48-pixel favicon" />
+              <figcaption>48 px</figcaption>
+            </figure>
+          </div>
+          <div class="info">
+            <h2>07 · Browser tabs</h2>
+            <p>
+              Actual CSS sizes, not enlarged previews. A cream field keeps the gaps readable on light and dark
+              browser chrome.
+            </p>
+            <div class="links">
+              <a href="/favicon.svg" download>SVG favicon</a
+              ><a href="/favicon.ico" download>ICO · 16 / 32 / 48 px</a
+              ><a href="/icons/favicon-16.png" download>16 px PNG</a
+              ><a href="/icons/favicon-32.png" download>32 px PNG</a
+              ><a href="/icons/favicon-48.png" download>48 px PNG</a
+              ><a href="/icons/safari-pinned-tab.svg" download>Safari pinned-tab mask</a>
+            </div>
+          </div>
+        </article>
+        <article class="wide">
+          <div class="stage">
+            <img src="/brand/social-card.png" width="600" height="315" alt="Hearth sharing card" />
+          </div>
+          <div class="info">
+            <h2>08 · Sharing card</h2>
+            <p>
+              1200 × 630 px for link previews and delivery outside the app. The live website remains private
+              behind sign-in; public crawlers cannot retrieve its card.
+            </p>
+            <a href="/brand/social-card.png" download>Download PNG</a>
+          </div>
+        </article>
+      </div>
+      <footer>
+        <p>
+          Keep the tile gaps transparent; use the cream or reversed treatment on contrasting backgrounds. Do
+          not stretch or crop the vector masters. SVG is the scalable master for print; PNG exports are for
+          raster-only delivery.
+        </p>
+        <p>
+          Web-app icons and metadata do not add offline support. Physical-device home-screen installation
+          still depends on the browser and sign-in session.
+        </p>
+        <div class="links">
+          <a href="/site.webmanifest">Web manifest</a
+          ><a href="/icons/apple-touch-icon-120.png" download>Apple 120 px</a
+          ><a href="/icons/apple-touch-icon-152.png" download>Apple 152 px</a
+          ><a href="/icons/apple-touch-icon-167.png" download>Apple 167 px</a
+          ><a href="/icons/apple-touch-icon-180.png" download>Apple 180 px</a
+          ><a href="/brand/FONT-LICENSE.txt">Lettering license</a><a href="/">Back to Hearth</a>
+        </div>
+      </footer>
+    </main>
+  </body>
+</html>

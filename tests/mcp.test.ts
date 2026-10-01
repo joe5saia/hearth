@@ -52,6 +52,10 @@ async function login(scope = scopes, tamper = false, identity = assertion) {
   const page = await request(`/authorize?${query}`, { headers: { "Cf-Access-Jwt-Assertion": identity } });
   expect(page.status, await page.clone().text()).toBe(200);
   const html = await page.text();
+  expect(html).toContain('class="brand" role="img" aria-label="Hearth"');
+  expect(html).toContain('viewBox="0 0 368 100"');
+  expect(html).toContain('href="data:image/svg+xml,');
+  expect(html).not.toContain('class="brand-dot"');
   const handle = html.match(/name="handle" value="([^"]+)"/)![1];
   const cookie = page.headers.get("set-cookie")!.split(";")[0];
   const form = new URLSearchParams({ handle, decision: "approve" });

@@ -1,4 +1,5 @@
 import type { ConsentDescription } from "@cloudflare/workers-oauth-provider";
+import { faviconSvg, logoSvg } from "./brand";
 
 const escape = (value: string) => value.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
 
@@ -9,14 +10,14 @@ export function consentPage(details: ConsentDescription, handle: string) {
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Connect to Hearth</title>
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,${encodeURIComponent(faviconSvg)}">
 <style>
   :root { color-scheme: light; font-family: "DM Sans Variable", system-ui, sans-serif; color: #343c30; background: #faf9f5; font-synthesis: none; }
   * { box-sizing: border-box; }
   body { margin: 0; padding: 48px 20px; line-height: 1.5; }
   main { width: 100%; max-width: 520px; margin: 0 auto; }
-  .brand { display: flex; align-items: center; justify-content: center; gap: 9px; font: 37px "Lora Variable", Georgia, serif; letter-spacing: -1.8px; }
-  .brand svg { color: #5c6b4d; }
-  .brand-dot { color: #b78b6b; }
+  .brand { display: flex; justify-content: center; }
+  .brand svg { display: block; width: 220px; height: auto; max-width: 100%; }
   .caption { text-align: center; color: #5f6956; font-size: 12px; letter-spacing: 1.1px; margin: 8px 0 32px; }
   .card { background: #fffefa; border: 1px solid #e5e5db; border-radius: 12px; overflow: hidden; }
   .intro { padding: 32px; background: #f0f0e7; border-bottom: 1px solid #e5e5db; }
@@ -47,7 +48,7 @@ export function consentPage(details: ConsentDescription, handle: string) {
 </style>
 </head>
 <body><main>
-  <div class="brand"><svg aria-hidden="true" width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="m3 10 9-7 9 7v10a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1z"/><path d="M9 21v-9h6v9"/></svg><span>hearth<span class="brand-dot">.</span></span></div>
+  <div class="brand" role="img" aria-label="Hearth">${logoSvg}</div>
   <p class="caption">Our everyday table</p>
   <section class="card" aria-labelledby="consent-title">
     <div class="intro"><p class="eyebrow">App connection</p><h1 id="consent-title">Connect to Hearth</h1><p>Allow <strong>${escape(details.clientName)}</strong> to access your household recipes?</p>
