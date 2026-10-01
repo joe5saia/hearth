@@ -339,40 +339,35 @@ export function GroceryManager({
                 <li key={item.id} className="grocery-item">
                   <div className="grocery-product">
                     <h2>{item.name}</h2>
-                    <p>
-                      Package: {displayAmount(item)}
-                      {item.unit === "each" ? " each" : ""}
-                    </p>
-                    <p className="grocery-link-status">
-                      <Link2 size={14} aria-hidden="true" />
-                      {count
-                        ? `Linked to ${count} recipe ingredient${count === 1 ? "" : "s"}`
-                        : "Not linked to any recipe ingredients"}
-                    </p>
-                  </div>
-                  <div className="grocery-setup">
-                    <p>
+                    <div className="grocery-metadata">
+                      <span>
+                        Package: {displayAmount(item)}
+                        {item.unit === "each" ? " each" : ""}
+                      </span>
                       {item.aisle.trim() ? (
-                        `Aisle: ${item.aisle}`
+                        <span>Aisle: {item.aisle}</span>
                       ) : (
                         <span className="grocery-gap">Missing aisle</span>
                       )}
-                    </p>
-                    {item.url.trim() ? (
-                      <span>Product URL added</span>
-                    ) : (
-                      <span className="grocery-gap">Missing URL</span>
-                    )}
+                      <span className="grocery-link-status">
+                        <Link2 size={14} aria-hidden="true" />
+                        {count ? `Linked: ${count} ingredient${count === 1 ? "" : "s"}` : "Not linked"}
+                      </span>
+                      {item.url.trim() ? (
+                        <span>URL added</span>
+                      ) : (
+                        <span className="grocery-gap">Missing URL</span>
+                      )}
+                    </div>
                   </div>
                   <button
                     type="button"
-                    className="secondary"
+                    className="secondary grocery-edit"
                     disabled={locked}
                     onClick={() => edit(item)}
                     aria-label={`Edit grocery item ${item.name}`}
                   >
                     <Pencil size={15} aria-hidden="true" />
-                    Edit
                   </button>
                 </li>
               );

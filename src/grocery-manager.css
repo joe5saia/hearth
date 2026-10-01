@@ -15,7 +15,6 @@
 }
 .grocery-toolbar > p,
 .grocery-note,
-.grocery-item p,
 .grocery-recipe-list p {
   font-size: 13px;
   line-height: 1.6;
@@ -62,11 +61,16 @@
 }
 .grocery-item {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(130px, 0.4fr) auto;
-  gap: 18px;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 12px;
   align-items: center;
-  padding: 18px 0;
+  padding: 10px 0;
   border-top: 1px solid var(--line);
+}
+.grocery-item .grocery-edit {
+  width: 44px;
+  height: 44px;
+  padding: 0;
 }
 .grocery-product h2,
 .grocery-coverage > h2,
@@ -83,9 +87,19 @@
 .grocery-coverage > h2 {
   font-size: 22px;
 }
-.grocery-item p,
 .grocery-recipe-list p {
   margin-top: 5px;
+  overflow-wrap: anywhere;
+}
+.grocery-metadata {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 14px;
+  margin-top: 2px;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--muted);
   overflow-wrap: anywhere;
 }
 .grocery-link-status {
@@ -96,11 +110,6 @@
 }
 .grocery-link-status svg {
   flex-shrink: 0;
-}
-.grocery-setup {
-  font-size: 12px;
-  line-height: 1.6;
-  overflow-wrap: anywhere;
 }
 .grocery-gap {
   display: inline-block;
@@ -162,12 +171,8 @@
   .grocery-actions > button {
     flex: 1 1 160px;
   }
-  .grocery-item {
-    grid-template-columns: minmax(0, 1fr) auto;
-    gap: 12px;
-  }
-  .grocery-product {
-    grid-column: 1 / -1;
+  .grocery-metadata {
+    column-gap: 10px;
   }
   .grocery-recipe-list > li {
     align-items: flex-start;
