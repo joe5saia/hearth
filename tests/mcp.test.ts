@@ -220,7 +220,7 @@ it("allows OAuth grants for only the configured preview service and rejects unre
       .sign(signingKey);
 
   const preview = await login(scopes, false, await sign({ sub: "", common_name: "preview-test.access" }));
-  expect((await rpc("tools/list", {}, preview)).result.tools).toHaveLength(4);
+  expect((await rpc("tools/list", {}, preview)).result.tools).toHaveLength(5);
 
   for (const claims of [
     { sub: "", common_name: "other.access" },
@@ -259,11 +259,12 @@ it("advertises CIMD and resource discovery; denies anonymous and forged tokens",
   await login(scopes, true);
 });
 
-it("publishes all four code-mode-friendly schemas with the single recipes scope", async () => {
+it("publishes all five code-mode-friendly schemas with the single recipes scope", async () => {
   const tools = (await rpc("tools/list")).result.tools;
   expect(tools.map((t: any) => t.name).sort()).toEqual([
     "create_recipes",
     "get_recipes",
+    "list_collections",
     "search_recipes",
     "update_recipes",
   ]);
@@ -271,6 +272,60 @@ it("publishes all four code-mode-friendly schemas with the single recipes scope"
   for (const tool of tools) {
     expect(tool.inputSchema.type).toBe("object");
     expect(tool.outputSchema.type).toBe("object");
+  }
+});
+
+it("lists empty and custom collections with exact names and tracks renames and deletion", async () => {
+  const db = await worker.getD1Database("DB");
+  const before = (await db.prepare("SELECT id,name FROM collections ORDER BY name,id").all()).results;
+  const recipesBefore = (await db.prepare("SELECT * FROM recipes ORDER BY id").all()).results;
+  // Migration-generated IDs can exceed the recipe ID input limit, even after the collection is renamed.
+  const collectionId = `legacy-${"x".repeat(100)}`;
+  await db
+    .prepare("INSERT INTO collections(id,name) VALUES(?,'A holiday & brunch')")
+    .bind(collectionId)
+    .run();
+
+  try {
+    const listed = await call("list_collections", {});
+    expect(listed.isError).not.toBe(true);
+    expect(listed.structuredContent).toEqual({
+      collections: [{ id: collectionId, name: "A holiday & brunch" }, ...before],
+    });
+    expect(JSON.parse(listed.content[0].text)).toEqual(listed.structuredContent);
+    expect((await db.prepare("SELECT * FROM recipes ORDER BY id").all()).results).toEqual(recipesBefore);
+    expect((await call("list_collections", { unknown: true })).isError).toBe(true);
+
+    const created = await call("create_recipes", {
+      recipes: [
+        { ...draft("Discovered collection"), category: listed.structuredContent.collections[0].name },
+      ],
+    });
+
+    expect(created.isError).not.toBe(true);
+    const saved = created.structuredContent.recipes[0];
+
+    try {
+      expect(saved.category).toBe("A holiday & brunch");
+      expect(
+        (await call("update_recipes", { updates: [{ id: saved.id, changes: { category: "special" } }] }))
+          .isError,
+      ).toBe(true);
+      await db
+        .prepare("UPDATE collections SET name='Z holiday & brunch' WHERE id=?")
+        .bind(collectionId)
+        .run();
+      expect((await call("list_collections", {})).structuredContent.collections).toEqual([
+        ...before,
+        { id: collectionId, name: "Z holiday & brunch" },
+      ]);
+      await db.prepare("DELETE FROM collections WHERE id=?").bind(collectionId).run();
+      expect((await call("list_collections", {})).structuredContent.collections).toEqual(before);
+    } finally {
+      await db.prepare("DELETE FROM recipes WHERE id=?").bind(saved.id).run();
+    }
+  } finally {
+    await db.prepare("DELETE FROM collections WHERE id=?").bind(collectionId).run();
   }
 });
 

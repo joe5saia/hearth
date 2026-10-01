@@ -4,6 +4,7 @@ import { mkdir, readFile, writeFile, rm } from "node:fs/promises";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { Cloudflare, previewName } from "./preview.ts";
+import { ampIdentity } from "./mcp-eval.ts";
 
 const directory = resolve(".wrangler/mcp-preview");
 const statePath = resolve(directory, "state.json");
@@ -54,6 +55,8 @@ async function main() {
   if (process.argv[2] !== "up") throw new Error("Usage: node tools/mcp-preview.ts up|down");
   const branch = execFileSync("git", ["branch", "--show-current"], { encoding: "utf8" }).trim();
   if (!branch.startsWith(`${process.env.AMP_THREAD_ID}-`)) throw new Error("Use the owning thread's working branch.");
+  const identity = await ampIdentity("https://hearth-preview.invalid");
+  if (identity.thread_id !== process.env.AMP_THREAD_ID) throw new Error("Preview owner must match the current orb identity.");
   // Fail before creating resources if this token cannot access OAuth storage.
   await api.list("/storage/kv/namespaces");
   const parent = `hearth-mcp-${name}`;
@@ -88,7 +91,8 @@ async function main() {
     state.app = app.id; state.aud = app.aud; await save(state);
   }
   const config = { name: parent, main: resolve("tools/mcp-preview-worker.ts"), compatibility_date: "2026-09-08", compatibility_flags: ["nodejs_compat", "global_fetch_strictly_public"],
-    previews: { vars: { MCP_ORIGIN: state.url, ACCESS_AUD: state.aud, PREVIEW_CLIENT_ID: state.client_id },
+    previews: { vars: { MCP_ORIGIN: state.url, ACCESS_AUD: state.aud, PREVIEW_CLIENT_ID: state.client_id,
+      AMP_EVAL_PROJECT_ID: identity.project_id, AMP_EVAL_USER_ID: identity.user_id },
       d1_databases: [{ binding: "DB", database_id: state.db, database_name: `hearth-${name}` }], kv_namespaces: [{ binding: "OAUTH_KV", id: state.kv }] } };
   const configPath = resolve(directory, "wrangler.json");
   await writeFile(configPath, JSON.stringify(config));
@@ -96,7 +100,8 @@ async function main() {
   await writeFile(migrationPath, JSON.stringify({ d1_databases: [{ ...config.previews.d1_databases[0], migrations_dir: resolve("migrations") }] }));
   run(["d1", "migrations", "apply", "DB", "--remote", "--config", migrationPath]);
   run(["preview", "--name", name, "--config", configPath, "--ignore-base-config", "--json"]);
-  console.log(JSON.stringify({ url: state.url, mcp: `${state.url}/mcp`, name, note: "Isolated D1/KV. Clean up with node tools/mcp-preview.ts down." }));
+  console.log(JSON.stringify({ url: state.url, mcp: `${state.url}/mcp`, eval: `${state.url}/eval/mcp`, name,
+    note: "Isolated D1/KV. Eval orbs use npx task mcp:eval -- connect <eval URL>, then reload MCP. Clean up with npx task mcp:preview -- down." }));
 }
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
   main().catch((error) => { console.error(error.message); process.exitCode = 1; });

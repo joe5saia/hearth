@@ -14,16 +14,11 @@ async function request(path: string, init: RequestInit = {}) {
   return fetch(url, { ...init, redirect: "manual", signal: AbortSignal.timeout(30000) });
 }
 
-async function login(label: string, cimd: boolean) {
+async function login() {
   const resource = await request("/.well-known/oauth-protected-resource/mcp");
   const scopes = (await resource.json()).scopes_supported as string[];
   assert.deepEqual(scopes, ["recipes"], "Single household scope advertised");
-  let clientId = `${origin}/test-client.json`;
-  if (!cimd) {
-    const response = await request("/oauth/register", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ client_name: label, redirect_uris: [redirectUri], token_endpoint_auth_method: "none", grant_types: ["authorization_code", "refresh_token"], response_types: ["code"] }) });
-    assert.equal(response.status, 201, "Client registration");
-    clientId = (await response.json()).client_id;
-  }
+  const clientId = `${origin}/test-client.json`;
   const verifier = randomBytes(48).toString("base64url");
   const oauthState = randomBytes(24).toString("base64url");
   const query = new URLSearchParams({ client_id: clientId, redirect_uri: redirectUri, response_type: "code", scope: scopes.join(" "), resource: `${origin}/mcp`, code_challenge: createHash("sha256").update(verifier).digest("base64url"), code_challenge_method: "S256", state: oauthState });
@@ -72,9 +67,9 @@ assert.equal(metadata.status, 200, "Public OAuth discovery");
 assert.equal((await metadata.json()).client_id_metadata_document_supported, true);
 assert.equal((await request("/mcp")).status, 401, "Anonymous MCP denied without Access redirect");
 assert.ok([302, 401, 403].includes((await request("/authorize")).status), "Anonymous consent denied");
-const auth = await login("CIMD smoke", true);
+const auth = await login();
 const tools = (await rpc(auth.token, "tools/list")).tools;
-assert.equal(tools.length, 4);
+assert.deepEqual(tools.map((tool: any) => tool.name).sort(), ["create_recipes", "get_recipes", "list_collections", "search_recipes", "update_recipes"]);
 assert.ok(tools.every((tool: any) => tool.outputSchema?.type === "object"));
 const call = async (name: string, args: object) => {
   const result = await rpc(auth.token, "tools/call", { name, arguments: args });
@@ -82,6 +77,13 @@ const call = async (name: string, args: object) => {
   assert.deepEqual(JSON.parse(result.content[0].text), result.structuredContent);
   return result.structuredContent;
 };
+const collections = await call("list_collections", {});
+assert.deepEqual(collections.collections, [
+  { id: "comfort", name: "Comfort food" },
+  { id: "special", name: "Something special" },
+  { id: "vegetarian", name: "Vegetarian" },
+  { id: "weeknight", name: "Weeknight favorites" },
+]);
 const tag = `Evaluation ${Date.now()}`;
 const fixture = (i: number) => ({ title: `${tag} ${String(i).padStart(2, "0")}`, servings: 3, minutes: 24 + i, category: "Vegetarian", ingredients: [{ name: "Chickpeas", quantity: 1.5, unit: "can" }, { name: "Lemon", quantity: 0.5, unit: "each" }], instructions: ["Rinse chickpeas.", "Mix with lemon."] });
 const a = await call("create_recipes", { recipes: Array.from({ length: 25 }, (_, i) => fixture(i)) });
@@ -98,10 +100,10 @@ assert.equal(fetched.recipes[0].id, a.recipes[1].id);
 const updated = await call("update_recipes", { updates: [{ id: a.recipes[0].id, changes: { minutes: 73 } }, { id: a.recipes[1].id, changes: { rating: "up" } }] });
 assert.deepEqual(updated.recipes[0], { ...a.recipes[0], minutes: 73 });
 assert.deepEqual(updated.recipes[1], { ...a.recipes[1], rating: "up" });
+const categorized = await call("update_recipes", { updates: [{ id: a.recipes[2].id, changes: { category: collections.collections[0].name } }] });
+assert.deepEqual(categorized.recipes[0], { ...a.recipes[2], category: "Comfort food" });
+const uncategorized = await call("update_recipes", { updates: [{ id: a.recipes[2].id, changes: { category: "" } }] });
+assert.deepEqual(uncategorized.recipes[0], { ...a.recipes[2], category: "" });
 
-for (const label of ["self", "low-a", "low-b"]) {
-  const identity = await login(`Hearth ${label} evaluation`, false);
-  await writeFile(`${root}/${label}-settings.json`, JSON.stringify({ "amp.mcpServers": { hearth_preview: { url: `${origin}/mcp`, headers: { Authorization: `Bearer ${identity.token}` } } } }), { mode: 0o600 });
-}
-await writeFile(`${root}/evaluation.json`, JSON.stringify({ tag, count: 28, url: `${origin}/mcp` }, null, 2));
-console.log(JSON.stringify({ checks: "Public discovery, Access-protected consent, live CIMD + PKCE exchange, single household scope, four tools, structured/text parity, 25+3 pagination, empty pagination, ordered gets, missing IDs, field-preserving batch updates", evaluationTag: tag, fixtures: 28, credentials: "Separate evaluation credentials saved privately; no tokens logged" }, null, 2));
+await writeFile(`${root}/evaluation.json`, JSON.stringify({ tag, count: 28, url: `${origin}/eval/mcp` }, null, 2));
+console.log(JSON.stringify({ checks: "Public discovery, Access-protected consent, live CIMD + PKCE exchange, single household scope, five tools, collection discovery and category updates, structured/text parity, 25+3 pagination, empty pagination, ordered gets, missing IDs, field-preserving batch updates", evaluationTag: tag, fixtures: 28, eval: `${origin}/eval/mcp`, credentials: "Eval orbs mint their own Amp identity; no copied bearer settings or tokens logged" }, null, 2));

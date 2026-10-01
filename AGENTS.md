@@ -49,3 +49,9 @@ This workflow incorporates Amp's [default Ship flow](https://ampcode.com/docs/or
 - Run `npx task preview -- down` when the Preview is no longer needed, including before shipping/archiving unless the user explicitly asks to keep it for ongoing review. Do not remove a Preview while awaiting requested user testing. Verify cleanup with `npx task preview -- list` and report any failure.
 - For agent-only remote validation, use teardown in a `finally` block or shell trap. New provisioning failures attempt rollback; failed updates preserve the existing Preview for diagnosis. Cleanup must still be completed before concluding the task.
 - If an orb is lost, use `list` then `down <name>` from another orb. `up` and explicit `gc` collect expired resources, but no background timer runs. Orb deletion and Cloudflare Preview eviction do not clean up D1 or Access resources.
+
+## MCP agent evaluations
+
+- Use the isolated `/eval/mcp` URL printed by `npx task mcp:preview -- up`. In each same-project, same-owner eval orb, run the owner-authorized `npx task mcp:eval -- connect <URL>`, then `reload_mcp` before evaluating tools. This trusted user-settings bootstrap uses automatically refreshed Amp identity; do not copy OAuth bearer settings or ask for workspace approval for this connection.
+- `npx task mcp:eval -- check <URL>` preflights identity and tool discovery without changing settings. Never substitute a production URL or disable authentication. Keep OAuth coverage separate with `npx task mcp:preview:test`.
+- Disconnect with `npx task mcp:eval -- disconnect <URL>` and reload MCP when evaluation ends. The owning thread then runs `npx task mcp:preview -- down` to remove the isolated Preview and supporting resources. See the README for authorization boundaries and unpushed-code transfer between orbs.

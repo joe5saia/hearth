@@ -235,15 +235,18 @@ stateless Streamable HTTP handler (MCP 2026-07-28), with legacy client compatibi
 the SDK. Recipe persistence and validation are shared with the website API in `src/recipes.ts`;
 search uses the same predicate as the app. The household is shared, not partitioned per user.
 
-| Tool             | Contract                                                                                                                                                                              |
-| ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `search_recipes` | Literal case-insensitive title/ingredient search. Returns IDs, titles, ingredients and pagination on every successful call. Default/max page size 25; follow `nextOffset` until null. |
-| `get_recipes`    | 1–25 unique IDs. Full recipes in requested order plus `missingIds`.                                                                                                                   |
-| `create_recipes` | 1–25 recipes; generated IDs, optional empty metadata defaults. Atomic batch. Retrying creates duplicates.                                                                             |
-| `update_recipes` | 1–25 `{id, changes}` entries. Omitted fields stay unchanged; arrays replace whole arrays. Invalid or missing recipes reject before writes.                                            |
+| Tool               | Contract                                                                                                                                                                              |
+| ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `list_collections` | No arguments. All collections, including empty ones, as `{id,name}` ordered by name then ID. Use the exact name (not ID) for recipe category; `""` means Uncollected.                 |
+| `search_recipes`   | Literal case-insensitive title/ingredient search. Returns IDs, titles, ingredients and pagination on every successful call. Default/max page size 25; follow `nextOffset` until null. |
+| `get_recipes`      | 1–25 unique IDs. Full recipes in requested order plus `missingIds`.                                                                                                                   |
+| `create_recipes`   | 1–25 recipes; generated IDs, optional empty metadata defaults. Atomic batch. Retrying creates duplicates.                                                                             |
+| `update_recipes`   | 1–25 `{id, changes}` entries. Omitted fields stay unchanged; arrays replace whole arrays. Invalid or missing recipes reject before writes.                                            |
 
 Every tool advertises JSON input/output schemas and returns `structuredContent` plus equivalent
-JSON text for code-mode and older clients. The single `recipes` scope exposes all four tools.
+JSON text for code-mode and older clients. The single `recipes` scope exposes all five tools.
+Call `list_collections` before assigning a recipe category; it discovers collections even when no
+recipes use them. This read-only tool does not create, rename, or delete collections.
 Search pagination is a live view, not a snapshot across concurrent edits.
 Search currently reads recipe summaries into memory to preserve JavaScript's exact Unicode and
 substring behavior; this is intended for the household collection, not a large public catalog.
@@ -289,13 +292,54 @@ and preview credentials live under `.wrangler/mcp-preview/`; preserve that direc
 a partial deployment or tear it down. `up` preserves its URL and data on subsequent runs.
 Run `down` when review ends; the name's date is a cleanup reminder, not an automatic TTL.
 `down` also removes the disposable parent, Access app/service token, D1 and KV.
-The live test exercises CIMD/PKCE consent and all four tools against disposable recipes. It writes
-private, short-lived evaluation client settings in that state directory; never commit or share
-those credentials publicly. The preview-only entrypoint serves a CIMD fixture at `/test-client.json`;
-the production entrypoint does not. The preview Access service identity is restricted to its own token.
+The live test exercises CIMD/PKCE consent and all five tools against disposable recipes. It writes
+non-secret fixture metadata to `.wrangler/mcp-preview/evaluation.json`, not bearer-token settings.
+The preview-only entrypoint serves a CIMD fixture at `/test-client.json`; the production entrypoint
+does not. The preview Access service identity is restricted to its own token.
+
+### Automatic MCP access for eval orbs
+
+`mcp:preview up` prints a separate `/eval/mcp` URL. This endpoint exists only in the disposable
+Preview entrypoint; production `/mcp` continues to require OAuth. Preview provisioning verifies
+the current orb's Amp identity and binds its exact project and owner user IDs. Eval orbs for that
+same project and owner can access that Preview with their own short-lived Amp identities. Other
+projects/users, forged or expired tokens, missing policy bindings, and tokens for another origin
+are rejected. Access lasts only while the Preview exists.
+
+In each eval orb, run the owner-authorized bootstrap with the assigned URL:
+
+```sh
+npx task mcp:eval -- connect <Preview /eval/mcp URL>
+npx task mcp:eval -- check <Preview /eval/mcp URL>
+# After evaluation, before the owning thread tears down the Preview:
+npx task mcp:eval -- disconnect <Preview /eval/mcp URL>
+```
+
+Then use Amp's `reload_mcp` tool to connect/discover tools (or unload them after disconnect).
+`connect` refuses production URLs and preflights authenticated tool discovery before changing
+settings. It merges a `hearth_eval` entry into the orb's **user** configuration
+(`~/.config/amp/settings.json`, honoring `XDG_CONFIG_HOME`), preserving unrelated settings.
+This trusted bootstrap is explicitly authorized by the owner; it does not approve or weaken
+repository workspace MCP trust rules. A conflicting workspace `hearth_eval` entry is rejected.
+
+The entry uses `Authorization: Bearer ${amp:id-token}`. Amp mints an origin-bound token and
+replaces it before expiry; no bearer token is saved, transferred, or printed. The Worker verifies
+the Amp issuer's RS256 signature, exact origin audience, expiry, project, owner, thread identity,
+and `token_use=exchanged`. See [Amp ID tokens](https://ampcode.com/docs/customize/mcp#amp-id-tokens).
+OAuth Preview smoke tests remain separate, so successful eval identity access does not substitute
+for validating production's consent/token flow.
+
+For new eval threads, give them the assigned `/eval/mcp` URL and the bootstrap task, not OAuth
+settings or Cloudflare credentials. Before these changes are shipped, transfer the current
+`Taskfile.yml` and `tools/mcp-eval.ts` to their checkouts; a separate orb's `origin/main` does not
+contain the source thread's unpushed files. Do not provision a separate Preview from the eval orb.
+Reload and check access before beginning the user task. Connection outages still fail closed;
+fix reachability or authorization rather than extending token lifetimes or disabling Access.
 
 `npx task test` includes real workerd/D1/KV integration tests with a synthetic Access signer and
-CIMD document. Live preview deployment and agent usability evaluation are separate checks.
+CIMD document, plus preview Amp identity allow/deny checks and production isolation. Live preview
+deployment and agent usability evaluation are separate checks. Disconnect eval orbs and run
+`npx task mcp:preview -- down` in the owning thread when testing finishes.
 
 ## Photo credits
 

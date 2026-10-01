@@ -72,6 +72,9 @@ tasks:
   mcp:preview:test:
     desc: Exercise MCP OAuth and recipe writes in the isolated Preview only
     cmds: [node tools/mcp-preview-test.ts]
+  mcp:eval:
+    desc: Trusted orb eval bootstrap (-- connect, check, or disconnect <Preview /eval/mcp URL>)
+    cmds: ["node tools/mcp-eval.ts {{.CLI_ARGS}}"]
   smoke:open:
     desc: Open the production smoke-test browser (deployment owner only; read-only credentials required)
     silent: true
