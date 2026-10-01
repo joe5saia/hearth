@@ -235,7 +235,37 @@ References: [Previews](https://developers.cloudflare.com/workers/previews/),
 [resource isolation](https://developers.cloudflare.com/workers/previews/resources/), and
 [Access precedence](https://developers.cloudflare.com/workers/configuration/cloudflare-access/#understand-access-hierarchy).
 
-### Amp push-to-deploy automation
+### GitHub push-to-deploy automation
+
+`.github/workflows/deploy.yml` runs on every push to GitHub's `main` branch. It installs the
+Node version from `.node-version` and pinned dependencies, runs `npx task typecheck` and
+`npx task test`, then runs `npx task deploy -- --yes` and the read-only `npx task mcp:smoke`.
+Deployment builds assets and updates both production Workers and pending D1 migrations using
+the existing Cloudflare-hosted Alchemy state. It does not bootstrap shared infrastructure.
+A push containing multiple commits deploys the pushed tip once, not each intermediate commit.
+The production concurrency group queues up to 100 pending runs without interrupting an active
+deployment; GitHub processes them in queue-entry order, not guaranteed commit order.
+
+Before enabling this workflow on `main`:
+
+1. Disable the previous Amp post-receive deployment hook and wait for any active deployment
+   to finish. GitHub concurrency cannot lock deployments running in an Amp orb; use only one
+   deployment owner at a time.
+2. Create a GitHub Actions environment named `production`. Add environment variables
+   `CLOUDFLARE_ACCOUNT_ID` and `GOOGLE_CLIENT_ID`, and environment secrets
+   `CLOUDFLARE_API_TOKEN` and `GOOGLE_CLIENT_SECRET`. Amp project credentials are not copied
+   to GitHub automatically. Use the existing production credentials and Cloudflare permissions
+   described above, including Workers KV and Access service-token management for this stack.
+3. Restrict the environment to `main`. Leave required reviewers off if deployments should run
+   without manual approval, and ensure Actions is enabled for the repository.
+
+Failures stop the run and appear in GitHub Actions; there is no automatic rollback or retry.
+The workflow does not perform the Amp owner's authenticated website browser check, Worker log
+review, or automatic investigation-orb creation. A successful run verifies deployment command
+completion and public MCP health, not those additional checks. Review the first GitHub run
+after shipping to confirm credentials and real Cloudflare deployment work.
+
+### Legacy Amp push-to-deploy automation
 
 The project-local `hearth-deploy` plugin can connect this Amp-hosted repository's **Post-receive
 Webhook** to one persistent deployment orb. It is disabled in ordinary coding orbs. Installation,

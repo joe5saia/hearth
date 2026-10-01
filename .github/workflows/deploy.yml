@@ -1,0 +1,42 @@
+name: Deploy production
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+# Never interrupt an active deployment or run production migrations concurrently.
+concurrency:
+  group: hearth-production
+  queue: max
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version-file: .node-version
+          package-manager-cache: false
+      - name: Install dependencies
+        run: npm ci
+      - name: Type check
+        run: npx task typecheck
+      - name: Integration smoke tests
+        run: npx task test
+      - name: Deploy Workers, assets, and migrations
+        run: npx task deploy -- --yes
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          GOOGLE_CLIENT_ID: ${{ vars.GOOGLE_CLIENT_ID }}
+          GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
+      - name: Production MCP smoke check
+        run: npx task mcp:smoke
