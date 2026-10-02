@@ -1,35 +1,120 @@
 import { Schema } from "effect";
 
-export const IngredientSchema = Schema.Struct({
-  name: Schema.String,
-  originalText: Schema.optional(Schema.String),
-  quantity: Schema.Number,
-  unit: Schema.String,
-  groceryItemId: Schema.optional(Schema.NullOr(Schema.String)),
-  grocerySuggestions: Schema.optional(Schema.Array(Schema.String)),
+export const units = [
+  "g",
+  "kg",
+  "ml",
+  "l",
+  "tsp",
+  "tbsp",
+  "cup",
+  "oz",
+  "lb",
+  "each",
+  "clove",
+  "bunch",
+  "can",
+  "pinch",
+  "slice",
+];
+
+export const IdSchema = Schema.String.check(Schema.isLengthBetween(1, 100));
+
+export const UnitSchema = Schema.Literals(units);
+
+export const PositiveQuantitySchema = Schema.Finite.check(Schema.isGreaterThan(0));
+
+export const IngredientQuantitySchema = PositiveQuantitySchema.check(Schema.isLessThanOrEqualTo(1_000_000));
+
+export const nonblank = Schema.makeFilter<string>((value) => !!value.trim(), {
+  expected: "a nonblank string",
+  toJsonSchema: () => ({ pattern: "\\S" }),
 });
 
-export const RecipeSchema = Schema.Struct({
-  id: Schema.String,
-  title: Schema.String,
-  description: Schema.String,
-  servings: Schema.Number,
-  minutes: Schema.Number,
-  category: Schema.String,
-  photo: Schema.String,
-  source: Schema.String,
-  rating: Schema.Literals(["up", "down", "neutral"]),
-  ingredients: Schema.Array(IngredientSchema),
-  instructions: Schema.Array(Schema.String),
+export const NameSchema = Schema.String.check(nonblank, Schema.isMaxLength(150));
+
+const safeUrl = (value: string): boolean => {
+  if (!value) return true;
+
+  try {
+    return ["http:", "https:"].includes(new URL(value).protocol);
+  } catch {
+    return false;
+  }
+};
+
+const SourceSchema = Schema.String.check(
+  Schema.makeFilter(safeUrl, { expected: "an HTTP(S) URL or empty string" }),
+);
+
+const PhotoSchema = Schema.String.check(
+  Schema.makeFilter(
+    (value: string) =>
+      safeUrl(value) ||
+      /^\/photos\/[a-z-]+\.jpg$/.test(value) ||
+      /^data:image\/(jpeg|png|webp);base64,[A-Za-z0-9+/=]+$/.test(value),
+    { expected: "an image URL or uploaded image" },
+  ),
+);
+
+export const DateSchema = Schema.String.check(
+  Schema.isPattern(/^\d{4}-\d{2}-\d{2}$/),
+  Schema.makeFilter(validDate, { expected: "a real YYYY-MM-DD date" }),
+);
+
+export const IngredientSchema = Schema.Struct({
+  name: NameSchema,
+  originalText: Schema.optional(Schema.String.check(nonblank, Schema.isMaxLength(4000))).annotate({
+    description: "Original ingredient line, including preparation notes, when available.",
+  }),
+  quantity: IngredientQuantitySchema,
+  unit: UnitSchema,
+  groceryItemId: Schema.optional(Schema.NullOr(IdSchema)).annotate({
+    description: "Existing grocery ID; omit to auto-match exact name or alias, null to stay unlinked.",
+  }),
+  grocerySuggestions: Schema.optional(
+    Schema.Array(IdSchema.check(nonblank)).check(Schema.isMaxLength(3), Schema.isUnique()),
+  ).annotate({
+    description:
+      "Potential grocery IDs ranked by Jev. Choose one by setting groceryItemId; suggestions are not links.",
+  }),
 });
+
+export const RecipeFields = Schema.Struct({
+  title: NameSchema,
+  description: Schema.String.check(Schema.isMaxLength(2000)),
+  servings: PositiveQuantitySchema.check(Schema.isLessThanOrEqualTo(100)),
+  minutes: Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 10000 })).annotate({
+    description: "Total preparation and cooking time in minutes.",
+  }),
+  category: Schema.String.check(Schema.isMaxLength(100)).annotate({
+    description:
+      "Exact existing collection name from list_collections (not its ID); empty string means Uncollected.",
+  }),
+  photo: PhotoSchema,
+  source: SourceSchema,
+  rating: Schema.Literals(["up", "down", "neutral"]),
+  ingredients: Schema.Array(IngredientSchema).check(Schema.isLengthBetween(1, 100)),
+  instructions: Schema.Array(Schema.String.check(nonblank, Schema.isMaxLength(10000))).check(
+    Schema.isLengthBetween(1, 100),
+  ),
+});
+
+export const RecipeSchema = Schema.Struct({ id: IdSchema, ...RecipeFields.fields }).check(
+  Schema.makeFilter((recipe) => new TextEncoder().encode(JSON.stringify(recipe)).length < 1_900_000, {
+    expected: "a recipe smaller than 1.9 MB",
+  }),
+);
 
 export const MealSchema = Schema.Struct({
-  id: Schema.String,
-  recipeId: Schema.NullOr(Schema.String),
-  date: Schema.String,
+  id: IdSchema,
+  recipeId: Schema.NullOr(IdSchema),
+  date: DateSchema,
   slot: Schema.Literals(["Breakfast", "Lunch", "Dinner"]),
-  scale: Schema.Number,
-  note: Schema.String,
+  scale: PositiveQuantitySchema.check(Schema.isLessThanOrEqualTo(100)).annotate({
+    description: "Recipe multiplier, NOT servings. Desired servings / recipe.servings.",
+  }),
+  note: Schema.String.check(Schema.isMaxLength(2000)),
 });
 
 export type Ingredient = typeof IngredientSchema.Type;
@@ -40,22 +125,48 @@ export type Rating = Recipe["rating"];
 
 export type Meal = typeof MealSchema.Type;
 
-export const ExtraSchema = Schema.Struct({ id: Schema.String, name: Schema.String, checked: Schema.Number });
+export const ExtraSchema = Schema.Struct({
+  id: IdSchema,
+  name: Schema.String.check(nonblank, Schema.isMaxLength(200)),
+  checked: Schema.Literals([0, 1]),
+});
 
-export const CheckSchema = Schema.Struct({ key: Schema.String, checked: Schema.Number });
+export const CheckSchema = Schema.Struct({
+  key: Schema.String.check(Schema.isMaxLength(1000)),
+  checked: Schema.Literals([0, 1]),
+});
 
-export const CollectionSchema = Schema.Struct({ id: Schema.String, name: Schema.String });
+// Legacy migration-generated IDs can exceed the limit for newly written IDs.
+export const CollectionSchema = Schema.Struct({
+  id: Schema.String,
+  name: Schema.String.check(nonblank, Schema.isMaxLength(100)),
+});
 
 export type Collection = typeof CollectionSchema.Type;
 
 export const GroceryItemSchema = Schema.Struct({
-  id: Schema.String,
-  name: Schema.String,
-  url: Schema.String,
-  aisle: Schema.String,
-  quantity: Schema.Number,
-  unit: Schema.String,
-  aliases: Schema.Array(Schema.String),
+  id: IdSchema.check(nonblank),
+  name: NameSchema,
+  url: Schema.String.check(
+    Schema.isMaxLength(4000),
+    Schema.makeFilter(
+      (value) => {
+        if (!safeUrl(value)) return false;
+
+        if (!value) return true;
+        const url = new URL(value);
+
+        return !url.username && !url.password;
+      },
+      { expected: "an HTTP(S) product URL without credentials, or empty string" },
+    ),
+  ),
+  aisle: Schema.String.check(Schema.isMaxLength(150)),
+  quantity: IngredientQuantitySchema.annotate({
+    description: "Quantity in ONE package, not the shopping total.",
+  }),
+  unit: UnitSchema,
+  aliases: Schema.Array(NameSchema).check(Schema.isMaxLength(100)),
 });
 
 export type GroceryItem = typeof GroceryItemSchema.Type;
@@ -82,8 +193,14 @@ export type MatchReport = {
 };
 
 export const ShoppingOrderSchema = Schema.Struct({
-  aisles: Schema.Array(Schema.String),
-  items: Schema.Array(Schema.String),
+  aisles: Schema.Array(Schema.String.check(Schema.isMaxLength(1000))).check(
+    Schema.isMaxLength(10000),
+    Schema.isUnique(),
+  ),
+  items: Schema.Array(Schema.String.check(Schema.isMaxLength(1000))).check(
+    Schema.isMaxLength(10000),
+    Schema.isUnique(),
+  ),
 });
 
 export type ShoppingOrder = typeof ShoppingOrderSchema.Type;
@@ -101,24 +218,6 @@ export const HouseholdSchema = Schema.Struct({
 export type Extra = typeof ExtraSchema.Type;
 
 export type Household = typeof HouseholdSchema.Type;
-
-export const units = [
-  "g",
-  "kg",
-  "ml",
-  "l",
-  "tsp",
-  "tbsp",
-  "cup",
-  "oz",
-  "lb",
-  "each",
-  "clove",
-  "bunch",
-  "can",
-  "pinch",
-  "slice",
-];
 
 export function matchesRecipeSearch(recipe: Pick<Recipe, "title" | "ingredients">, search: string): boolean {
   return `${recipe.title} ${recipe.ingredients.map((item) => item.name).join(" ")}`

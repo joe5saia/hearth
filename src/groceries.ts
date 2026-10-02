@@ -1,4 +1,5 @@
-import { units, type GroceryItem, type Ingredient, type ShoppingOrder } from "./domain";
+import { Schema } from "effect";
+import { GroceryItemSchema, ShoppingOrderSchema, type GroceryItem, type Ingredient } from "./domain";
 
 const normalize = (name: string) => name.trim().replace(/\s+/g, " ").toLowerCase();
 
@@ -17,45 +18,14 @@ export function matchGrocery(name: string, groceries: readonly GroceryItem[]): G
 
 export class GroceryInputError extends Error {}
 
-export function validateGrocery(item: GroceryItem): boolean {
-  let validUrl = item.url === "";
+export const validateGrocery = Schema.is(GroceryItemSchema);
 
-  try {
-    const url = new URL(item.url);
-    validUrl = ["http:", "https:"].includes(url.protocol) && !url.username && !url.password;
-  } catch {
-    /* Empty URLs are allowed. */
-  }
-
-  return (
-    !!item.id.trim() &&
-    item.id.length <= 100 &&
-    !!item.name.trim() &&
-    item.name.length <= 150 &&
-    item.url.length <= 4000 &&
-    validUrl &&
-    item.aisle.length <= 150 &&
-    Number.isFinite(item.quantity) &&
-    item.quantity > 0 &&
-    item.quantity <= 1_000_000 &&
-    units.includes(item.unit) &&
-    item.aliases.length <= 100 &&
-    item.aliases.every((alias) => !!alias.trim() && alias.length <= 150)
-  );
-}
-
-export function validateShoppingOrder(order: ShoppingOrder): boolean {
-  return [order.aisles, order.items].every(
-    (values) =>
-      values.length <= 10000 &&
-      new Set(values).size === values.length &&
-      values.every((value) => value.length <= 1000),
-  );
-}
+export const validateShoppingOrder = Schema.is(ShoppingOrderSchema);
 
 export type GroceryRow = Omit<GroceryItem, "aliases"> & { aliases: string };
 
-export const parseGrocery = (row: GroceryRow): GroceryItem => ({ ...row, aliases: JSON.parse(row.aliases) });
+export const parseGrocery = (row: GroceryRow): GroceryItem =>
+  Schema.decodeUnknownSync(GroceryItemSchema)({ ...row, aliases: JSON.parse(row.aliases) });
 
 export async function getGroceries(db: D1Database): Promise<GroceryItem[]> {
   const rows = await db.prepare("SELECT * FROM groceries ORDER BY name,id").all<GroceryRow>();

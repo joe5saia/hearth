@@ -1,5 +1,5 @@
 import { Schema } from "effect";
-import { RecipeSchema, units, type Recipe } from "./domain";
+import { RecipeSchema, type Recipe } from "./domain";
 import { getGroceries, linkIngredients, GroceryInputError } from "./groceries";
 
 export type RecipeRow = Omit<Recipe, "ingredients" | "instructions"> & {
@@ -15,56 +15,7 @@ export function parseRecipe(row: RecipeRow): Recipe {
   });
 }
 
-function safeUrl(value: string): boolean {
-  if (!value) return true;
-
-  try {
-    const url = new URL(value);
-
-    return url.protocol === "https:" || url.protocol === "http:";
-  } catch {
-    return false;
-  }
-}
-
-export function validateRecipe(recipe: Recipe): boolean {
-  return (
-    !!recipe.id &&
-    recipe.id.length <= 100 &&
-    !!recipe.title.trim() &&
-    recipe.title.length <= 150 &&
-    recipe.description.length <= 2000 &&
-    recipe.servings > 0 &&
-    recipe.servings <= 100 &&
-    Number.isInteger(recipe.minutes) &&
-    recipe.minutes > 0 &&
-    recipe.minutes <= 10000 &&
-    recipe.category.length <= 100 &&
-    safeUrl(recipe.source) &&
-    (safeUrl(recipe.photo) ||
-      /^\/photos\/[a-z-]+\.jpg$/.test(recipe.photo) ||
-      /^data:image\/(jpeg|png|webp);base64,[A-Za-z0-9+/=]+$/.test(recipe.photo)) &&
-    new TextEncoder().encode(JSON.stringify(recipe)).length < 1_900_000 &&
-    recipe.ingredients.length > 0 &&
-    recipe.ingredients.length <= 100 &&
-    recipe.ingredients.every(
-      (i) =>
-        !!i.name.trim() &&
-        i.name.length <= 150 &&
-        (i.originalText === undefined || (!!i.originalText.trim() && i.originalText.length <= 4000)) &&
-        (i.grocerySuggestions === undefined ||
-          (i.grocerySuggestions.length <= 3 &&
-            new Set(i.grocerySuggestions).size === i.grocerySuggestions.length &&
-            i.grocerySuggestions.every((id) => !!id.trim() && id.length <= 100))) &&
-        i.quantity > 0 &&
-        i.quantity <= 1_000_000 &&
-        units.includes(i.unit),
-    ) &&
-    recipe.instructions.length > 0 &&
-    recipe.instructions.length <= 100 &&
-    recipe.instructions.every((i) => !!i.trim() && i.length <= 10000)
-  );
-}
+export const validateRecipe = Schema.is(RecipeSchema);
 
 export function recipeStatement(db: D1Database, recipe: Recipe) {
   return db

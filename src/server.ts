@@ -88,7 +88,7 @@ function api(request: Request, db: D1Database, ai?: Ai) {
             D1Result<RecipeRow>,
             D1Result<Meal>,
             D1Result<Extra>,
-            D1Result<{ key: string; checked: number }>,
+            D1Result<typeof CheckSchema.Type>,
             D1Result<Collection>,
             D1Result<GroceryRow>,
             D1Result<{ aisles: string; items: string }>,

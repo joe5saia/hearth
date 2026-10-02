@@ -178,9 +178,11 @@ it("auto-links MCP ingredient writes and rejects invalid references atomically",
     .run();
   const input = draft("Linked MCP");
   const originalText = "1 can chickpeas, drained and rinsed";
+
   const created = await call("create_recipes", {
     recipes: [{ ...input, ingredients: [{ ...input.ingredients[0], originalText }, input.ingredients[1]] }],
   });
+
   const recipe = created.structuredContent.recipes[0];
   expect(recipe.ingredients[1].groceryItemId).toBe("mcp-lemon");
   expect(recipe.ingredients[0].originalText).toBe(originalText);
@@ -406,18 +408,51 @@ it("publishes all 22 code-mode-friendly schemas with the single recipes scope", 
 
   for (const tool of tools) {
     expect(tool.inputSchema.type).toBe("object");
+    expect(tool.inputSchema.additionalProperties).toBe(false);
     expect(tool.outputSchema.type).toBe("object");
   }
 
   const create = tools.find((tool: any) => tool.name === "create_recipes").inputSchema;
   expect(create.properties.recipes.items.properties.ingredients.items).toMatchObject({
     type: "object",
+    additionalProperties: false,
     properties: {
       name: { type: "string" },
       quantity: { type: "number" },
       unit: { type: "string" },
     },
   });
+});
+
+it("decodes shared Effect defaults and trimming while rejecting nested excess fields before writes", async () => {
+  const input = { ...draft("  Schema boundary  "), instructions: ["  Stir.  "] };
+
+  const {
+    recipes: [saved],
+  } = await success("create_recipes", { recipes: [input] });
+
+  expect(saved).toMatchObject({
+    title: "Schema boundary",
+    instructions: ["Stir."],
+    description: "",
+    photo: "",
+    source: "",
+    rating: "neutral",
+  });
+  const page = await success("search_recipes", {});
+  expect(page.pagination).toMatchObject({ limit: 25, offset: 0 });
+
+  for (const invalid of [
+    { ...input, unexpected: true },
+    { ...input, ingredients: [{ ...input.ingredients[0], unexpected: true }] },
+    { ...input, ingredients: [{ ...input.ingredients[0], quantity: 0 }] },
+    { ...input, ingredients: [{ ...input.ingredients[0], quantity: 1_000_001 }] },
+    { ...input, ingredients: [{ ...input.ingredients[0], unit: "gallon" }] },
+  ])
+    expect((await call("create_recipes", { recipes: [invalid] })).isError).toBe(true);
+  expect((await call("list_groceries", { unexpected: true })).isError).toBe(true);
+  expect((await success("search_recipes", { query: "Schema boundary" })).pagination.total).toBe(1);
+  await success("delete_recipe", { id: saved.id });
 });
 
 it("lists empty and custom collections with exact names and tracks renames and deletion", async () => {
@@ -704,13 +739,13 @@ it("keeps storage failures distinct from actionable input errors through the hou
     await db.prepare("DROP TRIGGER fail_mcp_grocery").run();
   }
 
-  // 400, 404 and 409 errors must retain their useful correction instructions.
+  // Shared schema validation now rejects unsafe URLs before entering the operation.
+  const invalidUrl = await call("save_grocery", { ...input, url: "javascript:alert(1)" });
+  expect(invalidUrl.isError).toBe(true);
+  expect(invalidUrl.content[0].text).toContain("HTTP(S) product URL");
+
+  // Operation errors retain their useful correction instructions.
   for (const [name, args, message] of [
-    [
-      "save_grocery",
-      { ...input, url: "javascript:alert(1)" },
-      "Check the grocery name, package quantity, unit, and URL.",
-    ],
     ["delete_collection", { id: "missing-retry-collection" }, "That collection no longer exists."],
     ["save_collection", { name: "Vegetarian" }, "A collection with that name already exists."],
   ] as const) {
