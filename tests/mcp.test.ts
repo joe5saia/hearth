@@ -4,6 +4,7 @@ import { rolldown } from "rolldown";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { generateKeyPair, exportJWK, SignJWT } from "jose";
 import { z } from "zod";
+import { Effect } from "effect";
 import { updateRecipes } from "../src/recipes";
 import type { GroceryItem } from "../src/domain";
 
@@ -631,12 +632,27 @@ it("rejects the entire batch when a recipe is deleted after validation", async (
     },
   } as D1Database;
 
-  await expect(
-    updateRecipes(racingDb, [
-      { id: a.id, changes: { minutes: 91 } },
-      { id: b.id, changes: { title: "Deleted" } },
-    ]),
-  ).rejects.toThrow("No recipes were updated");
+  const update = updateRecipes(racingDb, [
+    { id: a.id, changes: { minutes: 91 } },
+    { id: b.id, changes: { title: "Deleted" } },
+  ]);
+
+  // Constructing an operation must not start the write or the deletion race.
+  expect((await call("get_recipes", { ids: [a.id, b.id] })).structuredContent.recipes).toEqual([a, b]);
+
+  const outcome = await Effect.runPromise(
+    update.pipe(
+      Effect.match({
+        onSuccess: () => "unexpected success",
+        onFailure: (error) => error,
+      }),
+    ),
+  );
+
+  expect(outcome).toMatchObject({
+    _tag: "NotFound",
+    message: "A recipe was deleted before the update. No recipes were updated.",
+  });
   const remaining = (await call("get_recipes", { ids: [a.id, b.id] })).structuredContent;
   expect(remaining.recipes).toEqual([a]);
   expect(remaining.missingIds).toEqual([b.id]);

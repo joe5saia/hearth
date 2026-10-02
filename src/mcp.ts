@@ -7,6 +7,7 @@ import {
   units,
   RecipeFields,
   RecipeId,
+  GroceryId,
   RecipeSchema,
   IngredientSchema,
   IdSchema,
@@ -16,13 +17,27 @@ import {
   ExtraSchema,
   CollectionSchema,
   ShoppingOrderSchema,
-  HouseholdSchema,
   MatchReportSchema,
   ShoppingNeedSchema,
 } from "./domain";
 import { mcpSchema } from "./mcp-schema";
-import { createRecipes, getRecipes, updateRecipes, RecipeInputError } from "./recipes";
-import { householdApi } from "./server";
+import { createRecipes, getRecipes, updateRecipes, deleteRecipe, importRecipeDraft } from "./recipes";
+import { getGroceries, saveGrocery, deleteGrocery } from "./groceries";
+import {
+  getHousehold,
+  listCollections,
+  saveCollection,
+  deleteCollection,
+  saveMeal,
+  deleteMeal,
+  saveExtra,
+  deleteExtra,
+  setShoppingChecked,
+  setShoppingOrder,
+  addDemoData,
+} from "./household";
+import { matchGroceries, type AiUnavailable } from "./matching-run";
+import { database, stored, ValidationError, type HouseholdError } from "./storage";
 
 const id = IdSchema;
 
@@ -75,11 +90,6 @@ const extra = ExtraSchema;
 
 const order = ShoppingOrderSchema;
 
-const household = HouseholdSchema.mapFields((fields) => ({
-  ...fields,
-  collections: Schema.Array(collection),
-}));
-
 const ok = Schema.Struct({ ok: Schema.Literal(true) });
 
 const matchingOutput = Schema.Struct({ ...ok.fields, report: MatchReportSchema });
@@ -100,34 +110,6 @@ const changes = fields.mapFields(Struct.map(Schema.optionalKey)).check(
   }),
 );
 
-// No network request or user-supplied route: invoke the website's validated API
-// internally, after MCP authentication, and check its response before composing it.
-async function api<T extends Schema.ConstraintDecoder<unknown>>(
-  db: D1Database,
-  schema: T,
-  path: string,
-  method = "GET",
-  body?: string,
-  ai?: Ai,
-): Promise<T["Type"]> {
-  const init: RequestInit = { method, headers: { "Content-Type": "application/json" } };
-
-  if (body !== undefined) init.body = body;
-
-  const response = await householdApi(new Request(`https://hearth.internal/api/${path}`, init), db, ai);
-
-  // A failed storage response does not establish whether a write committed.
-  // Keep it on result()'s read-before-retry path, not the API's generic retry advice.
-  if (response.status >= 500) throw new Error("Household API storage failure");
-
-  const data = await response.json();
-
-  if (!response.ok)
-    throw new RecipeInputError(Schema.decodeUnknownSync(Schema.Struct({ error: Schema.String }))(data).error);
-
-  return Schema.decodeUnknownSync(schema, { onExcessProperty: "error" })(data);
-}
-
 const readAnnotations = {
   readOnlyHint: true,
   destructiveHint: false,
@@ -135,25 +117,27 @@ const readAnnotations = {
   openWorldHint: false,
 };
 
-async function result<T extends Record<string, unknown>>(operation: () => Promise<T>) {
-  try {
-    const data = await operation();
+function result<T extends Record<string, unknown>>(
+  operation: Effect.Effect<T, HouseholdError | AiUnavailable>,
+) {
+  const failure = (text: string) => ({ isError: true as const, content: [{ type: "text" as const, text }] });
+  const unavailable = "Household storage is unavailable. Read the current state before retrying a write.";
 
-    return { content: [{ type: "text" as const, text: JSON.stringify(data) }], structuredContent: data };
-  } catch (error) {
-    return {
-      isError: true,
-      content: [
-        {
-          type: "text" as const,
-          text:
-            error instanceof RecipeInputError
-              ? error.message
-              : "Household storage is unavailable. Read the current state before retrying a write.",
-        },
-      ],
-    };
-  }
+  return Effect.runPromise(
+    operation.pipe(
+      Effect.match({
+        onSuccess: (data) => ({
+          content: [{ type: "text" as const, text: JSON.stringify(data) }],
+          structuredContent: data,
+        }),
+        onFailure: (error) =>
+          failure(
+            error._tag === "StorageError" || error._tag === "StoredDataError" ? unavailable : error.message,
+          ),
+      }),
+      Effect.catchCause(() => Effect.succeed(failure(unavailable))),
+    ),
+  );
 }
 
 export function recipeMcp(db: D1Database, ai?: Ai) {
@@ -177,14 +161,7 @@ export function recipeMcp(db: D1Database, ai?: Ai) {
           outputSchema: mcpSchema(Schema.Struct({ collections: Schema.Array(collection) })),
           annotations: readAnnotations,
         },
-        () =>
-          result(async () => {
-            const collections = await db
-              .prepare("SELECT id,name FROM collections ORDER BY name,id")
-              .all<{ id: string; name: string }>();
-
-            return { collections: collections.results };
-          }),
+        () => result(listCollections(db)),
       );
       server.registerTool(
         "search_recipes",
@@ -226,33 +203,39 @@ export function recipeMcp(db: D1Database, ai?: Ai) {
           annotations: readAnnotations,
         },
         ({ query, limit, offset }) =>
-          result(async () => {
-            const rows = await db
-              .prepare("SELECT id,title,ingredients FROM recipes ORDER BY title,id")
-              .all<{ id: string; title: string; ingredients: string }>();
+          result(
+            Effect.gen(function* () {
+              const rows = yield* database(() =>
+                db
+                  .prepare("SELECT id,title,ingredients FROM recipes ORDER BY title,id")
+                  .all<{ id: string; title: string; ingredients: string }>(),
+              );
 
-            const matching = rows.results
-              .map((row) => ({
-                ...row,
-                ingredients: Schema.decodeUnknownSync(Schema.Array(ingredient), {
-                  onExcessProperty: "error",
-                })(JSON.parse(row.ingredients)),
-              }))
-              .filter((row) => matchesRecipeSearch(row, query));
+              const matching = yield* stored(() =>
+                rows.results
+                  .map((row) => ({
+                    ...row,
+                    ingredients: Schema.decodeUnknownSync(Schema.Array(ingredient), {
+                      onExcessProperty: "error",
+                    })(JSON.parse(row.ingredients)),
+                  }))
+                  .filter((row) => matchesRecipeSearch(row, query)),
+              );
 
-            const hasMore = offset + limit < matching.length;
+              const hasMore = offset + limit < matching.length;
 
-            return {
-              recipes: matching.slice(offset, offset + limit),
-              pagination: {
-                total: matching.length,
-                limit,
-                offset,
-                hasMore,
-                nextOffset: hasMore ? offset + limit : null,
-              },
-            };
-          }),
+              return {
+                recipes: matching.slice(offset, offset + limit),
+                pagination: {
+                  total: matching.length,
+                  limit,
+                  offset,
+                  hasMore,
+                  nextOffset: hasMore ? offset + limit : null,
+                },
+              };
+            }),
+          ),
       );
       server.registerTool(
         "get_recipes",
@@ -264,7 +247,7 @@ export function recipeMcp(db: D1Database, ai?: Ai) {
           outputSchema: mcpSchema(getOutput),
           annotations: readAnnotations,
         },
-        ({ ids }) => result(() => getRecipes(db, ids)),
+        ({ ids }) => result(getRecipes(db, ids)),
       );
 
       server.registerTool(
@@ -282,7 +265,7 @@ export function recipeMcp(db: D1Database, ai?: Ai) {
             openWorldHint: false,
           },
         },
-        ({ recipes }) => result(() => createRecipes(db, recipes)),
+        ({ recipes }) => result(createRecipes(db, recipes)),
       );
       server.registerTool(
         "update_recipes",
@@ -308,7 +291,7 @@ export function recipeMcp(db: D1Database, ai?: Ai) {
             openWorldHint: false,
           },
         },
-        ({ updates }) => result(() => updateRecipes(db, updates)),
+        ({ updates }) => result(updateRecipes(db, updates)),
       );
 
       server.registerTool(
@@ -331,13 +314,7 @@ export function recipeMcp(db: D1Database, ai?: Ai) {
             openWorldHint: false,
           },
         },
-        (input) =>
-          result(async () => {
-            const saved = { ...input, id: input.id ?? crypto.randomUUID() };
-            await api(db, ok, "collections", "PUT", JSON.stringify(saved));
-
-            return { collection: saved };
-          }),
+        (input) => result(saveCollection(db, { ...input, id: input.id ?? crypto.randomUUID() })),
       );
 
       server.registerTool(
@@ -349,7 +326,7 @@ export function recipeMcp(db: D1Database, ai?: Ai) {
           outputSchema: mcpSchema(Schema.Struct({ groceries: Schema.Array(grocery) })),
           annotations: readAnnotations,
         },
-        () => result(async () => ({ groceries: (await api(db, household, "household")).groceries })),
+        () => result(getGroceries(db).pipe(Effect.map((groceries) => ({ groceries })))),
       );
 
       server.registerTool(
@@ -375,13 +352,7 @@ export function recipeMcp(db: D1Database, ai?: Ai) {
             openWorldHint: false,
           },
         },
-        (input) =>
-          result(async () => {
-            const saved = { ...input, id: input.id ?? crypto.randomUUID() };
-            await api(db, ok, "groceries", "PUT", JSON.stringify(saved));
-
-            return { grocery: saved };
-          }),
+        (input) => result(saveGrocery(db, { ...input, id: input.id ?? GroceryId.make(crypto.randomUUID()) })),
       );
 
       server.registerTool(
@@ -398,15 +369,7 @@ export function recipeMcp(db: D1Database, ai?: Ai) {
             openWorldHint: true,
           },
         },
-        () =>
-          result(() => {
-            if (!ai)
-              throw new RecipeInputError(
-                "AI ingredient matching requires a Cloudflare deployment with an AI binding. Recipe saves still use exact matching.",
-              );
-
-            return api(db, matchingOutput, "groceries/match", "POST", undefined, ai);
-          }),
+        () => result(matchGroceries(db, ai)),
       );
 
       server.registerTool(
@@ -419,11 +382,13 @@ export function recipeMcp(db: D1Database, ai?: Ai) {
           annotations: readAnnotations,
         },
         ({ start, end }) =>
-          result(async () => ({
-            meals: (await api(db, household, "household")).meals.filter(
-              (entry) => entry.date >= start && entry.date <= end,
+          result(
+            getHousehold(db).pipe(
+              Effect.map((data) => ({
+                meals: data.meals.filter((entry) => entry.date >= start && entry.date <= end),
+              })),
             ),
-          })),
+          ),
       );
 
       server.registerTool(
@@ -440,13 +405,7 @@ export function recipeMcp(db: D1Database, ai?: Ai) {
             openWorldHint: false,
           },
         },
-        (input) =>
-          result(async () => {
-            const saved = { ...input, id: input.id ?? crypto.randomUUID() };
-            await api(db, ok, "meals", "PUT", JSON.stringify(saved));
-
-            return { meal: saved };
-          }),
+        (input) => result(saveMeal(db, { ...input, id: input.id ?? crypto.randomUUID() })),
       );
 
       server.registerTool(
@@ -479,29 +438,34 @@ export function recipeMcp(db: D1Database, ai?: Ai) {
           annotations: readAnnotations,
         },
         ({ start, end }) =>
-          result(async () => {
-            const data = await api(db, household, "household");
-            const checked = new Set(data.checks.flatMap((entry) => (entry.checked === 1 ? [entry.key] : [])));
+          result(
+            getHousehold(db).pipe(
+              Effect.map((data) => {
+                const checked = new Set(
+                  data.checks.flatMap((entry) => (entry.checked === 1 ? [entry.key] : [])),
+                );
 
-            return {
-              start,
-              end,
-              items: shoppingList(
-                data.recipes,
-                data.meals,
-                start,
-                end,
-                data.groceries,
-                data.shoppingOrder,
-              ).map((item) => ({
-                ...item,
-                checkKey: checkKey(item, start, end),
-                checked: checked.has(checkKey(item, start, end)),
-              })),
-              extras: data.extras,
-              shoppingOrder: data.shoppingOrder,
-            };
-          }),
+                return {
+                  start,
+                  end,
+                  items: shoppingList(
+                    data.recipes,
+                    data.meals,
+                    start,
+                    end,
+                    data.groceries,
+                    data.shoppingOrder,
+                  ).map((item) => ({
+                    ...item,
+                    checkKey: checkKey(item, start, end),
+                    checked: checked.has(checkKey(item, start, end)),
+                  })),
+                  extras: data.extras,
+                  shoppingOrder: data.shoppingOrder,
+                };
+              }),
+            ),
+          ),
       );
 
       server.registerTool(
@@ -520,13 +484,7 @@ export function recipeMcp(db: D1Database, ai?: Ai) {
             openWorldHint: false,
           },
         },
-        (input) =>
-          result(async () => {
-            const saved = { ...input, id: input.id ?? crypto.randomUUID() };
-            await api(db, ok, "extras", "PUT", JSON.stringify(saved));
-
-            return { extra: saved };
-          }),
+        (input) => result(saveExtra(db, { ...input, id: input.id ?? crypto.randomUUID() })),
       );
 
       server.registerTool(
@@ -548,8 +506,7 @@ export function recipeMcp(db: D1Database, ai?: Ai) {
             openWorldHint: false,
           },
         },
-        ({ key, checked }) =>
-          result(() => api(db, ok, "checks", "PUT", JSON.stringify({ key, checked: checked ? 1 : 0 }))),
+        ({ key, checked }) => result(setShoppingChecked(db, { key, checked: checked ? 1 : 0 })),
       );
 
       server.registerTool(
@@ -566,7 +523,7 @@ export function recipeMcp(db: D1Database, ai?: Ai) {
             openWorldHint: false,
           },
         },
-        (input) => result(() => api(db, ok, "shopping-order", "PUT", JSON.stringify(input))),
+        (input) => result(setShoppingOrder(db, input)),
       );
 
       server.registerTool(
@@ -581,19 +538,15 @@ export function recipeMcp(db: D1Database, ai?: Ai) {
           annotations: { ...readAnnotations, openWorldHint: true },
         },
         ({ url }) =>
-          result(async () => {
-            const imported = await api(
-              db,
-              Schema.Struct({ recipe, warnings: Schema.Array(Schema.String) }),
-              "recipes/import",
-              "POST",
-              JSON.stringify({ url }),
-            );
+          result(
+            importRecipeDraft(url).pipe(
+              Effect.map((imported) => {
+                const { id: _id, ...draft } = imported.recipe;
 
-            const { id: _id, ...draft } = imported.recipe;
-
-            return { recipe: draft, warnings: imported.warnings };
-          }),
+                return { recipe: draft, warnings: imported.warnings };
+              }),
+            ),
+          ),
       );
 
       for (const [name, path, description] of [
@@ -638,7 +591,32 @@ export function recipeMcp(db: D1Database, ai?: Ai) {
               openWorldHint: false,
             },
           },
-          ({ id }) => result(() => api(db, ok, `${path}/${encodeURIComponent(id)}`, "DELETE")),
+          ({ id }) =>
+            result(
+              Effect.gen(function* () {
+                if (path === "recipes") {
+                  const recipeId = yield* Schema.decodeUnknownEffect(RecipeId)(id).pipe(
+                    Effect.mapError(() => new ValidationError({ message: "Invalid recipe ID." })),
+                  );
+
+                  return yield* deleteRecipe(db, recipeId);
+                }
+
+                if (path === "groceries") {
+                  const groceryId = yield* Schema.decodeUnknownEffect(GroceryId)(id).pipe(
+                    Effect.mapError(() => new ValidationError({ message: "Invalid grocery ID." })),
+                  );
+
+                  return yield* deleteGrocery(db, groceryId);
+                }
+
+                if (path === "collections") return yield* deleteCollection(db, id);
+
+                if (path === "meals") return yield* deleteMeal(db, id);
+
+                return yield* deleteExtra(db, id);
+              }),
+            ),
         );
       }
 
@@ -656,7 +634,7 @@ export function recipeMcp(db: D1Database, ai?: Ai) {
             openWorldHint: false,
           },
         },
-        ({ today }) => result(() => api(db, ok, `demo?today=${today}`, "POST")),
+        ({ today }) => result(addDemoData(db, today)),
       );
 
       return server;
