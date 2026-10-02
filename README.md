@@ -394,6 +394,67 @@ Its webhook URL and deployment ledger live in private, gitignored `.amp/deploy-s
 disk-backed interruption recovery and deduplication. It does not deploy production or replace live validation.
 Validate deployment changes with the required live end-to-end test described in the workflow.
 
+## ChatGPT plugin archives
+
+Use **ChatGPT** in Hearth's header for download and manual installation instructions.
+The [latest GitHub release](https://github.com/joe5saia/hearth/releases/latest) provides:
+
+- `hearth-chatgpt.zip`: web-compatible metadata, icons, three workflow skills, and a
+  required reference to the household's registered ChatGPT app.
+- `hearth-plugin.zip`: the portable Agent Plugins package with the hosted MCP URL,
+  the same skills and icons, and skill MCP dependencies for desktop/Codex. A raw MCP
+  declaration makes a workspace plugin desktop-only; this is not the web install ZIP.
+- `SHA256SUMS`: SHA-256 checksums for both archives. Each ZIP includes its version,
+  source commit, and dirty-worktree flag in `BUILD.json`.
+
+Full [installation, updating, permissions, and privacy notes](plugins/hearth/README.md)
+are bundled in both ZIPs. These are household plugins, not an approved public directory
+listing. The MCP server implementation runs on Cloudflare, not inside ChatGPT.
+
+### Maintainer setup and publication
+
+The registered Hearth app ID is public metadata checked into `plugins/hearth/.app.json`.
+No GitHub Actions variable or secret is needed for plugin packaging. The app must be
+available in the installing user's ChatGPT workspace; the ZIP never grants household
+access. To use a different registration, update that file or override the build with
+`--app-id` / `CHATGPT_APP_ID` (both accept the `plugin_asdk_app_…` URL identifier too).
+An explicitly empty override builds only the portable archive; `--require-web` rejects it.
+
+```sh
+npx task plugin:build                          # Web and portable ZIPs for the registered Hearth app
+npx task plugin:build -- --require-web --version 1.0.1
+npx task test -- tests/plugin.test.ts tests/mcp.test.ts
+npx task plugin:smoke                          # Local browser UI; requires running dev services
+```
+
+Outputs go to gitignored `.amp/plugin-dist/`. Use `--output directory` to change that.
+The builder uses an explicit file allowlist, deterministic ordering and ZIP timestamps;
+it does not bundle source trees, environment files, OAuth tokens, or household exports.
+Tests execute the real build task, inspect ZIPs with an independent reader, compare
+checksums, check web/desktop separation and stale-output cleanup, and verify skill tool
+names against the authenticated Worker. ChatGPT model-behavior acceptance scenarios
+are in [EVALUATION.md](plugins/hearth/EVALUATION.md); runtime tests do not prove those pass.
+
+After successful production deployment and the public MCP smoke check, the existing
+GitHub workflow builds version `1.0.<workflow run number>` and runs `npx task plugin:release`.
+It uploads both ZIPs and checksums to a draft, then publishes that complete release as
+latest. The stable web download is
+`https://github.com/joe5saia/hearth/releases/latest/download/hearth-chatgpt.zip`.
+Failed deployments/builds leave the previous release in place. Superseded main revisions
+skip publication. An interrupted draft upload can be retried; a published version is
+verified rather than overwritten. Do not reuse a published version for changed bytes.
+
+`plugin:release` is a **GitHub write**, requires release authorization and `gh` credentials,
+and refuses dirty or stale builds. It does not deploy or push source. In CI, only the
+deployment job receives `contents: write`, and its GitHub token is passed to the release
+step. Manual publication requires the intended commit already on current GitHub main,
+successful deployment/validation, and a new version. Do not rerun production deployment
+solely to retry a release without deployment authorization.
+
+GitHub releases are distribution, not automatic ChatGPT updates. Upload a new ZIP to
+the existing manual plugin with **Upload new version**, or use the configured source
+for a GitHub-managed plugin. Account/workspace upload permissions are required.
+
 ## Household MCP server
 
 `src/mcp-worker.ts` is a separate OAuth-protected Worker entrypoint. It uses MCP SDK 2.2.0's

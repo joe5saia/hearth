@@ -1,0 +1,38 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "hearth",
+  "version": "1.0.0",
+  "description": "Manage your household's recipes, meal plan, grocery catalog, and shopping list with Hearth.",
+  "author": {
+    "name": "Joe Saia",
+    "url": "https://github.com/joe5saia"
+  },
+  "homepage": "https://hearth.joesaia.trade",
+  "repository": "https://github.com/joe5saia/hearth",
+  "keywords": ["recipes", "meal-planning", "groceries", "shopping", "household"],
+  "extensions": {
+    "com.openai": {
+      "interface": {
+        "displayName": "Hearth",
+        "shortDescription": "Recipes, meals & shopping",
+        "longDescription": "Plan meals from saved recipes, organize collections, review NYT Cooking imports, and prepare a shopping list with scaled quantities and package counts. Hearth connects to one shared household; changes affect everyone in it. Only authorized household members can connect. Grocery prices, ordering, nutritional analysis, and browser-local kitchen timers are not supported. Review ingredient warnings and dietary suitability before cooking.",
+        "developerName": "Joe Saia",
+        "category": "Productivity",
+        "capabilities": ["Read", "Write"],
+        "websiteURL": "https://hearth.joesaia.trade",
+        "supportURL": "https://github.com/joe5saia/hearth/issues",
+        "defaultPrompt": [
+          "Help me plan dinners from my saved recipes for a specific week.",
+          "Find a recipe in my collection and help me update it.",
+          "Build a shopping list for my planned meals and flag amounts to review."
+        ],
+        "brandColor": "#3F5136",
+        "brandColorDark": "#EEEDE3",
+        "composerIcon": "./assets/icon.png",
+        "composerIconDark": "./assets/icon-dark.png",
+        "logo": "./assets/icon.png",
+        "logoDark": "./assets/icon-dark.png"
+      }
+    }
+  }
+}

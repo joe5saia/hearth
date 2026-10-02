@@ -393,6 +393,17 @@ it("publishes all 22 code-mode-friendly schemas with the single recipes scope", 
     "update_recipes",
   ]);
 
+  // The distributed skill instructions must name tools actually exposed over OAuth/MCP.
+  const names = new Set(tools.map((tool: any) => tool.name));
+
+  for (const skill of ["managing-recipes", "planning-meals", "preparing-shopping"]) {
+    const instructions = await readFile(`plugins/hearth/skills/${skill}/SKILL.md`, "utf8");
+
+    for (const match of instructions.matchAll(/`([a-z]+_[a-z_]+)`/g)) {
+      expect(names.has(match[1]), `${skill} refers to unavailable tool ${match[1]}`).toBe(true);
+    }
+  }
+
   for (const tool of tools) {
     expect(tool.inputSchema.type).toBe("object");
     expect(tool.outputSchema.type).toBe("object");

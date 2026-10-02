@@ -17,6 +17,8 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
     environment: production
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v6
         with:
@@ -40,3 +42,9 @@ jobs:
           GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
       - name: Production MCP smoke check
         run: npx task mcp:smoke
+      - name: Build ChatGPT and portable plugin archives
+        run: npx task plugin:build -- --require-web --version "1.0.${GITHUB_RUN_NUMBER}"
+      - name: Publish complete plugin release
+        run: npx task plugin:release
+        env:
+          GH_TOKEN: ${{ github.token }}

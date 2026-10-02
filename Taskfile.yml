@@ -30,6 +30,17 @@ tasks:
   branding:generate:
     desc: Regenerate production logo and device assets from the vector masters
     cmds: [node tools/branding.ts]
+  plugin:build:
+    desc: Build plugin ZIPs and checksums (optional -- --app-id ID --version X.Y.Z --require-web --output directory)
+    env:
+      TZ: UTC
+    cmds: ["node tools/plugin-build.ts {{.CLI_ARGS}}"]
+  plugin:release:
+    desc: Publish built plugin ZIPs to GitHub (requires release authorization, clean main revision, and a registered app)
+    cmds: [node tools/plugin-release.ts]
+  plugin:smoke:
+    desc: Browser E2E for plugin installation UI (requires local dev and agent-browser; optional -- local URL)
+    cmds: ["node tools/plugin-smoke.ts {{.CLI_ARGS}}"]
   benchmark:
     desc: Measure local API, shopping CPU, and production bundle sizes (optional -- report.json)
     cmds:

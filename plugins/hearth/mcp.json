@@ -1,0 +1,9 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json",
+  "mcpServers": {
+    "hearth": {
+      "type": "streamable-http",
+      "url": "https://hearth-mcp.joesaia.trade/mcp"
+    }
+  }
+}

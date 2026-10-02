@@ -3,6 +3,7 @@ import { Option, Schema } from "effect";
 import { KitchenTimers } from "./KitchenTimers";
 import { GroceryForm, GroceryManager } from "./GroceryManager";
 import { ShoppingItems } from "./ShoppingItems";
+import { ChatGPTSetup } from "./ChatGPTSetup";
 import { matchGrocery } from "./groceries";
 import { MatchReportSchema } from "./domain";
 import {
@@ -31,6 +32,7 @@ import {
   ExternalLink,
   Pencil,
   Package,
+  MessageCircle,
 } from "lucide-react";
 import {
   addDays,
@@ -61,6 +63,7 @@ type Page = "plan" | "recipes" | "shopping" | "groceries";
 
 type Modal =
   | { kind: "collections" }
+  | { kind: "chatgpt" }
   | { kind: "grocery"; item: GroceryItem }
   | { kind: "collection"; collection: Collection }
   | { kind: "meal"; meal: Meal }
@@ -245,6 +248,7 @@ export function App() {
   const [timerDialogHost, setTimerDialogHost] = useState<HTMLDivElement | null>(null);
   const weekInput = useRef<HTMLInputElement>(null);
   const topbar = useRef<HTMLDivElement>(null);
+  const chatgptButton = useRef<HTMLButtonElement>(null);
 
   useEffect(() => {
     const header = topbar.current;
@@ -466,6 +470,14 @@ export function App() {
             }}
           >
             <ArrowDownToLine size={16} /> Import recipe
+          </button>
+          <button
+            ref={chatgptButton}
+            className="secondary chatgpt-open"
+            aria-label="Use Hearth in ChatGPT"
+            onClick={() => setModal({ kind: "chatgpt" })}
+          >
+            <MessageCircle size={18} /> <span>ChatGPT</span>
           </button>
         </div>
         {error && !modal && (
@@ -1311,6 +1323,17 @@ export function App() {
       {modal?.kind === "import" && (
         <Dialog timerHost={setTimerDialogHost} title="Import a recipe" close={() => setModal(null)}>
           <RecipeImport imported={(recipe, warnings) => setModal({ kind: "editor", recipe, warnings })} />
+        </Dialog>
+      )}
+      {modal?.kind === "chatgpt" && (
+        <Dialog
+          title="Use Hearth in ChatGPT"
+          close={() => {
+            setModal(null);
+            requestAnimationFrame(() => chatgptButton.current?.focus());
+          }}
+        >
+          <ChatGPTSetup />
         </Dialog>
       )}
       {modal?.kind === "editor" && (
