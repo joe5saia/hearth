@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
-import { Schema } from "effect";
+import { Effect, Schema } from "effect";
 import { HouseholdSchema, MatchReportSchema, type GroceryItem, type Recipe } from "../src/domain.ts";
 import { GrocerySearch, matchIngredients, normalizeIngredient, normalizationModel } from "../src/ingredient-matching.ts";
 import { Cloudflare, previewFetch, previewName } from "./preview.ts";
@@ -85,7 +85,7 @@ if (mode === "models" || mode === "normalization" || mode === "history") {
     return response;
   } } as Pick<Ai, "run">;
   if (mode === "normalization") {
-    for (const item of cases) await normalizeIngredient(ai, item.name);
+    for (const item of cases) await Effect.runPromise(normalizeIngredient(ai, item.name));
   } else if (mode === "history") {
     const catalog = [product("fresh-parm", "BelGioioso Vegetarian Parmesan Cheese, 8 oz"), product("kraft-parm", "Kraft Finely Shredded Parmesan Natural Cheese, 6 oz")];
     const targets = ["Adult pasta dinner", "Baby broccoli cheese bites"].map((title, index): Recipe => ({
@@ -96,8 +96,8 @@ if (mode === "models" || mode === "normalization" || mode === "history") {
       ...targets[group], id: `history-${group}-${index}`, title: `${group ? "Baby vegetable bites" : "Adult pasta dinner"} ${index}`,
       ingredients: [{ name: "Parmesan", quantity: 2, unit: "tbsp", groceryItemId: item.id }],
     })));
-    const baseline = await matchIngredients(ai, targets, catalog);
-    const contextual = await matchIngredients(ai, [...targets, ...history], catalog);
+    const baseline = await Effect.runPromise(matchIngredients(ai, targets, catalog));
+    const contextual = await Effect.runPromise(matchIngredients(ai, [...targets, ...history], catalog));
     assert.equal(baseline.report.failed + contextual.report.failed, 0);
     assert(contextualInputs.length > 0, "Live Jev must exercise the ambiguous shortlist/history pass.");
     for (const input of contextualInputs) {
@@ -116,7 +116,7 @@ if (mode === "models" || mode === "normalization" || mode === "history") {
       outcomes: contextual.recipes.slice(0, targets.length).map((recipe) => ({ title: recipe.title, ingredient: recipe.ingredients[0] })) }];
     console.log("PASS live Jev: shortlist, bounded reverse-lookup examples, and preference-aware results or explicit review.");
   } else {
-    const result = await matchIngredients(ai, recipes, groceries);
+    const result = await Effect.runPromise(matchIngredients(ai, recipes, groceries));
     reports = [result.report];
     results = validate(result.recipes);
   }

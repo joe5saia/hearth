@@ -1,5 +1,5 @@
 import { Data, Effect } from "effect";
-import { database } from "./storage";
+import { database, stored } from "./storage";
 import { parseRecipe, type RecipeRow } from "./recipes";
 import { parseGrocery, type GroceryRow } from "./groceries";
 import {
@@ -43,53 +43,56 @@ export const matchGroceries = (db: D1Database, ai?: Ai, ray?: string | null) =>
 
     let stage = "snapshot";
 
-    const report = yield* database(async () => {
-      try {
-        const snapshot = await db.batch([
+    const report = yield* Effect.gen(function* () {
+      const snapshot = yield* database(() =>
+        db.batch([
           db.prepare("SELECT * FROM recipes"),
           db.prepare("SELECT * FROM groceries ORDER BY name,id"),
           db.prepare("SELECT version FROM grocery_revision WHERE id=1"),
-        ]);
+        ]),
+      );
 
-        // SAFETY: These fixed SELECTs return unbranded storage rows in this order.
-        const [rows, products, revision] = snapshot as [
-          D1Result<RecipeRow>,
-          D1Result<GroceryRow>,
-          D1Result<{ version: number }>,
-        ];
+      // SAFETY: These fixed SELECTs return unbranded storage rows in this order.
+      const [rows, products, revision] = snapshot as [
+        D1Result<RecipeRow>,
+        D1Result<GroceryRow>,
+        D1Result<{ version: number }>,
+      ];
 
-        const originals = rows.results.map(parseRecipe);
-        stage = "matching";
-        const result = await matchIngredients(ai, originals, products.results.map(parseGrocery), db, runId);
-        stage = "persistence";
+      const originals = yield* stored(() => rows.results.map(parseRecipe));
+      const groceries = yield* stored(() => products.results.map(parseGrocery));
+      stage = "matching";
+      const result = yield* matchIngredients(ai, originals, groceries, db, runId);
+      stage = "persistence";
 
-        const changed = result.recipes.flatMap((recipe, index) => {
-          const links = recipe.ingredients.filter(
-            (ingredient, position) =>
-              ingredient.groceryItemId !== originals[index].ingredients[position].groceryItemId,
-          ).length;
+      const changed = result.recipes.flatMap((recipe, index) => {
+        const links = recipe.ingredients.filter(
+          (ingredient, position) =>
+            ingredient.groceryItemId !== originals[index].ingredients[position].groceryItemId,
+        ).length;
 
-          const edits = recipe.ingredients.filter(
-            (ingredient, position) =>
-              JSON.stringify(ingredient) !== JSON.stringify(originals[index].ingredients[position]),
-          ).length;
+        const edits = recipe.ingredients.filter(
+          (ingredient, position) =>
+            JSON.stringify(ingredient) !== JSON.stringify(originals[index].ingredients[position]),
+        ).length;
 
-          return edits ? [{ recipe, before: rows.results[index], links, edits }] : [];
-        });
+        return edits ? [{ recipe, before: rows.results[index], links, edits }] : [];
+      });
 
-        console.info(
-          JSON.stringify({
-            event: "ingredient_matching_persisting",
-            runId,
-            changedRecipes: changed.length,
-            proposedMatches: result.report.matched,
-            elapsedMs: Math.round(performance.now() - started),
-          }),
-        );
+      console.info(
+        JSON.stringify({
+          event: "ingredient_matching_persisting",
+          runId,
+          changedRecipes: changed.length,
+          proposedMatches: result.report.matched,
+          elapsedMs: Math.round(performance.now() - started),
+        }),
+      );
 
-        if (!changed.length) return result.report;
+      if (!changed.length) return result.report;
 
-        const writes = await db.batch(
+      const writes = yield* database(() =>
+        db.batch(
           changed.map(({ recipe, before }) =>
             db
               .prepare(
@@ -106,30 +109,33 @@ export const matchGroceries = (db: D1Database, ai?: Ai, ray?: string | null) =>
                 revision.results[0].version,
               ),
           ),
-        );
+        ),
+      );
 
-        for (const [index, saved] of writes.entries()) {
-          if (!saved.meta.changes) {
-            const { links, edits } = changed[index];
-            result.report.matched -= links;
-            result.report.conflicts += edits;
-          }
+      for (const [index, saved] of writes.entries()) {
+        if (!saved.meta.changes) {
+          const { links, edits } = changed[index];
+          result.report.matched -= links;
+          result.report.conflicts += edits;
         }
-
-        return result.report;
-      } catch (error) {
-        console.error(
-          JSON.stringify({
-            event: "ingredient_matching_failed",
-            runId,
-            stage,
-            reason: matchingFailureReason(error),
-            elapsedMs: Math.round(performance.now() - started),
-          }),
-        );
-        throw error;
       }
-    });
+
+      return result.report;
+    }).pipe(
+      Effect.tapError((error) =>
+        Effect.sync(() => {
+          console.error(
+            JSON.stringify({
+              event: "ingredient_matching_failed",
+              runId,
+              stage,
+              reason: matchingFailureReason(error),
+              elapsedMs: Math.round(performance.now() - started),
+            }),
+          );
+        }),
+      ),
+    );
 
     report.totalMs = performance.now() - started;
     console.info(

@@ -131,10 +131,25 @@ beforeAll(async () => {
 
             if (mode === "private-invalid-json") return new Response("private-model-response-secret");
 
-            if (request.url.endsWith("llama-3.2-3b-instruct"))
+            if (request.url.endsWith("llama-3.2-3b-instruct")) {
+              if (mode === "timeout") await new Promise((resolve) => setTimeout(resolve, 16_000));
+
+              if (mode === "partial") {
+                const input = Schema.decodeUnknownSync(
+                  Schema.Struct({ messages: Schema.Array(Schema.Struct({ content: Schema.String })) }),
+                )(await request.json());
+
+                const { ingredient } = Schema.decodeUnknownSync(Schema.Struct({ ingredient: Schema.String }))(
+                  JSON.parse(input.messages[1].content),
+                );
+
+                if (ingredient === recipe.ingredients[0].name) return Response.json({ core: "" });
+              }
+
               return Response.json({
                 response: mode === "bad-normalization" ? { core: "" } : { core: "White Onion" },
               });
+            }
 
             const input = Schema.decodeUnknownSync(
               Schema.Struct({
@@ -416,6 +431,65 @@ it("leaves uncertain, absent, malformed and unavailable model results unlinked w
   mode = "success";
   expect(await match()).toMatchObject({ matched: 1, normalizationCalls: 1, selectionCalls: 1 });
 });
+
+it("shares failed in-flight work without cancelling healthy ingredients, then retries failures on the next run", async () => {
+  mode = "partial";
+  expect((await send("recipes", "PUT", { ...recipe, id: "duplicate" })).status).toBe(200);
+  expect(
+    (
+      await send("recipes", "PUT", {
+        ...recipe,
+        id: "healthy",
+        ingredients: [{ ...recipe.ingredients[0], name: "Fresh white onion, chopped" }],
+      })
+    ).status,
+  ).toBe(200);
+
+  expect(await match()).toMatchObject({
+    attempted: 3,
+    matched: 1,
+    failed: 2,
+    normalizationCalls: 2,
+    selectionCalls: 1,
+  });
+  expect(calls).toBe(3);
+  const after = (await state()).recipes;
+  expect(after.find((entry) => entry.id === "healthy")!.ingredients[0].groceryItemId).toBe("white");
+
+  for (const id of [recipe.id, "duplicate"])
+    expect(after.find((entry) => entry.id === id)!.ingredients).toEqual(recipe.ingredients);
+
+  mode = "success";
+  expect(await match()).toMatchObject({
+    attempted: 2,
+    matched: 2,
+    failed: 0,
+    normalizationCalls: 1,
+    selectionCalls: 1,
+    normalizationCacheHits: 1,
+    selectionCacheHits: 1,
+  });
+  expect(calls).toBe(5);
+
+  for (const entry of (await state()).recipes) expect(entry.ingredients[0].groceryItemId).toBe("white");
+});
+
+it("times out inference without persisting a late response and retries the ingredient on a later run", async () => {
+  mode = "timeout";
+  expect(await match()).toMatchObject({ attempted: 1, matched: 0, failed: 1, selectionCalls: 0 });
+  expect(logEvents().find((event) => event.event === "ingredient_matching_ingredient_failed")).toMatchObject({
+    stage: "normalization",
+    reason: "timeout",
+  });
+  // Let the deliberately slow upstream finish; its late result must not reach D1.
+  await new Promise((resolve) => setTimeout(resolve, 1_200));
+  expect((await state()).recipes[0].ingredients).toEqual(recipe.ingredients);
+  const db = await worker.getD1Database("DB");
+  expect(await db.prepare("SELECT COUNT(*) AS count FROM ingredient_match_cache").first("count")).toBe(0);
+
+  mode = "success";
+  expect(await match()).toMatchObject({ matched: 1, failed: 0, normalizationCalls: 1, selectionCalls: 1 });
+}, 25_000);
 
 it("persists ranked suggestions without linking, reuses them, and clears them on explicit selection", async () => {
   mode = "suggestions";
