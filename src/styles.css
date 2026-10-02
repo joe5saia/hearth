@@ -504,6 +504,17 @@ main {
   font-weight: 600;
   min-height: 36px;
 }
+.note-only-card .meal-content {
+  width: 100%;
+  min-width: 0;
+}
+.note-only-card h3 {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.note-only-card .meal-meta {
+  margin: 0 0 6px;
+}
 .meal-meta {
   display: flex;
   align-items: center;

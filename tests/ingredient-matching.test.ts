@@ -182,7 +182,9 @@ beforeAll(async () => {
   for (const file of (await readdir("migrations")).filter((file) => file.endsWith(".sql")).sort()) {
     const sql = await readFile(`migrations/${file}`, "utf8");
     await db.batch(
-      sql.split(/;\n(?=CREATE|INSERT)|;\s*$/).flatMap((value) => (value.trim() ? [db.prepare(value)] : [])),
+      sql
+        .split(/;\n(?=CREATE|INSERT|DROP|ALTER)|;\s*$/)
+        .flatMap((value) => (value.trim() ? [db.prepare(value)] : [])),
     );
   }
 }, 30_000);

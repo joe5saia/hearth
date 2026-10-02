@@ -433,11 +433,16 @@ function api(request: Request, db: D1Database, ai?: Ai) {
       )
         return yield* invalid("Choose a valid date and a recipe scale between 0 and 100.");
 
-      const recipe = yield* database(() =>
-        db.prepare("SELECT id FROM recipes WHERE id=?").bind(meal.recipeId).first(),
-      );
+      if (meal.recipeId === null) {
+        if (!meal.note.trim()) return yield* invalid("Write a note for this meal.");
+      } else {
+        const recipe = yield* database(() =>
+          db.prepare("SELECT id FROM recipes WHERE id=?").bind(meal.recipeId).first(),
+        );
 
-      if (!recipe) return yield* invalid("That recipe no longer exists. Choose another recipe.");
+        if (!recipe) return yield* invalid("That recipe no longer exists. Choose another recipe.");
+      }
+
       yield* database(() => mealStatement(db, meal).run());
 
       return Response.json({ ok: true });

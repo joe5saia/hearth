@@ -337,7 +337,7 @@ export function App() {
     }
   };
 
-  const addMeal = (date = nextDinnerDate(data.meals, week), recipeId = data.recipes[0]?.id ?? "") =>
+  const addMeal = (date = nextDinnerDate(data.meals, week), recipeId = data.recipes[0]?.id ?? null) =>
     setModal({
       kind: "meal",
       meal: { id: crypto.randomUUID(), recipeId, date, slot: "Dinner", scale: 1, note: "" },
@@ -498,7 +498,7 @@ export function App() {
                 </h1>
               </div>
               {page === "plan" ? (
-                <button className="primary" onClick={() => (data.recipes.length ? addMeal() : newRecipe())}>
+                <button className="primary" onClick={() => addMeal()}>
                   <Plus size={17} /> Add a meal
                 </button>
               ) : page === "recipes" ? (
@@ -631,25 +631,30 @@ export function App() {
                           {meals.map((meal) => {
                             const recipe = data.recipes.find((entry) => entry.id === meal.recipeId);
 
-                            if (!recipe) return null;
+                            if (meal.recipeId !== null && !recipe) return null;
 
                             return (
                               <button
-                                className="meal-card"
+                                className={`meal-card${recipe ? "" : " note-only-card"}`}
                                 key={meal.id}
                                 onClick={() => setModal({ kind: "meal", meal })}
                               >
-                                <div className="meal-photo">
-                                  <Photo recipe={recipe} />
-                                  <span className="meal-slot">{meal.slot}</span>
-                                </div>
-                                <div className="meal-content">
-                                  <h3>{recipe.title}</h3>
-                                  <div className="meal-meta">
-                                    <Users size={12} /> {quantity(recipe.servings * meal.scale)} servings{" "}
-                                    {meal.scale !== 1 && <span>{quantity(meal.scale)}×</span>}
+                                {recipe && (
+                                  <div className="meal-photo">
+                                    <Photo recipe={recipe} />
+                                    <span className="meal-slot">{meal.slot}</span>
                                   </div>
-                                  {meal.note && <p className="meal-note">{meal.note}</p>}
+                                )}
+                                <div className="meal-content">
+                                  {!recipe && <p className="meal-meta">{meal.slot} · Note</p>}
+                                  <h3>{recipe ? recipe.title : meal.note}</h3>
+                                  {recipe && (
+                                    <div className="meal-meta">
+                                      <Users size={12} /> {quantity(recipe.servings * meal.scale)} servings{" "}
+                                      {meal.scale !== 1 && <span>{quantity(meal.scale)}×</span>}
+                                    </div>
+                                  )}
+                                  {recipe && meal.note && <p className="meal-note">{meal.note}</p>}
                                 </div>
                               </button>
                             );
@@ -667,7 +672,7 @@ export function App() {
                           <button
                             className="add-day"
                             aria-label={`Add meal for ${readableDate(day)}`}
-                            onClick={() => (data.recipes.length ? addMeal(day) : newRecipe())}
+                            onClick={() => addMeal(day)}
                           >
                             <Plus size={15} />
                             <span>Add meal</span>
@@ -1401,6 +1406,7 @@ function MealForm({
   const [debouncedRecipeSearch, setDebouncedRecipeSearch] = useState("");
   const recipeSearchInput = useRef<HTMLInputElement>(null);
   const recipe = recipes.find((entry) => entry.id === draft.recipeId);
+  const noteOnly = draft.recipeId === null;
   const searching = recipeSearch.trim() !== debouncedRecipeSearch;
 
   const recipeResults = useMemo(
@@ -1420,74 +1426,93 @@ function MealForm({
       onSubmit={(event) => {
         event.preventDefault();
 
-        if (recipe) save(draft);
+        if (noteOnly ? draft.note.trim() : recipe) save(draft);
       }}
     >
       <label>
-        Recipe
-        <input
-          ref={recipeSearchInput}
-          type="search"
-          placeholder="Search recipes by name or ingredient…"
-          autoComplete="off"
-          value={recipeSearch}
-          onChange={(event) => setRecipeSearch(event.target.value)}
-          onKeyDown={(event) => {
-            if (event.key === "Enter") event.preventDefault();
-          }}
-          aria-describedby={recipeSearch.trim() ? "meal-recipe-search-status" : undefined}
-        />
-      </label>
-      {recipeSearch.trim() && (
-        <div className="meal-recipe-results" aria-busy={searching}>
-          <p id="meal-recipe-search-status" role="status">
-            {searching
-              ? "Searching…"
-              : recipeResults.length
-                ? `${recipeResults.length} matching ${recipeResults.length === 1 ? "recipe" : "recipes"}`
-                : "No recipes found. Try another name or ingredient."}
-          </p>
-          {!searching && recipeResults.length > 0 && (
-            <ul aria-label="Matching recipes">
-              {recipeResults.map((entry) => (
-                <li key={entry.id}>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setDraft({ ...draft, recipeId: entry.id });
-                      setRecipeSearch("");
-                      setDebouncedRecipeSearch("");
-                      recipeSearchInput.current?.focus();
-                    }}
-                  >
-                    <span>{entry.title}</span>
-                    <small>
-                      {entry.minutes} min · {entry.servings} servings
-                    </small>
-                    {entry.id === draft.recipeId && <Check size={16} aria-label="Selected recipe" />}
-                  </button>
-                </li>
-              ))}
-            </ul>
-          )}
-        </div>
-      )}
-      {recipe && (
-        <button
-          type="button"
-          className="selected-recipe"
-          onClick={(event) => {
-            if (event.currentTarget.form?.reportValidity()) viewRecipe(recipe, draft);
-          }}
+        Plan type
+        <select
+          value={noteOnly ? "note" : "recipe"}
+          onChange={(event) =>
+            setDraft({
+              ...draft,
+              recipeId: event.target.value === "note" ? null : (meal.recipeId ?? recipes[0]?.id ?? ""),
+            })
+          }
         >
-          <Photo recipe={recipe} />
-          <span>
-            <strong>{recipe.title}</strong>
-            <small>
-              {recipe.minutes} minutes · View recipe <ArrowRight size={12} />
-            </small>
-          </span>
-        </button>
+          <option value="recipe">Recipe</option>
+          <option value="note">Note only</option>
+        </select>
+      </label>
+      {!noteOnly && (
+        <>
+          <label>
+            Recipe
+            <input
+              ref={recipeSearchInput}
+              type="search"
+              placeholder="Search recipes by name or ingredient…"
+              autoComplete="off"
+              value={recipeSearch}
+              onChange={(event) => setRecipeSearch(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") event.preventDefault();
+              }}
+              aria-describedby={recipeSearch.trim() ? "meal-recipe-search-status" : undefined}
+            />
+          </label>
+          {recipeSearch.trim() && (
+            <div className="meal-recipe-results" aria-busy={searching}>
+              <p id="meal-recipe-search-status" role="status">
+                {searching
+                  ? "Searching…"
+                  : recipeResults.length
+                    ? `${recipeResults.length} matching ${recipeResults.length === 1 ? "recipe" : "recipes"}`
+                    : "No recipes found. Try another name or ingredient."}
+              </p>
+              {!searching && recipeResults.length > 0 && (
+                <ul aria-label="Matching recipes">
+                  {recipeResults.map((entry) => (
+                    <li key={entry.id}>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setDraft({ ...draft, recipeId: entry.id });
+                          setRecipeSearch("");
+                          setDebouncedRecipeSearch("");
+                          recipeSearchInput.current?.focus();
+                        }}
+                      >
+                        <span>{entry.title}</span>
+                        <small>
+                          {entry.minutes} min · {entry.servings} servings
+                        </small>
+                        {entry.id === draft.recipeId && <Check size={16} aria-label="Selected recipe" />}
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          )}
+          {recipe && (
+            <button
+              type="button"
+              className="selected-recipe"
+              onClick={(event) => {
+                if (event.currentTarget.form?.reportValidity()) viewRecipe(recipe, draft);
+              }}
+            >
+              <Photo recipe={recipe} />
+              <span>
+                <strong>{recipe.title}</strong>
+                <small>
+                  {recipe.minutes} minutes · View recipe <ArrowRight size={12} />
+                </small>
+              </span>
+            </button>
+          )}
+        </>
       )}
       <div className="form-grid">
         <label>
@@ -1515,37 +1540,50 @@ function MealForm({
           </select>
         </label>
       </div>
-      <div className="scale-panel">
-        <div>
-          <label htmlFor="meal-scale">Recipe scale</label>
-          <p>
-            {recipe
-              ? `${quantity(recipe.servings * draft.scale)} servings · original recipe serves ${recipe.servings}`
-              : "Choose a recipe"}
-          </p>
+      {!noteOnly && (
+        <div className="scale-panel">
+          <div>
+            <label htmlFor="meal-scale">Recipe scale</label>
+            <p>
+              {recipe
+                ? `${quantity(recipe.servings * draft.scale)} servings · original recipe serves ${recipe.servings}`
+                : "Choose a recipe"}
+            </p>
+          </div>
+          <div className="scale-input">
+            <select
+              id="meal-scale"
+              aria-label="Recipe scale"
+              required
+              value={draft.scale}
+              onChange={(event) => setDraft({ ...draft, scale: Number(event.target.value) })}
+            >
+              {[...new Set([meal.scale, ...Array.from({ length: 400 }, (_, index) => (index + 1) / 4)])]
+                .sort((a, b) => a - b)
+                .map((value) => (
+                  <option key={value} value={value}>
+                    {value}×
+                  </option>
+                ))}
+            </select>
+          </div>
         </div>
-        <div className="scale-input">
-          <select
-            id="meal-scale"
-            aria-label="Recipe scale"
-            required
-            value={draft.scale}
-            onChange={(event) => setDraft({ ...draft, scale: Number(event.target.value) })}
-          >
-            {[...new Set([meal.scale, ...Array.from({ length: 400 }, (_, index) => (index + 1) / 4)])]
-              .sort((a, b) => a - b)
-              .map((value) => (
-                <option key={value} value={value}>
-                  {value}×
-                </option>
-              ))}
-          </select>
-        </div>
-      </div>
+      )}
       <label>
-        A note for this meal <span className="muted">(optional)</span>
+        {noteOnly ? (
+          "What’s the plan?"
+        ) : (
+          <>
+            A note for this meal <span className="muted">(optional)</span>
+          </>
+        )}
         <textarea
-          placeholder="Add chicken, save some for lunch, dinner with friends…"
+          placeholder={
+            noteOnly
+              ? "Pizza, leftovers, dinner out…"
+              : "Add chicken, save some for lunch, dinner with friends…"
+          }
+          required={noteOnly}
           maxLength={2000}
           value={draft.note}
           onChange={(event) => setDraft({ ...draft, note: event.target.value })}
@@ -1562,7 +1600,7 @@ function MealForm({
             <Trash2 size={16} /> Remove meal
           </button>
         )}
-        <button className="primary" disabled={busy || !recipe}>
+        <button className="primary" disabled={busy || (noteOnly ? !draft.note.trim() : !recipe)}>
           {busy ? "Saving…" : "Save to meal plan"}
           <Check size={16} />
         </button>

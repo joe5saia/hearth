@@ -75,7 +75,7 @@ const grocery = z.strictObject({
 
 const meal = z.strictObject({
   id,
-  recipeId: id,
+  recipeId: id.nullable().describe("Recipe ID, or null for a note-only meal with a nonblank note."),
   date,
   slot: z.enum(["Breakfast", "Lunch", "Dinner"]),
   scale: z
@@ -438,7 +438,7 @@ export function recipeMcp(db: D1Database, ai?: Ai) {
         "save_meal",
         {
           description:
-            "Add or fully replace a planned meal. Omit id to add; reuse an existing meal ID to move its date/slot or change its scale/note. All other fields required; read list_meals before editing. scale = desired servings / recipe.servings. Multiple meals in the same slot are allowed. Returns {meal}. Read before retrying when id was omitted.",
+            "Add or fully replace a planned meal. Omit id to add; reuse an existing meal ID to move its date/slot or change its scale/note. All other fields required; read list_meals before editing. For a note-only meal (e.g. Pizza), set recipeId to null, note to nonblank text, and scale to 1; it adds no shopping ingredients. Otherwise scale = desired servings / recipe.servings. Multiple meals in the same slot are allowed. Returns {meal}. Read before retrying when id was omitted.",
           inputSchema: meal.extend({ id: id.optional() }),
           outputSchema: z.object({ meal }),
           annotations: {

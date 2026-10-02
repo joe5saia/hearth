@@ -106,7 +106,7 @@ for (const [name, recipeCount, mealCount, photoBytes] of [
       const sql = await readFile(`migrations/${file}`, "utf8");
       await db.batch(
         sql
-          .split(/;\n(?=CREATE|INSERT)|;\s*$/)
+          .split(/;\n(?=CREATE|INSERT|DROP|ALTER)|;\s*$/)
           .filter((statement) => statement.trim())
           .map((statement) => db.prepare(statement)),
       );

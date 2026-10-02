@@ -301,11 +301,12 @@ beforeAll(async () => {
     "0002_recipe_rating.sql",
     "0003_collections.sql",
     "0004_groceries.sql",
+    "0006_meal_notes.sql",
   ]) {
     const sql = await readFile(`migrations/${file}`, "utf8");
     await db.batch(
       sql
-        .split(/;\n(?=CREATE|INSERT)|;\s*$/)
+        .split(/;\n(?=CREATE|INSERT|DROP|ALTER)|;\s*$/)
         .filter((s) => s.trim())
         .map((s) => db.prepare(s)),
     );
@@ -983,6 +984,27 @@ it("manages a collection, matched products, inclusive meal plan and shopping lif
   for (const recipe of linked) await success("delete_recipe", { id: recipe.id });
   expect((await success("get_recipes", { ids: [a.id, b.id] })).missingIds).toEqual([a.id, b.id]);
   expect((await shopping()).items).toEqual([]);
+});
+
+it("saves, lists, edits and deletes note-only meals through RPC without shopping ingredients", async () => {
+  const range = { start: "2032-04-05", end: "2032-04-05" };
+
+  const { meal } = await success("save_meal", {
+    recipeId: null,
+    date: range.start,
+    slot: "Dinner",
+    scale: 1,
+    note: "Pizza",
+  });
+
+  expect((await success("list_meals", range)).meals).toEqual([meal]);
+  expect((await success("get_shopping_list", range)).items).toEqual([]);
+  expect((await call("save_meal", { ...meal, note: " \n\t" })).isError).toBe(true);
+  const edited = { ...meal, note: "Dinner out", slot: "Lunch" };
+  await success("save_meal", edited);
+  expect((await success("list_meals", range)).meals).toEqual([edited]);
+  await success("delete_meal", { id: meal.id });
+  expect((await success("list_meals", range)).meals).toEqual([]);
 });
 
 it("imports an unsaved NYT draft, refuses unsafe URLs, and saves the reviewed draft", async () => {

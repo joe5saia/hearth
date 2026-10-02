@@ -120,6 +120,21 @@ beforeAll(async () => {
       .filter((s) => s.trim())
       .map((s) => db.prepare(s)),
   );
+  // Upgrade a populated plan, not just an empty schema.
+  await recipeStatement(db, sampleRecipes[0]).run();
+  await db
+    .prepare("INSERT INTO meals(id,recipeId,date,slot,scale,note) VALUES(?,?,?,?,?,?)")
+    .bind(meal.id, meal.recipeId, meal.date, meal.slot, meal.scale, meal.note)
+    .run();
+  const notesSql = await readFile("migrations/0006_meal_notes.sql", "utf8");
+  await db.batch(
+    notesSql
+      .split(";")
+      .filter((s) => s.trim())
+      .map((s) => db.prepare(s)),
+  );
+  expect(await db.prepare("SELECT * FROM meals").first()).toEqual(meal);
+  await expect(db.prepare("DELETE FROM recipes WHERE id=?").bind(meal.recipeId).run()).rejects.toThrow();
 }, 30000);
 
 beforeEach(async () => {
@@ -702,6 +717,48 @@ describe("real Worker with disposable SQLite D1", () => {
     expect((await send("meals/test-meal", "DELETE", "{}")).status).toBe(200);
     expect((await send(`recipes/${sampleRecipes[0].id}`, "DELETE", "{}")).status).toBe(200);
     expect(await db.prepare("SELECT count(*) AS count FROM recipes").first()).toEqual({ count: 0 });
+  });
+  it("persists recipe-free notes, validates them, and converts entries without affecting other meals", async () => {
+    const note: Meal = { ...meal, id: "note-only", recipeId: null, scale: 1, note: "Pizza" };
+    const put = (entry: Meal) => send("meals", "PUT", JSON.stringify(entry));
+
+    const household = async () =>
+      Schema.decodeUnknownSync(HouseholdSchema)(
+        await (await worker.dispatchFetch("http://localhost/api/household")).json(),
+      );
+
+    expect((await put(note)).status).toBe(200);
+    expect((await household()).meals).toEqual([note]);
+    expect((await household()).recipes).toEqual([]);
+
+    for (const patch of [
+      { note: "" },
+      { note: " \n\t" },
+      { note: "x".repeat(2001) },
+      { recipeId: "" },
+      { recipeId: "missing" },
+      { date: "2026-02-30" },
+    ])
+      expect((await put({ ...note, ...patch })).status).toBe(400);
+    expect((await household()).meals).toEqual([note]);
+
+    expect((await send("recipes", "PUT", JSON.stringify(sampleRecipes[0]))).status).toBe(200);
+    expect((await put(meal)).status).toBe(200);
+    let state = await household();
+    const ingredients = shoppingList(state.recipes, [meal], meal.date, meal.date);
+    expect(ingredients.length).toBeGreaterThan(0);
+    expect(shoppingList(state.recipes, state.meals, meal.date, meal.date)).toEqual(ingredients);
+    const edited = { ...note, date: "2026-09-23", slot: "Lunch" as const, note: "Leftovers" };
+    expect((await put(edited)).status).toBe(200);
+    expect((await household()).meals).toEqual([meal, edited]);
+    // Both conversions replace the same row; no phantom ingredients or lost recipe links.
+    expect((await put({ ...meal, id: note.id })).status).toBe(200);
+    expect((await household()).meals).toHaveLength(2);
+    expect((await put(edited)).status).toBe(200);
+    state = await household();
+    expect(shoppingList(state.recipes, state.meals, meal.date, edited.date)).toEqual(ingredients);
+    expect((await send(`meals/${note.id}`, "DELETE", "{}")).status).toBe(200);
+    expect((await household()).meals).toEqual([meal]);
   });
   it("defaults recipes to neutral and persists each rating without rewriting recipe fields", async () => {
     const recipe = sampleRecipes[0];

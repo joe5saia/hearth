@@ -118,11 +118,12 @@ beforeAll(async () => {
     "0002_recipe_rating.sql",
     "0003_collections.sql",
     "0004_groceries.sql",
+    "0006_meal_notes.sql",
   ]) {
     const sql = await readFile(`migrations/${file}`, "utf8");
     await db.batch(
       sql
-        .split(/;\n(?=CREATE|INSERT)|;\s*$/)
+        .split(/;\n(?=CREATE|INSERT|DROP|ALTER)|;\s*$/)
         .filter((statement) => statement.trim())
         .map((statement) => db.prepare(statement)),
     );

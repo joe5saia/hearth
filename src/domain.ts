@@ -24,7 +24,7 @@ export const RecipeSchema = Schema.Struct({
 
 export const MealSchema = Schema.Struct({
   id: Schema.String,
-  recipeId: Schema.String,
+  recipeId: Schema.NullOr(Schema.String),
   date: Schema.String,
   slot: Schema.Literals(["Breakfast", "Lunch", "Dinner"]),
   scale: Schema.Number,
@@ -223,7 +223,7 @@ export function shoppingList(
   >();
 
   for (const meal of meals) {
-    if (meal.date < start || meal.date > end) continue;
+    if (meal.date < start || meal.date > end || meal.recipeId === null) continue;
     const recipe = recipesById.get(meal.recipeId);
 
     if (!recipe) continue;
