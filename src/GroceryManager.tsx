@@ -1,21 +1,22 @@
 import { useId, useState } from "react";
+import { Schema } from "effect";
 import { Link2, Pencil, Plus, RefreshCw, Search } from "lucide-react";
-import { displayAmount, units, type GroceryItem, type Recipe } from "./domain";
+import { displayAmount, units, UnitSchema, type GroceryDraft, type GroceryItem, type Recipe } from "./domain";
 import type { MatchReport } from "./domain";
 import "./grocery-manager.css";
 
 export type GroceryFormProps = {
-  item: GroceryItem;
+  item: GroceryDraft;
   busy: boolean;
   error: string;
-  save: (item: GroceryItem) => Promise<boolean>;
+  save: (item: GroceryDraft) => Promise<boolean>;
   cancel: () => void;
   /** Only provide for products that are not linked to any recipe ingredient. */
   remove?: () => Promise<boolean>;
 };
 
 export function GroceryForm({ item, busy, error, save, cancel, remove }: GroceryFormProps) {
-  const [draft, setDraft] = useState(item);
+  const [draft, setDraft] = useState<GroceryDraft>(item);
   const [aliases, setAliases] = useState(item.aliases.join("\n"));
   const [amount, setAmount] = useState(String(item.quantity));
   const [pending, setPending] = useState(false);
@@ -142,7 +143,9 @@ export function GroceryForm({ item, busy, error, save, cancel, remove }: Grocery
           <select
             value={draft.unit}
             disabled={locked}
-            onChange={(event) => setDraft({ ...draft, unit: event.target.value })}
+            onChange={(event) =>
+              setDraft({ ...draft, unit: Schema.decodeUnknownSync(UnitSchema)(event.target.value) })
+            }
           >
             {!units.includes(draft.unit) && <option value={draft.unit}>{draft.unit}</option>}
             {units.map((unit) => (

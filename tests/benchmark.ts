@@ -5,7 +5,8 @@ import { cpus } from "node:os";
 import { gzipSync } from "node:zlib";
 import { Miniflare, convertV4MiniflareOptions } from "miniflare";
 import { rolldown } from "rolldown";
-import { shoppingList, displayAmount, type Recipe, type Meal } from "../src/domain.ts";
+import { Schema } from "effect";
+import { shoppingList, displayAmount, RecipeSchema, MealSchema } from "../src/domain.ts";
 
 // Fixed data and serial warm runs: setup, bundling, and seeding are not timed.
 const measurements: { name: string; medianMs: number; p95Ms: number; samples: number }[] = [];
@@ -42,37 +43,41 @@ for (const [name, recipeCount, mealCount, photoBytes] of [
   ["large", 500, 2000, 0],
   ["photos", 50, 100, 32_768],
 ] as const) {
-  const recipes: Recipe[] = Array.from({ length: recipeCount }, (_, i) => ({
-    id: `recipe-${i}`,
-    title: `Recipe ${String(i).padStart(4, "0")}`,
-    description: "Benchmark recipe",
-    servings: 4,
-    minutes: 30,
-    category: "Vegetarian",
-    source: "",
-    rating: "neutral",
-    // Incompressible synthetic bytes approximate encoded photo transfer, not image decoding.
-    photo: photoBytes
-      ? `data:image/jpeg;base64,${createHash("shake256", { outputLength: (photoBytes * 3) / 4 })
-          .update(String(i))
-          .digest("base64")}`
-      : "/photos/pasta.jpg",
-    instructions: ["Prepare ingredients.", "Cook and serve."],
-    ingredients: Array.from({ length: 12 }, (_, j) => ({
-      name: `Ingredient ${(i + j) % 60}`,
-      quantity: j + 0.5,
-      unit: "g",
+  const recipes = Schema.decodeUnknownSync(Schema.Array(RecipeSchema))(
+    Array.from({ length: recipeCount }, (_, i) => ({
+      id: `recipe-${i}`,
+      title: `Recipe ${String(i).padStart(4, "0")}`,
+      description: "Benchmark recipe",
+      servings: 4,
+      minutes: 30,
+      category: "Vegetarian",
+      source: "",
+      rating: "neutral",
+      // Incompressible synthetic bytes approximate encoded photo transfer, not image decoding.
+      photo: photoBytes
+        ? `data:image/jpeg;base64,${createHash("shake256", { outputLength: (photoBytes * 3) / 4 })
+            .update(String(i))
+            .digest("base64")}`
+        : "/photos/pasta.jpg",
+      instructions: ["Prepare ingredients.", "Cook and serve."],
+      ingredients: Array.from({ length: 12 }, (_, j) => ({
+        name: `Ingredient ${(i + j) % 60}`,
+        quantity: j + 0.5,
+        unit: "g",
+      })),
     })),
-  }));
+  );
 
-  const meals: Meal[] = Array.from({ length: mealCount }, (_, i) => ({
-    id: `meal-${i}`,
-    recipeId: recipes[(i * 37) % recipeCount].id,
-    date: `2026-09-${String((i % 28) + 1).padStart(2, "0")}`,
-    slot: "Dinner",
-    scale: (i % 3) + 0.5,
-    note: "",
-  }));
+  const meals = Schema.decodeUnknownSync(Schema.Array(MealSchema))(
+    Array.from({ length: mealCount }, (_, i) => ({
+      id: `meal-${i}`,
+      recipeId: recipes[(i * 37) % recipeCount].id,
+      date: `2026-09-${String((i % 28) + 1).padStart(2, "0")}`,
+      slot: "Dinner",
+      scale: (i % 3) + 0.5,
+      note: "",
+    })),
+  );
 
   const items = shoppingList(recipes, meals, "2026-09-01", "2026-09-28");
   // Independently computed total: sum of 0.5, 1.5, ..., 11.5 is 72.

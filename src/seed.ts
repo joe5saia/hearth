@@ -1,6 +1,7 @@
-import { addDays, weekStart, type Recipe, type Meal } from "./domain";
+import { Schema } from "effect";
+import { addDays, weekStart, RecipeSchema, MealSchema } from "./domain";
 
-export const sampleRecipes: Recipe[] = [
+export const sampleRecipes = Schema.decodeUnknownSync(Schema.Array(RecipeSchema))([
   {
     id: "lemon-chicken",
     title: "Lemon & herb chicken",
@@ -152,12 +153,12 @@ export const sampleRecipes: Recipe[] = [
       "Fill tortillas with potatoes, beans, and avocado. Serve with lime wedges.",
     ],
   },
-];
+]);
 
-export function sampleMeals(today: string): Meal[] {
+export function sampleMeals(today: string) {
   const monday = weekStart(today);
 
-  return [
+  return Schema.decodeUnknownSync(Schema.Array(MealSchema))([
     {
       id: "sample-1",
       recipeId: "lemon-chicken",
@@ -191,5 +192,5 @@ export function sampleMeals(today: string): Meal[] {
       scale: 1,
       note: "Taco night!",
     },
-  ];
+  ]);
 }

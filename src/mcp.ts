@@ -6,6 +6,7 @@ import {
   shoppingList,
   units,
   RecipeFields,
+  RecipeId,
   RecipeSchema,
   IngredientSchema,
   IdSchema,
@@ -17,7 +18,7 @@ import {
   ShoppingOrderSchema,
   HouseholdSchema,
   MatchReportSchema,
-  PositiveQuantitySchema,
+  ShoppingNeedSchema,
 } from "./domain";
 import { mcpSchema } from "./mcp-schema";
 import { createRecipes, getRecipes, updateRecipes, RecipeInputError } from "./recipes";
@@ -259,11 +260,11 @@ export function recipeMcp(db: D1Database, ai?: Ai) {
           title: "Get full recipes",
           description:
             "Fetch full recipes by IDs from search_recipes or create_recipes. Supply 1–25 unique IDs, even for a single recipe. Returns recipes in requested order and missingIds for IDs not found; missing IDs do not fail the whole request.",
-          inputSchema: mcpSchema(Schema.Struct({ ids: batch(id).check(Schema.isUnique()) })),
+          inputSchema: mcpSchema(Schema.Struct({ ids: batch(RecipeId).check(Schema.isUnique()) })),
           outputSchema: mcpSchema(getOutput),
           annotations: readAnnotations,
         },
-        ({ ids }) => result(() => getRecipes(db, [...ids])),
+        ({ ids }) => result(() => getRecipes(db, ids)),
       );
 
       server.registerTool(
@@ -281,7 +282,7 @@ export function recipeMcp(db: D1Database, ai?: Ai) {
             openWorldHint: false,
           },
         },
-        ({ recipes }) => result(() => createRecipes(db, [...recipes])),
+        ({ recipes }) => result(() => createRecipes(db, recipes)),
       );
       server.registerTool(
         "update_recipes",
@@ -291,7 +292,7 @@ export function recipeMcp(db: D1Database, ai?: Ai) {
             "Update 1–25 existing recipes with {id, changes} entries. Send only fields to change; omitted fields are preserved. Use an exact collection name from list_collections for category, or an empty string for Uncollected. ingredients and instructions replace the ENTIRE array, so get_recipes first before editing an item. IDs cannot change. Unknown fields, empty changes, duplicate IDs, invalid recipes, or missing IDs reject the batch before writes. Returns full saved recipes. This tool never creates recipes.",
           inputSchema: mcpSchema(
             Schema.Struct({
-              updates: batch(Schema.Struct({ id, changes })).check(
+              updates: batch(Schema.Struct({ id: RecipeId, changes })).check(
                 Schema.makeFilter(
                   (updates) => new Set(updates.map((update) => update.id)).size === updates.length,
                   { expected: "IDs must be unique" },
@@ -307,7 +308,7 @@ export function recipeMcp(db: D1Database, ai?: Ai) {
             openWorldHint: false,
           },
         },
-        ({ updates }) => result(() => updateRecipes(db, [...updates])),
+        ({ updates }) => result(() => updateRecipes(db, updates)),
       );
 
       server.registerTool(
@@ -465,13 +466,7 @@ export function recipeMcp(db: D1Database, ai?: Ai) {
                   checked: Schema.Boolean,
                   name: Schema.String,
                   grocery: Schema.optional(grocery),
-                  needs: Schema.Array(
-                    Schema.Struct({
-                      name: Schema.String,
-                      quantity: PositiveQuantitySchema,
-                      unit: Schema.String,
-                    }),
-                  ),
+                  needs: Schema.Array(ShoppingNeedSchema),
                   packages: Schema.NullOr(Schema.Number),
                   warnings: Schema.Array(Schema.String),
                   recipes: Schema.Array(Schema.String),

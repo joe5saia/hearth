@@ -3,7 +3,7 @@ import { Miniflare, convertV4MiniflareOptions, type V4WorkerdStructuredLog } fro
 import { rolldown } from "rolldown";
 import { readFile, readdir } from "node:fs/promises";
 import { Schema } from "effect";
-import { HouseholdSchema, MatchReportSchema, type GroceryItem, type Recipe } from "../src/domain";
+import { HouseholdSchema, MatchReportSchema, GroceryItemSchema, RecipeSchema } from "../src/domain";
 
 let worker: Miniflare;
 
@@ -34,7 +34,7 @@ const logEvents = () =>
       : [],
   );
 
-const recipe: Recipe = {
+const recipe = Schema.decodeUnknownSync(RecipeSchema)({
   id: "matching",
   title: "Onion salad",
   description: "A raw salad.",
@@ -55,17 +55,18 @@ const recipe: Recipe = {
     { name: "Chopped white oninos", quantity: 1, unit: "each", groceryItemId: "yellow-0" },
   ],
   instructions: ["Use raw white onions in this salad, finely chopping them at home."],
-};
-
-const product = (id: string, name: string): GroceryItem => ({
-  id,
-  name,
-  aliases: [],
-  quantity: 3,
-  unit: "each",
-  aisle: "2",
-  url: "",
 });
+
+const product = (id: string, name: string) =>
+  Schema.decodeUnknownSync(GroceryItemSchema)({
+    id,
+    name,
+    aliases: [],
+    quantity: 3,
+    unit: "each",
+    aisle: "2",
+    url: "",
+  });
 
 const catalog = [
   ...Array.from({ length: 60 }, (_, i) => product(`yellow-${i}`, `Brand ${i} yellow onion`)),
@@ -73,7 +74,7 @@ const catalog = [
   product("powder", "Onion powder"),
 ];
 
-const send = (path: string, method = "GET", body?: GroceryItem | Recipe) =>
+const send = (path: string, method = "GET", body?: typeof Schema.Json.Type) =>
   worker.dispatchFetch(`http://localhost/api/${path}`, {
     method,
     headers: { "Content-Type": "application/json" },

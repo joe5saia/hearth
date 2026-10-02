@@ -49,10 +49,16 @@ import {
   matchesRecipeSearch,
   RecipeSchema,
   HouseholdSchema,
+  DateSchema,
+  UnitSchema,
   type Household,
   type Collection,
-  type Ingredient,
-  type Meal,
+  type IngredientDraft,
+  type MealDraft,
+  type RecipeDraft,
+  type GroceryDraft,
+  type GroceryId,
+  type Unit,
   type Recipe,
   type Rating,
   type GroceryItem,
@@ -64,12 +70,12 @@ type Page = "plan" | "recipes" | "shopping" | "groceries";
 type Modal =
   | { kind: "collections" }
   | { kind: "chatgpt" }
-  | { kind: "grocery"; item: GroceryItem }
+  | { kind: "grocery"; item: GroceryDraft }
   | { kind: "collection"; collection: Collection }
-  | { kind: "meal"; meal: Meal }
-  | { kind: "recipe"; recipe: Recipe; meal?: Meal }
+  | { kind: "meal"; meal: MealDraft }
+  | { kind: "recipe"; recipe: Recipe; meal?: MealDraft }
   | { kind: "import" }
-  | { kind: "editor"; recipe: Recipe; warnings?: readonly string[] };
+  | { kind: "editor"; recipe: RecipeDraft; warnings?: readonly string[] };
 
 const emptyHousehold: Household = {
   collections: [],
@@ -81,7 +87,7 @@ const emptyHousehold: Household = {
   shoppingOrder: { aisles: [], items: [] },
 };
 
-const newGrocery = (name = "", unit = "each"): GroceryItem => ({
+const newGrocery = (name = "", unit: Unit = "each"): GroceryDraft => ({
   id: crypto.randomUUID(),
   name,
   unit,
@@ -109,10 +115,10 @@ async function api(
   path: string,
   method = "GET",
   body?:
-    | Recipe
+    | RecipeDraft
     | Collection
-    | Meal
-    | GroceryItem
+    | MealDraft
+    | GroceryDraft
     | ShoppingOrder
     | { url: string }
     | { id: string; name: string; checked: number }
@@ -139,7 +145,7 @@ async function api(
   return response;
 }
 
-function Photo({ recipe, className = "" }: { recipe: Recipe; className?: string }) {
+function Photo({ recipe, className = "" }: { recipe: Pick<Recipe, "photo" | "title">; className?: string }) {
   const [failed, setFailed] = useState("");
   const [loaded, setLoaded] = useState("");
 
@@ -239,8 +245,8 @@ export function App() {
   const [modal, setModal] = useState<Modal | null>(null);
   const [search, setSearch] = useState("");
   const [collectionFilter, setCollectionFilter] = useState("all");
-  const [start, setStart] = useState(weekStart());
-  const [end, setEnd] = useState(addDays(weekStart(), 6));
+  const [start, setStart] = useState<string>(weekStart());
+  const [end, setEnd] = useState<string>(addDays(weekStart(), 6));
   const [extra, setExtra] = useState("");
   const [hideChecked, setHideChecked] = useState(false);
   const [shoppingMode, setShoppingMode] = useState(false);
@@ -601,7 +607,8 @@ export function App() {
                       event.preventDefault();
                       const date = weekInput.current?.value;
 
-                      if (date && validDate(date)) setWeek(weekStart(date));
+                      if (date && validDate(date))
+                        setWeek(weekStart(Schema.decodeUnknownSync(DateSchema)(date)));
                     }}
                   >
                     <label htmlFor="week-jump">
@@ -1445,15 +1452,15 @@ function MealForm({
   remove,
   viewRecipe,
 }: {
-  meal: Meal;
+  meal: MealDraft;
   recipes: readonly Recipe[];
   busy: boolean;
   error: string;
-  save: (meal: Meal) => Promise<boolean>;
+  save: (meal: MealDraft) => Promise<boolean>;
   remove?: () => Promise<boolean>;
-  viewRecipe: (recipe: Recipe, meal: Meal) => void;
+  viewRecipe: (recipe: Recipe, meal: MealDraft) => void;
 }) {
-  const [draft, setDraft] = useState(meal);
+  const [draft, setDraft] = useState<MealDraft>(meal);
   const [recipeSearch, setRecipeSearch] = useState("");
   const [debouncedRecipeSearch, setDebouncedRecipeSearch] = useState("");
   const recipeSearchInput = useRef<HTMLInputElement>(null);
@@ -1675,10 +1682,10 @@ function RecipeDetail({
   groceries: readonly GroceryItem[];
   busy: boolean;
   error: string;
-  selectGrocery: (index: number, id: string) => Promise<boolean>;
+  selectGrocery: (index: number, id: GroceryId) => Promise<boolean>;
   edit?: () => void;
   plan: () => void;
-  meal?: Meal;
+  meal?: Pick<MealDraft, "scale">;
 }) {
   const [scale, setScale] = useState(meal?.scale ?? 1);
 
@@ -1912,26 +1919,26 @@ function RecipeForm({
   save,
   remove,
 }: {
-  recipe: Recipe;
+  recipe: RecipeDraft;
   collections: readonly Collection[];
   groceries: readonly GroceryItem[];
-  saveGrocery: (item: GroceryItem) => Promise<boolean>;
+  saveGrocery: (item: GroceryDraft) => Promise<boolean>;
   warnings?: readonly string[];
   busy: boolean;
   error: string;
-  save: (recipe: Recipe) => Promise<boolean>;
+  save: (recipe: RecipeDraft) => Promise<boolean>;
   remove?: () => Promise<boolean>;
 }) {
-  const [draft, setDraft] = useState({
+  const [draft, setDraft] = useState<RecipeDraft>({
     ...recipe,
     category: collections.some((collection) => collection.name === recipe.category) ? recipe.category : "",
   });
 
   const [photoError, setPhotoError] = useState("");
   const [confirmDelete, setConfirmDelete] = useState(false);
-  const [groceryEditor, setGroceryEditor] = useState<{ item: GroceryItem; index: number } | null>(null);
+  const [groceryEditor, setGroceryEditor] = useState<{ item: GroceryDraft; index: number } | null>(null);
 
-  const updateIngredient = (index: number, ingredient: Ingredient) =>
+  const updateIngredient = (index: number, ingredient: IngredientDraft) =>
     setDraft({
       ...draft,
       ingredients: draft.ingredients.map((item, position) => (position === index ? ingredient : item)),
@@ -2117,7 +2124,12 @@ function RecipeForm({
                 <select
                   aria-label={`Ingredient ${index + 1} unit`}
                   value={item.unit}
-                  onChange={(event) => updateIngredient(index, { ...item, unit: event.target.value })}
+                  onChange={(event) =>
+                    updateIngredient(index, {
+                      ...item,
+                      unit: Schema.decodeUnknownSync(UnitSchema)(event.target.value),
+                    })
+                  }
                 >
                   {units.map((unit) => (
                     <option key={unit}>{unit}</option>

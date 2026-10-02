@@ -1,8 +1,8 @@
 import { Schema } from "effect";
-import { RecipeSchema, type Recipe } from "./domain";
+import { RecipeSchema, RecipeId, type Recipe, type RecipeDraft } from "./domain";
 import { getGroceries, linkIngredients, GroceryInputError } from "./groceries";
 
-export type RecipeRow = Omit<Recipe, "ingredients" | "instructions"> & {
+export type RecipeRow = Omit<RecipeDraft, "ingredients" | "instructions"> & {
   ingredients: string;
   instructions: string;
 };
@@ -37,13 +37,13 @@ export function recipeStatement(db: D1Database, recipe: Recipe) {
     );
 }
 
-export async function getRecipes(db: D1Database, ids: string[]) {
+export async function getRecipes(db: D1Database, ids: readonly RecipeId[]) {
   const rows = await db
     .prepare(`SELECT * FROM recipes WHERE id IN (${ids.map(() => "?").join(",")})`)
     .bind(...ids)
     .all<RecipeRow>();
 
-  const byId = new Map(rows.results.map((row) => [row.id, parseRecipe(row)]));
+  const byId = new Map(rows.results.map(parseRecipe).map((recipe) => [recipe.id, recipe]));
 
   return {
     recipes: ids.flatMap((id) => (byId.has(id) ? [byId.get(id)!] : [])),
@@ -78,10 +78,10 @@ async function validateCollections(db: D1Database, names: readonly string[]) {
     );
 }
 
-export async function createRecipes(db: D1Database, inputs: Omit<Recipe, "id">[]) {
+export async function createRecipes(db: D1Database, inputs: readonly Omit<Recipe, "id">[]) {
   const recipes = await matchRecipeIngredients(
     db,
-    inputs.map((input) => ({ ...input, id: crypto.randomUUID(), title: input.title.trim() })),
+    inputs.map((input) => ({ ...input, id: RecipeId.make(crypto.randomUUID()), title: input.title.trim() })),
   );
 
   if (recipes.some((recipe) => !validateRecipe(recipe)))
@@ -104,7 +104,7 @@ export async function createRecipes(db: D1Database, inputs: Omit<Recipe, "id">[]
 
 export async function updateRecipes(
   db: D1Database,
-  updates: { id: string; changes: Partial<Omit<Recipe, "id">> }[],
+  updates: readonly { id: RecipeId; changes: Partial<Omit<Recipe, "id">> }[],
 ) {
   const current = await getRecipes(
     db,

@@ -16,20 +16,32 @@ export const units = [
   "can",
   "pinch",
   "slice",
-];
+] as const;
 
 export const IdSchema = Schema.String.check(Schema.isLengthBetween(1, 100));
 
+export const RecipeId = IdSchema.pipe(Schema.brand("RecipeId"));
+
+export type RecipeId = typeof RecipeId.Type;
+
 export const UnitSchema = Schema.Literals(units);
+
+export type Unit = typeof UnitSchema.Type;
 
 export const PositiveQuantitySchema = Schema.Finite.check(Schema.isGreaterThan(0));
 
-export const IngredientQuantitySchema = PositiveQuantitySchema.check(Schema.isLessThanOrEqualTo(1_000_000));
+export const IngredientQuantitySchema = PositiveQuantitySchema.check(
+  Schema.isLessThanOrEqualTo(1_000_000),
+).pipe(Schema.brand("IngredientQuantity"));
 
 export const nonblank = Schema.makeFilter<string>((value) => !!value.trim(), {
   expected: "a nonblank string",
   toJsonSchema: () => ({ pattern: "\\S" }),
 });
+
+export const GroceryId = IdSchema.check(nonblank).pipe(Schema.brand("GroceryId"));
+
+export type GroceryId = typeof GroceryId.Type;
 
 export const NameSchema = Schema.String.check(nonblank, Schema.isMaxLength(150));
 
@@ -60,7 +72,9 @@ const PhotoSchema = Schema.String.check(
 export const DateSchema = Schema.String.check(
   Schema.isPattern(/^\d{4}-\d{2}-\d{2}$/),
   Schema.makeFilter(validDate, { expected: "a real YYYY-MM-DD date" }),
-);
+).pipe(Schema.brand("CalendarDate"));
+
+export type CalendarDate = typeof DateSchema.Type;
 
 export const IngredientSchema = Schema.Struct({
   name: NameSchema,
@@ -69,11 +83,11 @@ export const IngredientSchema = Schema.Struct({
   }),
   quantity: IngredientQuantitySchema,
   unit: UnitSchema,
-  groceryItemId: Schema.optional(Schema.NullOr(IdSchema)).annotate({
+  groceryItemId: Schema.optional(Schema.NullOr(GroceryId)).annotate({
     description: "Existing grocery ID; omit to auto-match exact name or alias, null to stay unlinked.",
   }),
   grocerySuggestions: Schema.optional(
-    Schema.Array(IdSchema.check(nonblank)).check(Schema.isMaxLength(3), Schema.isUnique()),
+    Schema.Array(GroceryId).check(Schema.isMaxLength(3), Schema.isUnique()),
   ).annotate({
     description:
       "Potential grocery IDs ranked by Jev. Choose one by setting groceryItemId; suggestions are not links.",
@@ -100,7 +114,7 @@ export const RecipeFields = Schema.Struct({
   ),
 });
 
-export const RecipeSchema = Schema.Struct({ id: IdSchema, ...RecipeFields.fields }).check(
+export const RecipeSchema = Schema.Struct({ id: RecipeId, ...RecipeFields.fields }).check(
   Schema.makeFilter((recipe) => new TextEncoder().encode(JSON.stringify(recipe)).length < 1_900_000, {
     expected: "a recipe smaller than 1.9 MB",
   }),
@@ -108,7 +122,7 @@ export const RecipeSchema = Schema.Struct({ id: IdSchema, ...RecipeFields.fields
 
 export const MealSchema = Schema.Struct({
   id: IdSchema,
-  recipeId: Schema.NullOr(IdSchema),
+  recipeId: Schema.NullOr(RecipeId),
   date: DateSchema,
   slot: Schema.Literals(["Breakfast", "Lunch", "Dinner"]),
   scale: PositiveQuantitySchema.check(Schema.isLessThanOrEqualTo(100)).annotate({
@@ -120,6 +134,13 @@ export const MealSchema = Schema.Struct({
 export type Ingredient = typeof IngredientSchema.Type;
 
 export type Recipe = typeof RecipeSchema.Type;
+
+// Drafts can contain unfinished numeric/text values. Decode before crossing a write boundary.
+export type RecipeDraft = typeof RecipeSchema.Encoded;
+
+export type IngredientDraft = typeof IngredientSchema.Encoded;
+
+export type MealDraft = typeof MealSchema.Encoded;
 
 export type Rating = Recipe["rating"];
 
@@ -145,7 +166,7 @@ export const CollectionSchema = Schema.Struct({
 export type Collection = typeof CollectionSchema.Type;
 
 export const GroceryItemSchema = Schema.Struct({
-  id: IdSchema.check(nonblank),
+  id: GroceryId,
   name: NameSchema,
   url: Schema.String.check(
     Schema.isMaxLength(4000),
@@ -170,6 +191,17 @@ export const GroceryItemSchema = Schema.Struct({
 });
 
 export type GroceryItem = typeof GroceryItemSchema.Type;
+
+export type GroceryDraft = typeof GroceryItemSchema.Encoded;
+
+// Computed totals are not recipe inputs: scaling may legitimately exceed the input maximum.
+export const ShoppingNeedSchema = Schema.Struct({
+  name: Schema.String,
+  quantity: PositiveQuantitySchema,
+  unit: UnitSchema,
+});
+
+export type ShoppingNeed = typeof ShoppingNeedSchema.Type;
 
 export const MatchReportSchema = Schema.Struct({
   attempted: Schema.Number,
@@ -225,32 +257,38 @@ export function matchesRecipeSearch(recipe: Pick<Recipe, "title" | "ingredients"
     .includes(search.toLowerCase());
 }
 
-export function dateKey(date: Date): string {
-  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+export function dateKey(date: Date): CalendarDate {
+  return DateSchema.make(
+    `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`,
+  );
 }
 
-export function addDays(key: string, days: number): string {
+export function addDays(key: string, days: number): CalendarDate {
   const date = new Date(`${key}T12:00:00`);
   date.setDate(date.getDate() + days);
 
   return dateKey(date);
 }
 
-export function weekStart(key = dateKey(new Date())): string {
+export function weekStart(key: string = dateKey(new Date())): CalendarDate {
   const day = new Date(`${key}T12:00:00`).getDay();
 
   return addDays(key, -((day + 6) % 7));
 }
 
-export function nextDinnerDate(meals: readonly Meal[], week: string, today = dateKey(new Date())): string {
+export function nextDinnerDate(
+  meals: readonly Meal[],
+  week: string,
+  today: string = dateKey(new Date()),
+): CalendarDate {
   const end = addDays(week, 6);
   const first = today >= week && today <= end ? today : week;
 
   for (let day = first; day <= end; day = addDays(day, 1)) {
-    if (!meals.some((meal) => meal.date === day && meal.slot === "Dinner")) return day;
+    if (!meals.some((meal) => meal.date === day && meal.slot === "Dinner")) return DateSchema.make(day);
   }
 
-  return first;
+  return DateSchema.make(first);
 }
 
 export function validDate(value: string): boolean {
@@ -268,7 +306,7 @@ export function quantity(value: number): string {
 }
 
 // Exact mass and US-volume conversions. Counts never imply weight or volume.
-const conversions = new Map([
+const conversions = new Map<Unit, { unit: Unit; factor: number }>([
   ["kg", { unit: "g", factor: 1000 }],
   ["l", { unit: "ml", factor: 1000 }],
   ["oz", { unit: "g", factor: 28.349523125 }],
@@ -282,7 +320,7 @@ export type ShoppingItem = {
   key: string;
   name: string;
   grocery?: GroceryItem;
-  needs: Ingredient[];
+  needs: ShoppingNeed[];
   packages: number | null;
   warnings: string[];
   recipes: string[];
@@ -319,7 +357,7 @@ export function shoppingList(
 
   const items = new Map<
     string,
-    { key: string; name: string; grocery?: GroceryItem; needs: Map<string, number>; recipes: Set<string> }
+    { key: string; name: string; grocery?: GroceryItem; needs: Map<Unit, number>; recipes: Set<string> }
   >();
 
   for (const meal of meals) {
@@ -330,7 +368,7 @@ export function shoppingList(
 
     for (const ingredient of recipe.ingredients) {
       const name = ingredient.name.trim().replace(/\s+/g, " ").toLowerCase();
-      const grocery = groceriesById.get(ingredient.groceryItemId ?? "");
+      const grocery = ingredient.groceryItemId ? groceriesById.get(ingredient.groceryItemId) : undefined;
       const conversion = conversions.get(ingredient.unit);
       const unit = conversion?.unit ?? ingredient.unit;
       const amount = ingredient.quantity * meal.scale * (conversion?.factor ?? 1);
@@ -415,7 +453,7 @@ export function purchaseAmount(item: ShoppingItem): string {
   return `Buy ${item.packages} × ${displayAmount(item.grocery)}${item.grocery.unit === "each" ? " each" : ""}`;
 }
 
-export function displayAmount(item: Ingredient): string {
+export function displayAmount(item: ShoppingNeed): string {
   if (item.unit === "g" && item.quantity >= 1000) return `${quantity(item.quantity / 1000)} kg`;
 
   if (item.unit === "ml" && item.quantity >= 1000) return `${quantity(item.quantity / 1000)} l`;

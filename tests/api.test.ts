@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, expectTypeOf, it } from "vitest";
 import { Miniflare, convertV4MiniflareOptions } from "miniflare";
 import { rolldown } from "rolldown";
 import { readFile } from "node:fs/promises";
@@ -8,12 +8,16 @@ import { Schema } from "effect";
 import {
   HouseholdSchema,
   RecipeSchema,
+  MealSchema,
+  GroceryItemSchema,
   shoppingList,
   checkKey,
   type Meal,
-  type GroceryItem,
-  type Recipe,
-  type ShoppingOrder,
+  type MealDraft,
+  type Ingredient,
+  type IngredientDraft,
+  type RecipeId,
+  type GroceryId,
 } from "../src/domain";
 import server from "../src/server";
 import { recipeStatement } from "../src/recipes";
@@ -34,14 +38,20 @@ const defaultCollections = [
   { id: "weeknight", name: "Weeknight favorites" },
 ];
 
-const meal: Meal = {
+expectTypeOf<RecipeId>().not.toExtend<GroceryId>();
+
+expectTypeOf<GroceryId>().not.toExtend<RecipeId>();
+
+expectTypeOf<IngredientDraft["quantity"]>().not.toExtend<Ingredient["quantity"]>();
+
+const meal = Schema.decodeUnknownSync(MealSchema)({
   id: "test-meal",
   recipeId: sampleRecipes[0].id,
   date: "2026-09-21",
   slot: "Dinner",
   scale: 1.5,
   note: "Leftovers for lunch",
-};
+});
 
 function options(
   local: string,
@@ -225,10 +235,7 @@ describe("real Worker with disposable SQLite D1", () => {
     expect(await defect.json()).toEqual({ error: "Something went wrong. Please try again." });
   });
   it("calculates whole packages from saved links and scaled meals, preserving routes and quantity-sensitive checks", async () => {
-    const put = async (
-      path: string,
-      value: GroceryItem | Recipe | Meal | ShoppingOrder | { key: string; checked: number },
-    ) => {
+    const put = async (path: string, value: typeof Schema.Json.Type) => {
       expect((await send(path, "PUT", JSON.stringify(value))).status).toBe(200);
     };
 
@@ -237,7 +244,7 @@ describe("real Worker with disposable SQLite D1", () => {
         await (await worker.dispatchFetch("http://localhost/api/household")).json(),
       );
 
-    const products: GroceryItem[] = [
+    const products = Schema.decodeUnknownSync(Schema.Array(GroceryItemSchema))([
       {
         id: "rice",
         name: "Rice bag",
@@ -262,11 +269,11 @@ describe("real Worker with disposable SQLite D1", () => {
       { id: "boundary", name: "Boundary", aliases: [], quantity: 0.3, unit: "g", aisle: "", url: "" },
       { id: "above", name: "Above boundary", aliases: [], quantity: 300, unit: "g", aisle: "2", url: "" },
       { id: "half", name: "Half pack", aliases: [], quantity: 500, unit: "g", aisle: "2", url: "" },
-    ];
+    ]);
 
     for (const item of products) await put("groceries", item);
 
-    const first: Recipe = {
+    const first = Schema.decodeUnknownSync(RecipeSchema)({
       ...sampleRecipes[0],
       id: "first",
       title: "First dinner",
@@ -278,9 +285,9 @@ describe("real Worker with disposable SQLite D1", () => {
         { name: "Bread", quantity: 1, unit: "slice" },
         { name: "Boundary", quantity: 0.1, unit: "g" },
       ],
-    };
+    });
 
-    const second: Recipe = {
+    const second = Schema.decodeUnknownSync(RecipeSchema)({
       ...sampleRecipes[0],
       id: "second",
       title: "Second dinner",
@@ -295,7 +302,7 @@ describe("real Worker with disposable SQLite D1", () => {
         { name: "Half pack", quantity: 250, unit: "g" },
         { name: "Unknown garnish", quantity: 1, unit: "bunch" },
       ],
-    };
+    });
 
     await put("recipes", first);
     await put("recipes", second);
@@ -375,8 +382,7 @@ describe("real Worker with disposable SQLite D1", () => {
   });
 
   it("persists groceries, exact links, backfill, ordering and deletion guards", async () => {
-    const put = (path: string, value: GroceryItem | Recipe | ShoppingOrder) =>
-      send(path, "PUT", JSON.stringify(value));
+    const put = (path: string, value: typeof Schema.Json.Type) => send(path, "PUT", JSON.stringify(value));
 
     const state = async () =>
       Schema.decodeUnknownSync(HouseholdSchema)(
@@ -385,7 +391,7 @@ describe("real Worker with disposable SQLite D1", () => {
 
     expect((await state()).shoppingOrder).toEqual({ aisles: [], items: [] });
 
-    const item = {
+    const item = Schema.decodeUnknownSync(GroceryItemSchema)({
       id: "rice",
       name: "Rice",
       url: "",
@@ -393,7 +399,7 @@ describe("real Worker with disposable SQLite D1", () => {
       quantity: 500,
       unit: "g",
       aliases: ["White rice"],
-    };
+    });
 
     for (const changes of [
       { url: "ftp://example.com" },
@@ -407,10 +413,10 @@ describe("real Worker with disposable SQLite D1", () => {
     expect((await put("groceries", item)).status).toBe(200);
     expect((await put("groceries", { ...item, aisle: "Dry goods" })).status).toBe(200);
 
-    const recipe = {
+    const recipe = Schema.decodeUnknownSync(RecipeSchema)({
       ...sampleRecipes[0],
       ingredients: [{ name: " WHITE   rice ", quantity: 100, unit: "g" }],
-    };
+    });
 
     expect((await put("recipes", recipe)).status).toBe(200);
     expect((await state()).recipes[0].ingredients[0].groceryItemId).toBe("rice");
@@ -426,21 +432,27 @@ describe("real Worker with disposable SQLite D1", () => {
     const db = await worker.getD1Database("DB");
     await expect(db.prepare("DELETE FROM groceries WHERE id='rice'").run()).rejects.toThrow();
     await expect(
-      recipeStatement(db, {
-        ...recipe,
-        id: "bad",
-        ingredients: [{ ...recipe.ingredients[0], groceryItemId: "missing" }],
-      }).run(),
+      recipeStatement(
+        db,
+        Schema.decodeUnknownSync(RecipeSchema)({
+          ...recipe,
+          id: "bad",
+          ingredients: [{ ...recipe.ingredients[0], groceryItemId: "missing" }],
+        }),
+      ).run(),
     ).rejects.toThrow();
-    await recipeStatement(db, {
-      ...recipe,
-      ingredients: [
-        { name: "White rice", quantity: 1, unit: "g" },
-        { name: "White rice", quantity: 1, unit: "g", groceryItemId: null },
-        { name: "Nothing", quantity: 1, unit: "g" },
-        { name: "Ambiguous", quantity: 1, unit: "g" },
-      ],
-    }).run();
+    await recipeStatement(
+      db,
+      Schema.decodeUnknownSync(RecipeSchema)({
+        ...recipe,
+        ingredients: [
+          { name: "White rice", quantity: 1, unit: "g" },
+          { name: "White rice", quantity: 1, unit: "g", groceryItemId: null },
+          { name: "Nothing", quantity: 1, unit: "g" },
+          { name: "Ambiguous", quantity: 1, unit: "g" },
+        ],
+      }),
+    ).run();
     await put("groceries", { ...item, aliases: ["White rice", "Ambiguous"] });
     await put("groceries", { ...item, id: "other", name: "Other", aliases: ["Ambiguous"] });
     const unavailable = await send("groceries/match", "POST", "");
@@ -720,7 +732,7 @@ describe("real Worker with disposable SQLite D1", () => {
   });
   it("persists recipe-free notes, validates them, and converts entries without affecting other meals", async () => {
     const note: Meal = { ...meal, id: "note-only", recipeId: null, scale: 1, note: "Pizza" };
-    const put = (entry: Meal) => send("meals", "PUT", JSON.stringify(entry));
+    const put = (entry: MealDraft) => send("meals", "PUT", JSON.stringify(entry));
 
     const household = async () =>
       Schema.decodeUnknownSync(HouseholdSchema)(

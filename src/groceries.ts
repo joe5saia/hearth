@@ -1,5 +1,11 @@
 import { Schema } from "effect";
-import { GroceryItemSchema, ShoppingOrderSchema, type GroceryItem, type Ingredient } from "./domain";
+import {
+  GroceryItemSchema,
+  ShoppingOrderSchema,
+  type GroceryItem,
+  type GroceryDraft,
+  type Ingredient,
+} from "./domain";
 
 const normalize = (name: string) => name.trim().replace(/\s+/g, " ").toLowerCase();
 
@@ -22,7 +28,7 @@ export const validateGrocery = Schema.is(GroceryItemSchema);
 
 export const validateShoppingOrder = Schema.is(ShoppingOrderSchema);
 
-export type GroceryRow = Omit<GroceryItem, "aliases"> & { aliases: string };
+export type GroceryRow = Omit<GroceryDraft, "aliases"> & { aliases: string };
 
 export const parseGrocery = (row: GroceryRow): GroceryItem =>
   Schema.decodeUnknownSync(GroceryItemSchema)({ ...row, aliases: JSON.parse(row.aliases) });

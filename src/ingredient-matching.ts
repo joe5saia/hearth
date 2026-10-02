@@ -1,4 +1,5 @@
 import { Option, Schema } from "effect";
+import { GroceryId } from "./domain";
 import type { GroceryItem, Ingredient, Recipe, MatchReport } from "./domain";
 
 export const normalizationModel = "@cf/meta/llama-3.2-3b-instruct";
@@ -48,8 +49,8 @@ const Selection = Schema.Struct({
 });
 
 const Decision = Schema.Struct({
-  id: Schema.NullOr(Schema.String),
-  suggestions: Schema.Array(Schema.String),
+  id: Schema.NullOr(GroceryId),
+  suggestions: Schema.Array(GroceryId),
 });
 
 type Decision = typeof Decision.Type;
