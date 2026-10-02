@@ -6,6 +6,7 @@ export const IngredientSchema = Schema.Struct({
   quantity: Schema.Number,
   unit: Schema.String,
   groceryItemId: Schema.optional(Schema.NullOr(Schema.String)),
+  grocerySuggestions: Schema.optional(Schema.Array(Schema.String)),
 });
 
 export const RecipeSchema = Schema.Struct({

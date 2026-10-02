@@ -20,6 +20,13 @@ const ingredient = z.strictObject({
     .nullable()
     .optional()
     .describe("Existing grocery ID; omit to auto-match exact name or alias, null to stay unlinked."),
+  grocerySuggestions: z
+    .array(id)
+    .max(3)
+    .optional()
+    .describe(
+      "Potential grocery IDs ranked by Jev. Choose one by setting groceryItemId; suggestions are not links.",
+    ),
 });
 
 const fields = z.strictObject({

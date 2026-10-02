@@ -233,7 +233,12 @@ function api(request: Request, db: D1Database, ai?: Ai) {
                 ingredient.groceryItemId !== originals[index].ingredients[position].groceryItemId,
             ).length;
 
-            return links ? [{ recipe, before: rows.results[index], links }] : [];
+            const edits = recipe.ingredients.filter(
+              (ingredient, position) =>
+                JSON.stringify(ingredient) !== JSON.stringify(originals[index].ingredients[position]),
+            ).length;
+
+            return edits ? [{ recipe, before: rows.results[index], links, edits }] : [];
           });
 
           console.info(
@@ -252,7 +257,7 @@ function api(request: Request, db: D1Database, ai?: Ai) {
             changed.map(({ recipe, before }) =>
               db
                 .prepare(
-                  "UPDATE recipes SET ingredients=? WHERE id=? AND ingredients=? AND title=? AND description=? AND instructions=? AND (SELECT version FROM grocery_revision WHERE id=1)=?",
+                  "UPDATE recipes SET ingredients=? WHERE id=? AND ingredients=? AND title=? AND description=? AND category=? AND instructions=? AND (SELECT version FROM grocery_revision WHERE id=1)=?",
                 )
                 .bind(
                   JSON.stringify(recipe.ingredients),
@@ -260,6 +265,7 @@ function api(request: Request, db: D1Database, ai?: Ai) {
                   before.ingredients,
                   before.title,
                   before.description,
+                  before.category,
                   before.instructions,
                   revision.results[0].version,
                 ),
@@ -268,9 +274,9 @@ function api(request: Request, db: D1Database, ai?: Ai) {
 
           for (const [index, saved] of writes.entries()) {
             if (!saved.meta.changes) {
-              const { links } = changed[index];
+              const { links, edits } = changed[index];
               result.report.matched -= links;
-              result.report.conflicts += links;
+              result.report.conflicts += edits;
             }
           }
 

@@ -19,6 +19,8 @@ let beforeSelect: (() => Promise<void>) | undefined;
 
 const seen = new Set<string>();
 
+const histories: Record<string, readonly { recipeTitle: string; ingredientName: string }[]>[] = [];
+
 const logs: V4WorkerdStructuredLog[] = [];
 
 const logEvents = () =>
@@ -138,6 +140,14 @@ beforeAll(async () => {
                 state: Schema.Struct({
                   ingredient: Schema.Struct({ originalText: Schema.String }),
                   recipe: Schema.Struct({ instructions: Schema.Array(Schema.String) }),
+                  linkedRecipeExamples: Schema.optional(
+                    Schema.Record(
+                      Schema.String,
+                      Schema.Array(
+                        Schema.Struct({ recipeTitle: Schema.String, ingredientName: Schema.String }),
+                      ),
+                    ),
+                  ),
                 }),
                 questions: Schema.Struct({
                   product: Schema.Struct({ criteria: Schema.Record(Schema.String, Schema.String) }),
@@ -154,6 +164,51 @@ beforeAll(async () => {
 
             if (mode === "bad-selection")
               return Response.json({ state: "Completed", result: { answers: {} } });
+
+            if (mode.startsWith("suggestions") || mode === "history") {
+              const criteria = input.questions.product.criteria;
+              const white = Object.keys(criteria).find((key) => criteria[key].startsWith("White onion;"))!;
+
+              const yellow = Object.keys(criteria).find((key) =>
+                criteria[key].startsWith("Brand 0 yellow onion;"),
+              )!;
+
+              const third = Object.keys(criteria).find((key) =>
+                criteria[key].startsWith("Brand 1 yellow onion;"),
+              )!;
+
+              if (input.state.linkedRecipeExamples) {
+                histories.push(input.state.linkedRecipeExamples);
+
+                if (mode === "suggestions-outage") return new Response("Unavailable", { status: 503 });
+
+                if (mode === "history")
+                  return Response.json({
+                    answers: {
+                      product: {
+                        choice: yellow,
+                        confidence: 0.93,
+                        probabilities: { [yellow]: 0.95, [white]: 0.04, none: 0.01 },
+                      },
+                    },
+                  });
+              }
+
+              return Response.json({
+                answers: {
+                  product: {
+                    choice: mode === "suggestions-none" ? "none" : white,
+                    confidence: 0.43,
+                    probabilities: {
+                      [white]: 0.46,
+                      [yellow]: 0.32,
+                      [third]: mode === "suggestions-invalid" ? -0.1 : 0.18,
+                      none: mode === "suggestions-none" ? 0.8 : 0.04,
+                    },
+                  },
+                },
+              });
+            }
 
             const choice =
               mode === "unknown-id"
@@ -196,6 +251,7 @@ beforeEach(async () => {
   peakCalls = 0;
   beforeSelect = undefined;
   seen.clear();
+  histories.length = 0;
   logs.length = 0;
   const db = await worker.getD1Database("DB");
   await db.batch([
@@ -358,6 +414,129 @@ it("leaves uncertain, absent, malformed and unavailable model results unlinked w
 
   mode = "success";
   expect(await match()).toMatchObject({ matched: 1, normalizationCalls: 1, selectionCalls: 1 });
+});
+
+it("persists ranked suggestions without linking, reuses them, and clears them on explicit selection", async () => {
+  mode = "suggestions";
+  expect(await match()).toMatchObject({ matched: 0, unmatched: 1, selectionCalls: 1 });
+  let actual = (await state()).recipes[0];
+  expect(actual.ingredients[0]).toEqual({
+    ...recipe.ingredients[0],
+    grocerySuggestions: ["white", "yellow-0", "yellow-1"],
+  });
+  expect(actual.ingredients.slice(1)).toEqual(recipe.ingredients.slice(1));
+  expect(histories).toEqual([]); // The current recipe's own linked onion is not history.
+  expect(await match()).toMatchObject({ matched: 0, unmatched: 1, selectionCalls: 0 });
+  expect(
+    (
+      await send("recipes", "PUT", {
+        ...actual,
+        ingredients: actual.ingredients.map((item, index) =>
+          index ? item : { ...item, groceryItemId: "yellow-1" },
+        ),
+      })
+    ).status,
+  ).toBe(200);
+  actual = (await state()).recipes[0];
+  expect(actual.ingredients[0]).toEqual({ ...recipe.ingredients[0], groceryItemId: "yellow-1" });
+  expect(await match()).toMatchObject({ attempted: 0 });
+
+  const db = await worker.getD1Database("DB");
+
+  for (const value of ["suggestions-none", "suggestions-invalid"]) {
+    mode = value;
+    await db.prepare("DELETE FROM ingredient_match_cache").run();
+    await send("recipes", "PUT", recipe);
+    expect(await match()).toMatchObject({ matched: 0, failed: value === "suggestions-invalid" ? 1 : 0 });
+    expect((await state()).recipes[0].ingredients).toEqual(recipe.ingredients);
+  }
+});
+
+it("uses at most ten distinct other recipes per shortlisted product and invalidates contextual cache on history edits", async () => {
+  mode = "history";
+
+  for (let index = 0; index < 12; index++) {
+    const ingredient = {
+      name: `White onion example ${index}`,
+      quantity: 1,
+      unit: "each",
+      groceryItemId: "white",
+    };
+
+    await send("recipes", "PUT", {
+      ...recipe,
+      id: `history-${index}`,
+      title: `History ${String(index).padStart(2, "0")}`,
+      ingredients: [ingredient, ingredient],
+    });
+  }
+
+  const yellowRecipe = {
+    ...recipe,
+    id: "yellow-history",
+    title: "Yellow dinner",
+    ingredients: [{ name: "Diced yellow onion", quantity: 2, unit: "each", groceryItemId: "yellow-0" }],
+  };
+
+  await send("recipes", "PUT", yellowRecipe);
+  expect(await match()).toMatchObject({ matched: 1, selectionCalls: 2 });
+  expect(histories).toHaveLength(1);
+  expect(histories[0]).toEqual({
+    p0: Array.from({ length: 10 }, (_, index) => ({
+      recipeTitle: `History ${String(index).padStart(2, "0")}`,
+      ingredientName: `White onion example ${index}`,
+    })),
+    p1: [{ recipeTitle: "Yellow dinner", ingredientName: "Diced yellow onion" }],
+    p2: [],
+  });
+  expect((await state()).recipes.find((r) => r.id === recipe.id)?.ingredients[0]).toEqual({
+    ...recipe.ingredients[0],
+    groceryItemId: "yellow-0",
+    grocerySuggestions: ["white", "yellow-0", "yellow-1"],
+  });
+  await send("recipes", "PUT", recipe);
+  expect(await match()).toMatchObject({ matched: 1, selectionCalls: 0, selectionCacheHits: 2 });
+  await send("recipes", "PUT", {
+    ...yellowRecipe,
+    title: "Renamed dinner",
+    ingredients: [{ ...yellowRecipe.ingredients[0], name: "New ingredient context" }],
+  });
+  await send("recipes", "PUT", recipe);
+  expect(await match()).toMatchObject({ matched: 1, selectionCalls: 1 });
+  expect(histories.at(-1)?.p1).toEqual([
+    { recipeTitle: "Renamed dinner", ingredientName: "New ingredient context" },
+  ]);
+});
+
+it("keeps suggestions when the history pass fails, retries it, and guards suggestion-only writes against concurrent edits", async () => {
+  mode = "suggestions-outage";
+  await send("recipes", "PUT", {
+    ...recipe,
+    id: "history",
+    title: "Other recipe",
+    ingredients: [{ ...recipe.ingredients[0], groceryItemId: "white" }],
+  });
+  expect(await match()).toMatchObject({ matched: 0, failed: 1, selectionCalls: 2 });
+  expect((await state()).recipes.find((r) => r.id === recipe.id)?.ingredients[0].grocerySuggestions).toEqual([
+    "white",
+    "yellow-0",
+    "yellow-1",
+  ]);
+  mode = "history";
+  expect(await match()).toMatchObject({ matched: 1, failed: 0, selectionCalls: 1 });
+
+  const db = await worker.getD1Database("DB");
+  await db.prepare("DELETE FROM recipes WHERE id='history'").run();
+  await db.prepare("DELETE FROM ingredient_match_cache").run();
+  await send("recipes", "PUT", recipe);
+  await db.prepare("INSERT INTO collections(id,name) VALUES('matching-category','Changed category')").run();
+  mode = "suggestions";
+  beforeSelect = async () => {
+    await db.prepare("UPDATE recipes SET category='Changed category' WHERE id=?").bind(recipe.id).run();
+  };
+
+  expect(await match()).toMatchObject({ matched: 0, conflicts: 1 });
+  expect((await state()).recipes[0].ingredients).toEqual(recipe.ingredients);
 });
 
 it("skips stale selections when another writer changes recipe instructions", async () => {

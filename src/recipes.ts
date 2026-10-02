@@ -52,6 +52,10 @@ export function validateRecipe(recipe: Recipe): boolean {
         !!i.name.trim() &&
         i.name.length <= 150 &&
         (i.originalText === undefined || (!!i.originalText.trim() && i.originalText.length <= 4000)) &&
+        (i.grocerySuggestions === undefined ||
+          (i.grocerySuggestions.length <= 3 &&
+            new Set(i.grocerySuggestions).size === i.grocerySuggestions.length &&
+            i.grocerySuggestions.every((id) => !!id.trim() && id.length <= 100))) &&
         i.quantity > 0 &&
         i.quantity <= 1_000_000 &&
         units.includes(i.unit),

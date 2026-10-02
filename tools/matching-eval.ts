@@ -60,17 +60,19 @@ function validate(actual: readonly Recipe[]) {
 }
 
 const [mode = "models", output, normalizer = normalizationModel] = process.argv.slice(2);
-assert(["normalization", "models", "preview", "preview-ui"].includes(mode), "Use normalization, models, preview, or preview-ui [report.json] [normalizer-model].");
+assert(["normalization", "models", "history", "preview", "preview-ui"].includes(mode), "Use normalization, models, history, preview, or preview-ui [report.json] [normalizer-model].");
 const trace: { model: string; ingredient: string; ms: number; response: object }[] = [];
 let reports: object[] = [];
 let results: ReturnType<typeof validate> = [];
 let normalizationCorrect = 0;
 
-if (mode === "models" || mode === "normalization") {
+if (mode === "models" || mode === "normalization" || mode === "history") {
   assert(process.env.CLOUDFLARE_ACCOUNT_ID && process.env.CLOUDFLARE_API_TOKEN, "Cloudflare credentials are required for real-model evaluation.");
   const api = new Cloudflare(process.env.CLOUDFLARE_ACCOUNT_ID ?? "", process.env.CLOUDFLARE_API_TOKEN ?? "");
   // The adapter calls real Cloudflare model inference, not a mock; only run() is consumed.
+  const contextualInputs: Record<string, unknown>[] = [];
   const ai = { run: async (model: string, input: Record<string, unknown>) => {
+    if ((input.state as { linkedRecipeExamples?: unknown } | undefined)?.linkedRecipeExamples) contextualInputs.push(input);
     const actualModel = model === normalizationModel ? normalizer : model;
     const messages = input.messages as { content: string }[] | undefined;
     const ingredient = messages ? JSON.parse(messages[1].content).ingredient : (input.state as { ingredient: { name: string } }).ingredient.name;
@@ -84,6 +86,35 @@ if (mode === "models" || mode === "normalization") {
   } } as Pick<Ai, "run">;
   if (mode === "normalization") {
     for (const item of cases) await normalizeIngredient(ai, item.name);
+  } else if (mode === "history") {
+    const catalog = [product("fresh-parm", "BelGioioso Vegetarian Parmesan Cheese, 8 oz"), product("kraft-parm", "Kraft Finely Shredded Parmesan Natural Cheese, 6 oz")];
+    const targets = ["Adult pasta dinner", "Baby broccoli cheese bites"].map((title, index): Recipe => ({
+      ...recipes[0], id: `context-target-${index}`, title, description: index ? "A baby recipe." : "A weekday dinner for adults.",
+      ingredients: [{ name: "Parmesan, for serving", quantity: 1, unit: "tbsp" }], instructions: ["Sprinkle Parmesan over the cooked dish."],
+    }));
+    const history = catalog.flatMap((item, group) => Array.from({ length: 12 }, (_, index): Recipe => ({
+      ...targets[group], id: `history-${group}-${index}`, title: `${group ? "Baby vegetable bites" : "Adult pasta dinner"} ${index}`,
+      ingredients: [{ name: "Parmesan", quantity: 2, unit: "tbsp", groceryItemId: item.id }],
+    })));
+    const baseline = await matchIngredients(ai, targets, catalog);
+    const contextual = await matchIngredients(ai, [...targets, ...history], catalog);
+    assert.equal(baseline.report.failed + contextual.report.failed, 0);
+    assert(contextualInputs.length > 0, "Live Jev must exercise the ambiguous shortlist/history pass.");
+    for (const input of contextualInputs) {
+      const state = input.state as { linkedRecipeExamples: Record<string, { recipeTitle: string; ingredientName: string }[]> };
+      assert(Object.values(state.linkedRecipeExamples).every((examples) => examples.length === 10));
+      assert(Object.values(state.linkedRecipeExamples).flat().every((example) => example.ingredientName === "Parmesan"));
+    }
+    results = targets.map((target, index) => {
+      const ingredient = contextual.recipes.find((recipe) => recipe.id === target.id)!.ingredients[0];
+      const expected = catalog[index].id;
+      // Unresolved choices are surfaced for review, never silently linked to the wrong preference.
+      return { ingredient: target.title, expected, actual: ingredient.groceryItemId ?? null,
+        correct: ingredient.groceryItemId === expected || (!ingredient.groceryItemId && !!ingredient.grocerySuggestions?.includes(expected)) };
+    });
+    reports = [{ baseline: baseline.report, contextual: contextual.report, contextualInputs,
+      outcomes: contextual.recipes.slice(0, targets.length).map((recipe) => ({ title: recipe.title, ingredient: recipe.ingredients[0] })) }];
+    console.log("PASS live Jev: shortlist, bounded reverse-lookup examples, and preference-aware results or explicit review.");
   } else {
     const result = await matchIngredients(ai, recipes, groceries);
     reports = [result.report];
@@ -169,7 +200,7 @@ if (mode === "models" || mode === "normalization") {
 
 const broadCandidates = new GrocerySearch(groceries).candidates(cases[0].name, "White Onion").length;
 assert(broadCandidates > 50, "Candidate retrieval must not truncate the broad onion set.");
-const report = { mode, cases: cases.length, correct: results.filter((item) => item.correct).length,
+const report = { mode, cases: mode === "history" ? results.length : cases.length, correct: results.filter((item) => item.correct).length,
   normalizer, normalizationCorrect: ["models", "normalization"].includes(mode) ? normalizationCorrect : undefined, broadCandidates,
   results, reports, trace };
 console.log(JSON.stringify({ ...report, trace: trace.map((item) => ({ model: item.model, ingredient: item.ingredient, ms: item.ms })) }, null, 2));

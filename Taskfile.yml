@@ -55,8 +55,11 @@ tasks:
     desc: Grocery browser E2E (requires agent-browser and an empty disposable local household; optional -- local URL)
     cmds: ["node tools/groceries-smoke.ts {{.CLI_ARGS}}"]
   matching:eval:
-    desc: Real Cloudflare matching evaluation (-- normalization|models|preview|preview-ui [report.json] [normalizer-model]; preview requires an empty owning thread Preview)
+    desc: Real Cloudflare matching evaluation (-- normalization|models|history|preview|preview-ui [report.json] [normalizer-model]; preview requires an empty owning thread Preview)
     cmds: ["node tools/matching-eval.ts {{.CLI_ARGS}}"]
+  matching:smoke:
+    desc: Suggestion-selection browser E2E (requires empty disposable local household; optional -- local URL)
+    cmds: ["node tools/matching-smoke.ts {{.CLI_ARGS}}"]
   format:
     desc: Format source files (optional -- paths or flags)
     cmds: ["npm run format -- {{.CLI_ARGS}}"]

@@ -199,6 +199,47 @@
 .ingredient-product-link.unlinked {
   color: #795021;
 }
+.ingredient-suggestions {
+  grid-column: 1 / -1;
+  display: grid;
+  gap: 6px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #faf9f5;
+  font-size: 12px;
+}
+.ingredient-suggestions small {
+  display: block;
+  margin-top: 3px;
+  color: var(--muted);
+  font-size: 11px;
+}
+.ingredient-suggestions > span {
+  margin-bottom: 4px;
+  font-weight: 500;
+}
+.ingredient-suggestions button {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  min-height: 44px;
+  padding: 9px 10px;
+  text-align: left;
+  overflow-wrap: anywhere;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #fff;
+}
+.ingredient-suggestions button svg {
+  flex-shrink: 0;
+}
+.ingredient-suggestions button:hover,
+.ingredient-suggestions button[aria-pressed="true"] {
+  border-color: var(--olive);
+  color: var(--olive);
+}
 @media (max-width: 600px) {
   .route-toolbar,
   .route-editor {

@@ -325,12 +325,16 @@ export function App() {
   const matchGroceries = async () => {
     setBusy(true);
     setError("");
+
     try {
       const response = await api("groceries/match", "POST");
+
       const result = Schema.decodeUnknownSync(Schema.Struct({ report: MatchReportSchema }))(
         await response.json(),
       );
+
       await refresh();
+
       return result.report;
     } finally {
       setBusy(false);
@@ -1269,9 +1273,34 @@ export function App() {
           fullScreen
         >
           <RecipeDetail
-            recipe={modal.recipe}
+            recipe={data.recipes.find((recipe) => recipe.id === modal.recipe.id) ?? modal.recipe}
             groceries={data.groceries}
-            edit={modal.meal ? undefined : () => setModal({ kind: "editor", recipe: modal.recipe })}
+            busy={busy}
+            error={error}
+            selectGrocery={(index, id) => {
+              const recipe = data.recipes.find((recipe) => recipe.id === modal.recipe.id) ?? modal.recipe;
+
+              return mutate(
+                "recipes",
+                "PUT",
+                {
+                  ...recipe,
+                  ingredients: recipe.ingredients.map((item, position) =>
+                    position === index ? { ...item, groceryItemId: id, grocerySuggestions: undefined } : item,
+                  ),
+                },
+                "Grocery item linked",
+              );
+            }}
+            edit={
+              modal.meal
+                ? undefined
+                : () =>
+                    setModal({
+                      kind: "editor",
+                      recipe: data.recipes.find((recipe) => recipe.id === modal.recipe.id) ?? modal.recipe,
+                    })
+            }
             plan={() =>
               modal.meal ? setModal({ kind: "meal", meal: modal.meal }) : addMeal(undefined, modal.recipe.id)
             }
@@ -1612,12 +1641,18 @@ function MealForm({
 function RecipeDetail({
   recipe,
   groceries,
+  busy,
+  error,
+  selectGrocery,
   edit,
   plan,
   meal,
 }: {
   recipe: Recipe;
   groceries: readonly GroceryItem[];
+  busy: boolean;
+  error: string;
+  selectGrocery: (index: number, id: string) => Promise<boolean>;
   edit?: () => void;
   plan: () => void;
   meal?: Meal;
@@ -1669,6 +1704,12 @@ function RecipeDetail({
             {recipe.ingredients.map((item, index) => {
               const grocery = groceries.find((entry) => entry.id === item.groceryItemId);
 
+              const suggestions = (item.grocerySuggestions ?? []).flatMap((id) => {
+                const product = groceries.find((entry) => entry.id === id);
+
+                return product ? [product] : [];
+              });
+
               return (
                 <li key={index}>
                   <span>
@@ -1693,10 +1734,41 @@ function RecipeDetail({
                     )}
                   </span>
                   <strong>{displayAmount({ ...item, quantity: item.quantity * scale })}</strong>
+                  {!!suggestions.length && (
+                    <div
+                      className="ingredient-suggestions"
+                      role="group"
+                      aria-label={`Potential matches for ${item.name}`}
+                    >
+                      <span>
+                        Potential matches <small>Choose the product you use</small>
+                      </span>
+                      {suggestions.map((product) => (
+                        <button
+                          key={product.id}
+                          type="button"
+                          disabled={busy}
+                          aria-pressed={item.groceryItemId === product.id}
+                          onClick={() => selectGrocery(index, product.id)}
+                        >
+                          <span>
+                            {product.name}
+                            <small>{displayAmount(product)} per package</small>
+                          </span>
+                          {item.groceryItemId === product.id ? <Check size={16} /> : <Plus size={16} />}
+                        </button>
+                      ))}
+                    </div>
+                  )}
                 </li>
               );
             })}
           </ul>
+          {error && (
+            <p className="error" role="alert">
+              {error}
+            </p>
+          )}
           {edit && (
             <button className="text-button" onClick={edit}>
               <Package size={15} /> Manage ingredient links
@@ -1976,13 +2048,19 @@ function RecipeForm({
           <h2>Ingredients</h2>
           <p className="field-hint">
             Link each ingredient to the product you buy. Automatic matching uses exact product or alternate
-            names. Recipe quantities stay unchanged.
+            names. Jev’s potential matches appear first in the product list. Recipe quantities stay unchanged.
           </p>
           {draft.ingredients.map((item, index) => {
             const automatic =
               item.groceryItemId === undefined ? matchGrocery(item.name, groceries) : undefined;
 
             const linked = groceries.find((entry) => entry.id === (item.groceryItemId ?? automatic?.id));
+
+            const suggestions = (item.grocerySuggestions ?? []).flatMap((id) => {
+              const product = groceries.find((entry) => entry.id === id);
+
+              return product ? [product] : [];
+            });
 
             return (
               <div className="ingredient-editor" key={index}>
@@ -1993,7 +2071,12 @@ function RecipeForm({
                   required
                   value={item.name}
                   onChange={(event) =>
-                    updateIngredient(index, { ...item, name: event.target.value, originalText: undefined })
+                    updateIngredient(index, {
+                      ...item,
+                      name: event.target.value,
+                      originalText: undefined,
+                      grocerySuggestions: undefined,
+                    })
                   }
                 />
                 <input
@@ -2038,6 +2121,8 @@ function RecipeForm({
                     onChange={(event) =>
                       updateIngredient(index, {
                         ...item,
+                        grocerySuggestions:
+                          event.target.value === "auto" ? item.grocerySuggestions : undefined,
                         groceryItemId:
                           event.target.value === "auto"
                             ? undefined
@@ -2051,11 +2136,24 @@ function RecipeForm({
                       {automatic ? `Auto-match: ${automatic.name}` : "Auto-match on save · no match yet"}
                     </option>
                     <option value="unlinked">Leave unlinked (manual review)</option>
-                    {groceries.map((grocery) => (
-                      <option key={grocery.id} value={grocery.id}>
-                        {grocery.name} · {displayAmount(grocery)}
-                      </option>
-                    ))}
+                    {!!suggestions.length && (
+                      <optgroup label="Potential matches · Jev">
+                        {suggestions.map((grocery) => (
+                          <option key={grocery.id} value={grocery.id}>
+                            {grocery.name} · {displayAmount(grocery)}
+                          </option>
+                        ))}
+                      </optgroup>
+                    )}
+                    <optgroup label="All grocery items">
+                      {groceries
+                        .filter((grocery) => !suggestions.some((item) => item.id === grocery.id))
+                        .map((grocery) => (
+                          <option key={grocery.id} value={grocery.id}>
+                            {grocery.name} · {displayAmount(grocery)}
+                          </option>
+                        ))}
+                    </optgroup>
                   </select>
                   {linked && (
                     <button

@@ -75,11 +75,17 @@ export function linkIngredients(
       )
         throw new GroceryInputError("That grocery item no longer exists. No recipes were changed.");
 
-      return ingredient;
+      return { ...ingredient, grocerySuggestions: undefined };
     }
 
     const match = matchGrocery(ingredient.name, groceries);
 
-    return match ? { ...ingredient, groceryItemId: match.id } : ingredient;
+    const suggestions = ingredient.grocerySuggestions?.filter((id) =>
+      groceries.some((item) => item.id === id),
+    );
+
+    return match
+      ? { ...ingredient, groceryItemId: match.id, grocerySuggestions: undefined }
+      : { ...ingredient, grocerySuggestions: suggestions?.length ? suggestions : undefined };
   });
 }
