@@ -31,6 +31,12 @@ Alchemy beta.79 resolves cloud credential configuration even for local resources
 
 In an Amp orb, `.agents/setup` installs the pinned Node version and dependencies. Use `amp orb services ensure` to start both local processes and create the Hearth portal. Setup never authenticates, deploys, or applies remote migrations. Do not expose either unauthenticated development port directly to the public internet.
 
+Setup reuses snapshot dependencies when the setup script, manifests, lockfiles, Node/npm versions,
+and effective npm configuration are unchanged and `npm ls --all --offline` validates the installed tree.
+Otherwise it runs `npm ci --prefer-offline`, preserving lockfile enforcement and install scripts.
+Use `npx task orb:setup` to rerun setup and `npx task install` to force a clean dependency reinstall.
+The reuse marker lives inside `node_modules`, so a clean install also clears it.
+
 ## Daily use
 
 - **Import:** the **Import recipe** button is available on every page. Paste an HTTPS NYT Cooking recipe URL (including unlocked share links), review the filled-out draft, then save. Imports retain the original URL, description, photo, servings, timing, ingredients, and instructions. Fractions and common units become editable shopping quantities; ambiguous ingredient wording is preserved with a review warning. Choose a collection before saving. Timing follows NYT's structured data, so marinating/resting may be additional. Blocked pages or missing recipe data show an error rather than saving a partial recipe. Other recipe sites are not yet supported.

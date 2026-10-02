@@ -4,8 +4,31 @@ set -euo pipefail
 node_version="$(cat .node-version)"
 if [[ "$(node --version)" != "v${node_version}" ]]; then
   echo "Installing Node ${node_version}"
-  npm install --global --prefix /usr/local "node@${node_version}"
+  time npm install --global --prefix /usr/local --prefer-offline --no-audit --no-fund "node@${node_version}"
 fi
 
-echo "Installing pinned dependencies"
-time npm ci --no-audit --no-fund
+# npm ci spends ~34s rebuilding even a warm, unchanged dependency tree.
+# Keep its strict install path, but reuse a validated tree from an orb snapshot.
+dependency_fingerprint() {
+  {
+    sha256sum .agents/setup .node-version package.json package-lock.json
+    if [[ -f node_modules/.package-lock.json ]]; then
+      sha256sum node_modules/.package-lock.json
+    fi
+    node --version
+    npm --version
+    npm config list --json | sha256sum
+  } | sha256sum
+}
+
+stamp=node_modules/.hearth-orb-setup
+fingerprint="$(dependency_fingerprint)"
+if [[ -f "$stamp" && "$(cat "$stamp")" == "$fingerprint" ]] &&
+  npm ls --all --offline >/dev/null 2>&1; then
+  echo "Reusing pinned dependencies (setup inputs unchanged; dependency tree validated)"
+else
+  echo "Installing pinned dependencies"
+  rm -f "$stamp"
+  time npm ci --prefer-offline --no-audit --no-fund
+  dependency_fingerprint > "$stamp"
+fi

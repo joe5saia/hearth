@@ -6,6 +6,9 @@ tasks:
   install:
     desc: Install pinned dependencies (bootstrap with npm ci if Task is not installed)
     cmds: [npm ci]
+  orb:setup:
+    desc: Prepare the orb, reusing unchanged and validated dependencies
+    cmds: [bash -n .agents/setup, .agents/setup]
   dev:
     desc: Start React, the local Worker, and persistent local SQLite through Alchemy
     cmds:
