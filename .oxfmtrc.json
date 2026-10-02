@@ -1,4 +1,4 @@
 {
-  "ignorePatterns": ["tools/**", ".alchemy/**", ".amp/**", "dist/**", "package-lock.json"],
+  "ignorePatterns": ["tools/**", ".alchemy/**", ".cloudflare/**", ".amp/**", "dist/**", "package-lock.json"],
   "printWidth": 110
 }

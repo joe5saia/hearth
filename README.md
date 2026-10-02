@@ -269,14 +269,19 @@ identities fail closed. This does not change the household Google policy or expo
 
 All production website requests, including assets and API, pass through Cloudflare Access. Keep the Worker-level allowlist in place; do not add bypass or account-wide policies as a workaround. The separate MCP Worker protects only consent with Access and uses OAuth for its API (see below). Credential configuration and read access do not establish deployment permissions; verify cloud writes only during an approved bootstrap or deployment.
 
-`alchemy.run.ts` is the production infrastructure source of truth. Its inferred environment types are used directly by `src/server.ts`. `cloudflare.config.ts` shares the entrypoint, compatibility date, and asset routing with the on-demand Preview workflow below. `alchemy dev` keeps its state and SQLite data locally in `.alchemy/`; cloud operations use `Cloudflare.state()` so separate orbs share deployment state. Never run destructive infrastructure commands casually. Keep production bootstrap, deployment, and migrations out of orb setup, resume, and preview services.
+`alchemy.run.ts` is the production infrastructure source of truth. Its inferred environment types are used directly by `src/server.ts`. `cloudflare.config.ts` shares the entrypoint, compatibility date, and asset routing with the on-demand Preview workflow below. Its default export configures **cf Preview builds only**; Alchemy still owns production infrastructure and local development. `alchemy dev` keeps its state and SQLite data locally in `.alchemy/`; cloud operations use `Cloudflare.state()` so separate orbs share deployment state. Never run destructive infrastructure commands casually. Keep production bootstrap, deployment, and migrations out of orb setup, resume, and preview services.
+
+The Cloudflare CLI is pinned as a project dependency. Use `npx task cf -- --help` or
+`npx task cf -- cli search "<task>"` for resource commands. These operate on remote resources by default;
+credential access does not authorize writes. Do not use `cf deploy` to bypass Alchemy's production ownership.
 
 ## On-demand Cloudflare Previews
 
 Use these when testing real Workers, Static Assets, D1, Access, or network latency matters. Keep using
 Amp portals for local iteration and their review tools; a Cloudflare Preview is a complementary remote
 environment, not an Amp portal. This uses Cloudflare's **native Worker Previews**, not Alchemy stages,
-legacy version URLs, or a second production Worker. Requires the pinned Wrangler 4.142.0 (feature minimum: 4.135.0).
+legacy version URLs, or a second production Worker. Uses the pinned `cf` CLI and Cloudflare Vite plugin
+2 beta; no direct Wrangler dependency is required.
 
 From the thread's working branch, with `AMP_THREAD_ID` set to its full thread ID:
 
@@ -287,6 +292,15 @@ npx task preview -- list              # Account-side inventory, including partia
 npx task preview -- down              # Delete this thread's Preview and ALL its supporting resources
 npx task preview -- gc                # Delete managed previews past their cleanup deadline
 ```
+
+The website and MCP workflows call `cf d1 migrations apply <database-id>` with the existing
+`d1_migrations` history table, then `cf previews deploy <name>` in their respective `cf-preview` and
+`cf-mcp-preview` modes. Vite builds the Worker and website assets into `.cloudflare/output/v0/`;
+MCP builds omit client assets. Serialize website and MCP builds within one checkout because they share
+that output directory. Normal production asset builds and local dev do not enable the Cloudflare plugin.
+Provisioning writes the isolated bindings to private `worker.json` files and passes their path only to
+the Preview build. The config rejects non-Preview Worker builds. Keep API precreation with
+`ignore_base_config=true`: `cf` currently has no matching flag, and inheriting production bindings is unsafe.
 
 `up` prints the stable HTTPS URL, deployment ID, and UTC cleanup deadline. Sign in with the same Google
 accounts allowed in production. Share **only this stable URL**: immutable deployment URLs retain the
@@ -300,7 +314,7 @@ The Cloudflare API token needs account-scoped **Workers Scripts: Edit**, **D1: E
 existing Hearth Worker and Access policy. No Google client secret or Alchemy bootstrap is needed.
 The workflow discovers the production Worker through its Alchemy tags and refuses ambiguous targets.
 Its preview URL setting must already be enabled; the script never changes production settings or runs
-`wrangler deploy`. Permissions to create previews do not authorize production deployment.
+`cf deploy`. Permissions to create previews do not authorize production deployment.
 
 Each Preview has a hostname-specific Access application, copied household allow policy, and a seven-day
 service token restricted to that application. `LOCAL_DEV` remains `false`; the normal signed Access JWT
@@ -308,6 +322,7 @@ checks run in the Worker. `PREVIEW_CLIENT_ID` binds that Preview's service ident
 to its isolated D1. Production leaves this binding unset and keeps its smoke identity read-only.
 No public bypass is installed. Automation credentials are saved mode `0600`
 under the gitignored `.wrangler/hearth-previews/<name>/` directory; never print, commit, or share them.
+The legacy `.wrangler` state paths remain unchanged so existing Previews and credentials stay recoverable.
 A new orb running `up` rotates only that Preview's token if its one-time secret is unavailable locally.
 For additional API validation or performance fixtures, use the authenticated request helper:
 
@@ -320,7 +335,7 @@ The built-in smoke test checks anonymous denial, authenticated HTML/JavaScript/A
 D1 write/read/delete cycle without clearing existing fixtures. Its ten warm API timings include Access
 and network latency from the orb, not Worker CPU or a load test. For performance comparisons use the
 same fixtures, client location, and multiple runs. Preview logs are enabled in Cloudflare's Preview
-Observability tab; `wrangler tail` does not yet support native Previews.
+Observability tab; `cf` does not yet stream native Preview logs.
 
 **Cleanup is mandatory when testing/review ends.** `down` removes the Preview first, verifies its absence,
 then deletes its D1 database, Access application, service token, and local credential files. It refuses

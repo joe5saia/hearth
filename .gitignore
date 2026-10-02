@@ -1,6 +1,7 @@
 node_modules/
 dist/
 .alchemy/
+.cloudflare/
 .wrangler/
 .amp/in/
 .amp/portals/

@@ -86,6 +86,11 @@ tasks:
   audit:production:
     desc: Audit production dependencies only
     cmds: [npm audit --omit=dev]
+  cf:
+    desc: Run the pinned Cloudflare CLI (optional -- command and flags; cloud writes require authorization)
+    env:
+      CF_SEND_TELEMETRY: "false"
+    cmds: ["npx cf {{.CLI_ARGS}}"]
   preview:
     desc: Manage disposable Cloudflare Previews (-- up, test, list, down, gc, or request; no args for help)
     cmds: ["npm run preview -- {{.CLI_ARGS}}"]

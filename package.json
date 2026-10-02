@@ -25,6 +25,7 @@
   },
   "devDependencies": {
     "@ampcode/plugin": "0.0.0-20260928002026-g40f3f5f",
+    "@cloudflare/vite-plugin": "2.0.0-beta.sha-52b0dc0e9",
     "@cloudflare/workers-types": "5.20260927.1",
     "@effect/platform-node": "4.0.0-rc.117",
     "@go-task/cli": "3.53.1",
@@ -35,6 +36,7 @@
     "@types/react-dom": "19.3.0",
     "@vitejs/plugin-react": "6.1.1",
     "alchemy": "2.0.0-beta.79",
+    "cf": "1.0.0-beta.12",
     "fflate": "0.8.3",
     "miniflare": "5.20260925.0-alpha",
     "oxfmt": "0.70.0",
@@ -43,8 +45,7 @@
     "typescript": "7.0.2",
     "vite": "8.3.1",
     "vite-dev": "npm:vite@8.3.1",
-    "vitest": "5.0.2",
-    "wrangler": "4.142.0"
+    "vitest": "5.0.2"
   },
   "overrides": {
     "vite-dev": {

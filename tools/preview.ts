@@ -3,6 +3,7 @@ import { execFileSync } from "node:child_process";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
+import { bindings, type WorkerConfig } from "cf/config";
 import { workerRuntime } from "../cloudflare.config.ts";
 
 const prefix = "hearth-preview-";
@@ -87,25 +88,26 @@ export class Cloudflare {
   }
 }
 
-export function previewConfig(worker: string, db: Database, audience: string, clientId: string) {
+export function previewConfig(worker: string, db: Database, audience: string, clientId: string): WorkerConfig {
   if (!db.name.startsWith(prefix)) throw new Error("Refusing a non-preview database.");
   expiresAt(db.name.slice(prefix.length));
   return {
     name: worker,
-    main: resolve(workerRuntime.main),
-    compatibility_date: workerRuntime.compatibilityDate,
+    entrypoint: resolve(workerRuntime.main),
+    compatibilityDate: workerRuntime.compatibilityDate,
     assets: {
-      directory: resolve(workerRuntime.assets.directory),
-      binding: workerRuntime.assets.binding,
-      not_found_handling: workerRuntime.assets.notFoundHandling,
-      run_worker_first: workerRuntime.assets.runWorkerFirst,
+      notFoundHandling: workerRuntime.assets.notFoundHandling,
+      runWorkerFirst: workerRuntime.assets.runWorkerFirst,
     },
-    previews: {
-      vars: { LOCAL_DEV: "false", ACCESS_AUD: audience, PREVIEW_CLIENT_ID: clientId },
-      ai: { binding: "AI" },
-      d1_databases: [{ binding: "DB", database_name: db.name, database_id: db.uuid }],
-      observability: { enabled: true, logs: { enabled: true, invocation_logs: true } },
+    env: {
+      LOCAL_DEV: bindings.text("false"),
+      ACCESS_AUD: bindings.text(audience),
+      PREVIEW_CLIENT_ID: bindings.text(clientId),
+      AI: bindings.ai(),
+      DB: bindings.d1({ name: db.name, id: db.uuid }),
+      ASSETS: bindings.assets(),
     },
+    observability: { enabled: true, logs: { enabled: true, invocationLogs: true } },
   };
 }
 
@@ -171,12 +173,12 @@ export class Previews {
   }
 }
 
-function command(bin: string, args: string[], capture = false): string {
+function command(bin: string, args: string[], capture = false, env: NodeJS.ProcessEnv = {}): string {
   return (
     execFileSync(bin, args, {
       encoding: "utf8",
       stdio: capture ? ["ignore", "pipe", "inherit"] : "inherit",
-      env: { ...process.env, CI: "true", WRANGLER_SEND_METRICS: "false" },
+      env: { ...process.env, ...env, CI: "true", CF_SEND_TELEMETRY: "false" },
     }) ?? ""
   );
 }
@@ -256,20 +258,17 @@ export async function up(
       before.databases.find((d) => d.name === resourceName) ??
       (await manager.api.request<Database>("/d1/database", "POST", { name: resourceName }));
     const config = previewConfig(manager.worker, db, app.aud, token.client_id);
-    const configPath = resolve(directory, "wrangler.json");
+    const configPath = resolve(directory, "worker.json");
     await save(configPath, config);
-    const migrationPath = resolve(directory, "migrations.json");
-    await save(migrationPath, {
-      d1_databases: [{ ...config.previews.d1_databases[0], migrations_dir: resolve("migrations") }],
-    });
-    runCommand("npx", ["wrangler", "d1", "migrations", "apply", "DB", "--remote", "--config", migrationPath]);
+    runCommand("npx", ["cf", "d1", "migrations", "apply", db.uuid, "--dir", resolve("migrations"), "--table", "d1_migrations"]);
+    // Precreation above must retain ignore_base_config=true: cf has no equivalent CLI flag.
     runCommand(
       "npx",
-      ["wrangler", "preview", "--name", name, "--config", configPath, "--ignore-base-config", "--json"],
+      ["cf", "previews", "deploy", name, "--mode", "cf-preview"],
       true,
+      { HEARTH_PREVIEW_CONFIG: configPath },
     );
-    // Wrangler's asset uploader writes progress to stdout even with --json.
-    // Read authoritative deployment metadata instead of parsing mixed CLI output.
+    // Read authoritative deployment metadata instead of coupling to beta CLI output.
     const deployed = await manager.api.request<{ id: string }>(
       `${manager.path}/${preview.id}/deployments/latest`,
     );
@@ -484,7 +483,6 @@ async function main(): Promise<void> {
   );
   if (!settings.previews_enabled)
     throw new Error("workers.dev Preview URLs are disabled. Configure through the production owner first.");
-  command("npm", ["run", "build"]);
   await manager.gc();
   await up(manager, expiresAt(name) <= Date.now() ? generated : name, sourceApp);
 }

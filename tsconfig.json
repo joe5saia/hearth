@@ -11,5 +11,12 @@
     "allowImportingTsExtensions": true,
     "types": ["vite/client", "@cloudflare/workers-types", "node"]
   },
-  "include": ["src", "alchemy.run.ts", "vite.config.ts", "tests", "tools/matching-eval.ts"]
+  "include": [
+    "src",
+    "alchemy.run.ts",
+    "vite.config.ts",
+    "tests",
+    "tools/matching-eval.ts",
+    "tools/mcp-preview.ts"
+  ]
 }

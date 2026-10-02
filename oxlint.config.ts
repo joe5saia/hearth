@@ -1,7 +1,7 @@
 import { defineConfig } from "oxlint";
 
 export default defineConfig({
-  ignorePatterns: ["tools/**", ".alchemy/**", "dist/**", ".amp/**"],
+  ignorePatterns: ["tools/**", ".alchemy/**", ".cloudflare/**", "dist/**", ".amp/**"],
   jsPlugins: [{ name: "anti-slop", specifier: "./tools/oxlint/anti-slop/index.ts" }],
   rules: {
     "oxc/no-accumulating-spread": "error",

@@ -3,6 +3,8 @@ import { execFileSync } from "node:child_process";
 import { mkdir, readFile, writeFile, rm } from "node:fs/promises";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
+import { bindings, type WorkerConfig } from "cf/config";
+import { workerRuntime } from "../cloudflare.config.ts";
 import { Cloudflare, previewName } from "./preview.ts";
 import { ampIdentity } from "./mcp-eval.ts";
 
@@ -11,7 +13,7 @@ const statePath = resolve(directory, "state.json");
 type State = { name: string; parent: string; preview: string; url: string; db?: string; kv?: string; app?: string; aud?: string; token?: string; client_id?: string; client_secret?: string };
 const api = new Cloudflare(process.env.CLOUDFLARE_ACCOUNT_ID!, process.env.CLOUDFLARE_API_TOKEN!);
 const save = async (state: State) => writeFile(statePath, JSON.stringify(state), { mode: 0o600 });
-const run = (args: string[]) => execFileSync("npx", ["wrangler", ...args], { stdio: ["ignore", "pipe", "inherit"], env: { ...process.env, CI: "true", WRANGLER_SEND_METRICS: "false" } });
+const run = (args: string[], env: NodeJS.ProcessEnv = {}) => execFileSync("npx", ["cf", ...args], { stdio: ["ignore", "pipe", "inherit"], env: { ...process.env, ...env, CI: "true", CF_SEND_TELEMETRY: "false" } });
 
 export async function removeMcpPreview(api: Cloudflare, state: State) {
   if (state.parent !== `hearth-mcp-${state.name}`) throw new Error("Refusing a non-disposable parent Worker");
@@ -90,17 +92,20 @@ async function main() {
     });
     state.app = app.id; state.aud = app.aud; await save(state);
   }
-  const config = { name: parent, main: resolve("tools/mcp-preview-worker.ts"), compatibility_date: "2026-09-08", compatibility_flags: ["nodejs_compat", "global_fetch_strictly_public"],
-    previews: { vars: { MCP_ORIGIN: state.url, ACCESS_AUD: state.aud, PREVIEW_CLIENT_ID: state.client_id,
-      AMP_EVAL_PROJECT_ID: identity.project_id, AMP_EVAL_USER_ID: identity.user_id },
-      ai: { binding: "AI" },
-      d1_databases: [{ binding: "DB", database_id: state.db, database_name: `hearth-${name}` }], kv_namespaces: [{ binding: "OAUTH_KV", id: state.kv }] } };
-  const configPath = resolve(directory, "wrangler.json");
-  await writeFile(configPath, JSON.stringify(config));
-  const migrationPath = resolve(directory, "migrations.json");
-  await writeFile(migrationPath, JSON.stringify({ d1_databases: [{ ...config.previews.d1_databases[0], migrations_dir: resolve("migrations") }] }));
-  run(["d1", "migrations", "apply", "DB", "--remote", "--config", migrationPath]);
-  run(["preview", "--name", name, "--config", configPath, "--ignore-base-config", "--json"]);
+  const config: WorkerConfig = {
+    name: parent, entrypoint: resolve("tools/mcp-preview-worker.ts"), compatibilityDate: workerRuntime.compatibilityDate,
+    compatibilityFlags: ["nodejs_compat", "global_fetch_strictly_public"],
+    env: {
+      MCP_ORIGIN: bindings.text(state.url), ACCESS_AUD: bindings.text(state.aud!), PREVIEW_CLIENT_ID: bindings.text(state.client_id!),
+      AMP_EVAL_PROJECT_ID: bindings.text(identity.project_id), AMP_EVAL_USER_ID: bindings.text(identity.user_id),
+      AI: bindings.ai(), DB: bindings.d1({ id: state.db, name: `hearth-${name}` }), OAUTH_KV: bindings.kv({ id: state.kv }),
+    },
+  };
+  const configPath = resolve(directory, "worker.json");
+  await writeFile(configPath, JSON.stringify(config), { mode: 0o600 });
+  run(["d1", "migrations", "apply", state.db!, "--dir", resolve("migrations"), "--table", "d1_migrations"]);
+  // Keep REST precreation with ignore_base_config=true; cf does not expose that option.
+  run(["previews", "deploy", name, "--mode", "cf-mcp-preview"], { HEARTH_PREVIEW_CONFIG: configPath });
   console.log(JSON.stringify({ url: state.url, mcp: `${state.url}/mcp`, eval: `${state.url}/eval/mcp`, name,
     note: "Isolated D1/KV. Eval orbs use npx task mcp:eval -- connect <eval URL>, then reload MCP. Clean up with npx task mcp:preview -- down." }));
 }
