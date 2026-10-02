@@ -83,6 +83,37 @@ const send = (path: string, method = "GET", body?: typeof Schema.Json.Type) =>
 
 const state = async () => Schema.decodeUnknownSync(HouseholdSchema)(await (await send("household")).json());
 
+function mcpRequest(name: string, args: typeof Schema.Json.Type, cancel = false) {
+  const headers = new Headers({
+    "Content-Type": "application/json",
+    Accept: "application/json, text/event-stream",
+    "MCP-Protocol-Version": "2026-07-28",
+    "Mcp-Method": "tools/call",
+    "Mcp-Name": name,
+  });
+
+  if (cancel) headers.set("X-Test-Cancel", "true");
+
+  return worker.dispatchFetch("http://localhost/mcp", {
+    method: "POST",
+    headers: Object.fromEntries(headers),
+    body: JSON.stringify({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "tools/call",
+      params: {
+        name,
+        arguments: args,
+        _meta: {
+          "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+          "io.modelcontextprotocol/clientInfo": { name: "matching-test", version: "1" },
+          "io.modelcontextprotocol/clientCapabilities": {},
+        },
+      },
+    }),
+  });
+}
+
 const match = async () => {
   const previous = logEvents().filter((event) => event.event === "ingredient_matching_completed").length;
   const response = await send("groceries/match", "POST");
@@ -120,6 +151,8 @@ beforeAll(async () => {
           bindings: { LOCAL_DEV: "true" },
           outboundService: async (request) => {
             calls++;
+
+            if (mode === "cancel") await new Promise((resolve) => setTimeout(resolve, 200));
 
             if (mode === "concurrency") {
               peakCalls = Math.max(peakCalls, ++activeCalls);
@@ -283,6 +316,72 @@ beforeEach(async () => {
 afterAll(async () => {
   await worker?.dispose();
 });
+
+it.each(["exact", "ai"])(
+  "keeps near-limit recipes readable after %s linking grows the stored value",
+  async (kind) => {
+    const input = {
+      ...recipe,
+      ingredients: [
+        { ...recipe.ingredients[0], name: kind === "exact" ? "White onion" : recipe.ingredients[0].name },
+      ],
+      photo: "data:image/png;base64,",
+    };
+
+    input.photo += "A".repeat(1_899_999 - new TextEncoder().encode(JSON.stringify(input)).length);
+    expect(new TextEncoder().encode(JSON.stringify(input)).length).toBe(1_899_999);
+    expect((await send("recipes", "PUT", input)).status).toBe(200);
+
+    if (kind === "ai") expect(await match()).toMatchObject({ matched: 1 });
+
+    const response = await send("household");
+    expect(response.status, await response.clone().text()).toBe(200);
+    const saved = Schema.decodeUnknownSync(HouseholdSchema)(await response.json()).recipes[0];
+    expect(saved.ingredients[0].groceryItemId).toBe("white");
+    expect(new TextEncoder().encode(JSON.stringify(saved)).length).toBeGreaterThan(1_900_000);
+    const mcpResponse = await mcpRequest("get_recipes", { ids: [recipe.id] });
+    expect(mcpResponse.status).toBe(200);
+
+    const mcpResult = Schema.decodeUnknownSync(
+      Schema.Struct({
+        result: Schema.Struct({ structuredContent: Schema.Struct({ recipes: Schema.Array(RecipeSchema) }) }),
+      }),
+    )(await mcpResponse.json());
+
+    expect(mcpResult.result.structuredContent.recipes).toEqual([saved]);
+    // Oversized input still fails; separating reads must not remove the write policy.
+    expect((await send("recipes", "PUT", saved)).status).toBe(400);
+  },
+);
+
+it.each(["http", "mcp"])(
+  "propagates %s cancellation to inference without subsequent matching writes",
+  async (transport) => {
+    mode = "cancel";
+
+    const response = await (transport === "mcp"
+      ? mcpRequest("match_groceries", {}, true)
+      : worker.dispatchFetch("http://localhost/api/groceries/match", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "X-Test-Cancel": "true" },
+          body: "{}",
+        }));
+
+    expect(response.status).toBe(499);
+    await expect.poll(() => logs.some((entry) => entry.message === "test_model_aborted")).toBe(true);
+    // Wait beyond the upstream response. Cancellation must stop selection and persistence,
+    // not merely stop the transport from delivering the result.
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    expect(calls).toBe(1);
+    expect((await state()).recipes[0].ingredients).toEqual(recipe.ingredients);
+    const db = await worker.getD1Database("DB");
+    expect(await db.prepare("SELECT COUNT(*) AS count FROM ingredient_match_cache").first("count")).toBe(0);
+    expect(logEvents().some((event) => event.event === "ingredient_matching_completed")).toBe(false);
+
+    mode = "success";
+    expect(await match()).toMatchObject({ matched: 1, failed: 0, normalizationCalls: 1, selectionCalls: 1 });
+  },
+);
 
 it("persists a non-first selection from 60+ candidates with original context, while preserving explicit decisions and amounts", async () => {
   const report = await match();

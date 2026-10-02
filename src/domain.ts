@@ -114,7 +114,11 @@ export const RecipeFields = Schema.Struct({
   ),
 });
 
-export const RecipeSchema = Schema.Struct({ id: RecipeId, ...RecipeFields.fields }).check(
+export const RecipeSchema = Schema.Struct({ id: RecipeId, ...RecipeFields.fields });
+
+// A write-input limit, not a storage invariant: linking and collection renames can
+// enlarge valid saved recipes. Those rows must remain readable by HTTP and MCP.
+export const RecipeWriteSchema = RecipeSchema.check(
   Schema.makeFilter((recipe) => new TextEncoder().encode(JSON.stringify(recipe)).length < 1_900_000, {
     expected: "a recipe smaller than 1.9 MB",
   }),

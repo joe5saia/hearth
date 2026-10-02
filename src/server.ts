@@ -140,6 +140,7 @@ export function householdApi(request: Request, db: D1Database, ai?: Ai): Promise
       Effect.catchCause(() => failure("Something went wrong. Please try again.", 500)),
       Effect.tap((response) => Effect.sync(() => response.headers.set("Cache-Control", "no-store"))),
     ),
+    { signal: request.signal },
   );
 }
 

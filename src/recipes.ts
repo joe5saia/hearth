@@ -1,5 +1,12 @@
 import { Effect, Schema } from "effect";
-import { RecipeSchema, RecipeId, type Recipe, type RecipeDraft, type Rating } from "./domain";
+import {
+  RecipeSchema,
+  RecipeWriteSchema,
+  RecipeId,
+  type Recipe,
+  type RecipeDraft,
+  type Rating,
+} from "./domain";
 import { getGroceries, linkIngredients } from "./groceries";
 import { Conflict, MissingReference, NotFound, ValidationError, database, stored } from "./storage";
 import { importRecipe } from "./recipe-import";
@@ -92,7 +99,7 @@ function validateCollections(db: D1Database, names: readonly string[]) {
 }
 
 const decodeRecipe = (recipe: RecipeDraft, message: string) =>
-  Schema.decodeUnknownEffect(RecipeSchema)(recipe).pipe(
+  Schema.decodeUnknownEffect(RecipeWriteSchema)(recipe).pipe(
     Effect.mapError(() => new ValidationError({ message })),
   );
 

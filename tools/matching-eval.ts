@@ -3,11 +3,11 @@ import { spawnSync } from "node:child_process";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { Effect, Schema } from "effect";
-import { HouseholdSchema, MatchReportSchema, type GroceryItem, type Recipe } from "../src/domain.ts";
+import { GroceryItemSchema, HouseholdSchema, MatchReportSchema, RecipeSchema, type Recipe } from "../src/domain.ts";
 import { GrocerySearch, matchIngredients, normalizeIngredient, normalizationModel } from "../src/ingredient-matching.ts";
 import { Cloudflare, previewFetch, previewName } from "./preview.ts";
 
-const product = (id: string, name: string, aliases: string[] = []): GroceryItem => ({ id: `matching-eval-${id}`, name, aliases, quantity: 1, unit: "each", aisle: "Produce", url: "" });
+const product = (id: string, name: string, aliases: string[] = []) => Schema.decodeUnknownSync(GroceryItemSchema)({ id: `matching-eval-${id}`, name, aliases, quantity: 1, unit: "each", aisle: "Produce", url: "" });
 const groceries = [
   product("white-onion", "White onion"),
   ...Array.from({ length: 60 }, (_, i) => product(`yellow-onion-${i}`, `Brand ${i} yellow onion bag`)),
@@ -28,17 +28,17 @@ const cases = [
   { name: "Toasted sesame oil for finishing", expected: undefined, core: /^toasted sesame oil$/i },
   { name: "Dragon fruit, peeled", expected: undefined, core: /^dragon fruit$/i },
 ];
-const recipes: Recipe[] = cases.map((item, i) => ({
+const recipes = [...Schema.decodeUnknownSync(Schema.Array(RecipeSchema))(cases.map((item, i) => ({
   id: `matching-eval-recipe-${i}`, title: `Matching evaluation ${i + 1}`, description: "Disposable evaluation recipe.",
   servings: 2, minutes: 20, category: "", photo: "", source: "", rating: "neutral",
   ingredients: [{ name: item.name, originalText: item.originalText ?? item.name, quantity: 2, unit: "each" }],
   instructions: [i === 6 ? "Use raw fresh tomatoes in this uncooked salad. Do not use canned tomatoes." : i === 7 ? "Finish with toasted sesame oil for its sesame aroma; olive oil is not a substitute." : `Prepare ${item.name} as described and cook the recipe.`],
-}));
+})))];
 // Explicit links and opt-outs must survive the AI pass.
-recipes[0] = { ...recipes[0], ingredients: [...recipes[0].ingredients,
+recipes[0] = Schema.decodeUnknownSync(RecipeSchema)({ ...recipes[0], ingredients: [...recipes[0].ingredients,
   { name: "Chopped White Onions", quantity: 1, unit: "each", groceryItemId: null },
   { name: "Chopped White Onions", quantity: 1, unit: "each", groceryItemId: groceries[1].id },
-] };
+] });
 
 function validate(actual: readonly Recipe[]) {
   const results = cases.map((item, index) => {
@@ -88,14 +88,14 @@ if (mode === "models" || mode === "normalization" || mode === "history") {
     for (const item of cases) await Effect.runPromise(normalizeIngredient(ai, item.name));
   } else if (mode === "history") {
     const catalog = [product("fresh-parm", "BelGioioso Vegetarian Parmesan Cheese, 8 oz"), product("kraft-parm", "Kraft Finely Shredded Parmesan Natural Cheese, 6 oz")];
-    const targets = ["Adult pasta dinner", "Baby broccoli cheese bites"].map((title, index): Recipe => ({
+    const targets = Schema.decodeUnknownSync(Schema.Array(RecipeSchema))(["Adult pasta dinner", "Baby broccoli cheese bites"].map((title, index) => ({
       ...recipes[0], id: `context-target-${index}`, title, description: index ? "A baby recipe." : "A weekday dinner for adults.",
       ingredients: [{ name: "Parmesan, for serving", quantity: 1, unit: "tbsp" }], instructions: ["Sprinkle Parmesan over the cooked dish."],
-    }));
-    const history = catalog.flatMap((item, group) => Array.from({ length: 12 }, (_, index): Recipe => ({
+    })));
+    const history = Schema.decodeUnknownSync(Schema.Array(RecipeSchema))(catalog.flatMap((item, group) => Array.from({ length: 12 }, (_, index) => ({
       ...targets[group], id: `history-${group}-${index}`, title: `${group ? "Baby vegetable bites" : "Adult pasta dinner"} ${index}`,
       ingredients: [{ name: "Parmesan", quantity: 2, unit: "tbsp", groceryItemId: item.id }],
-    })));
+    }))));
     const baseline = await Effect.runPromise(matchIngredients(ai, targets, catalog));
     const contextual = await Effect.runPromise(matchIngredients(ai, [...targets, ...history], catalog));
     assert.equal(baseline.report.failed + contextual.report.failed, 0);

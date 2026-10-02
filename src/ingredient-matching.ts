@@ -1,7 +1,7 @@
 import { Data, Effect, Option, Schema } from "effect";
-import { GroceryId } from "./domain";
-import type { GroceryItem, Ingredient, Recipe, MatchReport } from "./domain";
-import { database, stored, type StorageError, type StoredDataError } from "./storage";
+import { GroceryId } from "./domain.ts";
+import type { GroceryItem, Ingredient, Recipe, MatchReport } from "./domain.ts";
+import { database, stored, type StorageError, type StoredDataError } from "./storage.ts";
 
 export const normalizationModel = "@cf/meta/llama-3.2-3b-instruct";
 
