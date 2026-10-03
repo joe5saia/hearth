@@ -5,6 +5,7 @@ import * as Namespace from "alchemy/Namespace";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import { workerRuntime } from "./cloudflare.config";
+import { publicInstallPaths } from "./src/install-assets";
 
 export const Database = Cloudflare.D1.Database("Database", {
   migrations: "./migrations",
@@ -63,6 +64,19 @@ export const Website = Cloudflare.Worker(
             require: [{ loginMethod: googleId }],
           },
         ],
+      }).pipe(Namespace.push("Website"));
+
+      // Path-specific Access takes precedence over the unchanged Worker-level gate.
+      // Do not enroll the Worker in this application or add a bare hostname destination.
+      yield* Cloudflare.Access.Application("InstallAssets", {
+        type: "self_hosted",
+        name: "Hearth installation assets",
+        appLauncherVisible: false,
+        destinations: publicInstallPaths.map((path) => ({
+          type: "public" as const,
+          uri: `hearth.joesaia.trade${path}`,
+        })),
+        policies: [{ name: "Public installation files", decision: "bypass", include: [{ everyone: {} }] }],
       }).pipe(Namespace.push("Website"));
     }
 

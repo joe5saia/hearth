@@ -1,6 +1,7 @@
 import { Effect, Schema } from "effect";
 import { createRemoteJWKSet, errors, jwtVerify } from "jose";
 import type { WebsiteEnv } from "../alchemy.run";
+import { publicInstallPaths } from "./install-assets";
 import {
   MealSchema,
   RecipeSchema,
@@ -150,6 +151,15 @@ const accessKeys = createRemoteJWKSet(new URL(`${accessIssuer}/cdn-cgi/access/ce
 
 export default {
   async fetch(request: Request, env: WebsiteEnv & { PREVIEW_CLIENT_ID?: string }): Promise<Response> {
+    // Home-screen installers may fetch these without the browser's Access session.
+    // Access path rules also match descendants; only exact read-only files bypass JWT verification here.
+    if (
+      ["GET", "HEAD"].includes(request.method) &&
+      publicInstallPaths.includes(new URL(request.url).pathname)
+    ) {
+      return env.ASSETS.fetch(request);
+    }
+
     // Static Assets' internal router does not forward ctx.access. Verify the
     // signed assertion instead, including this application's audience tag.
     if (env.LOCAL_DEV !== "true") {

@@ -5,6 +5,7 @@ import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { bindings, type WorkerConfig } from "cf/config";
 import { workerRuntime } from "../cloudflare.config.ts";
+import { publicInstallPaths } from "../src/install-assets.ts";
 
 const prefix = "hearth-preview-";
 const stateRoot = resolve(".wrangler/hearth-previews");
@@ -138,7 +139,7 @@ export class Previews {
         ...inventory.previews.map((p) => p.name),
         ...[...inventory.databases, ...inventory.apps, ...inventory.tokens]
           .filter((r) => r.name.startsWith(prefix))
-          .map((r) => r.name.slice(prefix.length)),
+          .map((r) => r.name.slice(prefix.length).replace(/-install$/, "")),
       ]),
     ].filter((name) => ownedName.test(name));
   }
@@ -155,7 +156,7 @@ export class Previews {
     for (const db of inventory.databases.filter((r) => r.name === prefix + name)) {
       await this.api.request(`/d1/database/${db.uuid}`, "DELETE");
     }
-    for (const app of inventory.apps.filter((r) => r.name === prefix + name)) {
+    for (const app of inventory.apps.filter((r) => r.name === prefix + name || r.name === `${prefix}${name}-install`)) {
       await this.api.request(`/access/apps/${app.id}`, "DELETE");
     }
     for (const token of inventory.tokens.filter((r) => r.name === prefix + name)) {
@@ -254,6 +255,19 @@ export async function up(
       oldApp ? "PUT" : "POST",
       appBody,
     );
+    const installName = `${resourceName}-install`;
+    const oldInstallApp = before.apps.find((a) => a.name === installName);
+    await manager.api.request<App>(
+      `/access/apps${oldInstallApp ? `/${oldInstallApp.id}` : ""}`,
+      oldInstallApp ? "PUT" : "POST",
+      {
+        name: installName,
+        type: "self_hosted",
+        app_launcher_visible: false,
+        destinations: publicInstallPaths.map((path) => ({ type: "public", uri: new URL(url).hostname + path })),
+        policies: [{ name: "Public installation files", decision: "bypass", include: [{ everyone: {} }] }],
+      },
+    );
     const db =
       before.databases.find((d) => d.name === resourceName) ??
       (await manager.api.request<Database>("/d1/database", "POST", { name: resourceName }));
@@ -339,10 +353,32 @@ export async function previewFetch(
 async function smoke(name: string): Promise<void> {
   const directory = resolve(stateRoot, name);
   const { url } = JSON.parse(await readFile(resolve(directory, "preview.json"), "utf8")) as { url: string };
-  for (const path of ["/", "/api/household"]) {
+  for (const path of ["/", "/api/household", "/brand/", "/favicon.ico", "/icons/favicon-32.png", "/icons/missing.png", "/apple-touch-icon.png/private", "/site.webmanifest/private"]) {
     const anonymous = await fetch(url + path, { redirect: "manual" });
     if (![302, 401, 403].includes(anonymous.status))
       throw new Error(`Unauthenticated ${path} returned ${anonymous.status}`);
+    await anonymous.body?.cancel();
+  }
+  for (const path of publicInstallPaths) {
+    const asset = await fetch(url + path, { redirect: "manual" });
+    if (asset.status !== 200) throw new Error(`Public installation file ${path} returned ${asset.status}`);
+    if (path.endsWith(".png")) {
+      const bytes = Buffer.from(await asset.arrayBuffer());
+      if (!asset.headers.get("Content-Type")?.includes("image/png") || bytes.subarray(0, 8).toString("hex") !== "89504e470d0a1a0a") {
+        throw new Error(`Public installation file ${path} is not a PNG`);
+      }
+    } else {
+      if (!asset.headers.get("Content-Type")?.includes("application/manifest+json")) throw new Error("Manifest content type missing.");
+      const manifest = await asset.json() as { short_name: string; icons: { src: string }[] };
+      if (manifest.short_name !== "Hearth" || manifest.icons.length !== 4 || manifest.icons.some((icon) => !publicInstallPaths.includes(icon.src))) {
+        throw new Error("Public manifest identity or icon URLs are incorrect.");
+      }
+    }
+    const head = await fetch(url + path, { method: "HEAD", redirect: "manual" });
+    if (head.status !== 200) throw new Error(`Public HEAD ${path} returned ${head.status}`);
+    const write = await fetch(url + path, { method: "POST", redirect: "manual" });
+    if (write.status !== 403) throw new Error(`Public POST ${path} returned ${write.status}`);
+    await write.body?.cancel();
   }
   const response = await previewFetch(name, "/api/household");
   if (!response.ok) throw new Error(`Authenticated API returned ${response.status}`);
@@ -394,7 +430,7 @@ async function smoke(name: string): Promise<void> {
     JSON.stringify(
       {
         name,
-        checks: "anonymous denied; authenticated HTML, JS and API; D1 write/read/delete",
+        checks: "anonymous installation PNGs/manifest and HEAD allowed; other anonymous paths and installation POST denied; authenticated HTML, JS and API; D1 write/read/delete",
         samples: 10,
         medianMs: (samples[4] + samples[5]) / 2,
         maxMs: samples[9],
@@ -442,6 +478,7 @@ async function main(): Promise<void> {
             preview: inventory.previews.some((p) => p.name === name),
             database: inventory.databases.some((p) => p.name === prefix + name),
             access: inventory.apps.some((p) => p.name === prefix + name),
+            installAccess: inventory.apps.some((p) => p.name === `${prefix}${name}-install`),
             token: inventory.tokens.some((p) => p.name === prefix + name),
           },
         })),

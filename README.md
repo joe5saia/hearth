@@ -149,13 +149,20 @@ Generation uses pinned resvg and needs no system fonts, Python, or ImageMagick.
 - Web-app shortcuts: 192/512 px standard and separately padded maskable PNGs referenced by
   `/site.webmanifest`. Maskable artwork fits within the central safe circle; no pre-rounded outer container.
 
-The manifest uses same-origin credentials so Cloudflare Access still protects the assets.
-It adds home-screen identity, not a service worker or offline support. Installation and icon refresh
-depend on the browser; actual iPhone/iPad/Android installation requires physical-device verification.
+The installation PNGs and manifest listed in `src/install-assets.ts` are publicly readable on the
+production custom domain so home-screen installers do not need the browser's Access session.
+A separate path-specific Access application bypasses only those destinations; the Worker allows only
+exact file paths with GET/HEAD. The existing Worker-level sign-in policy still protects everything else,
+including favicons, the brand kit, sharing card, app HTML/JavaScript, and API. The workers.dev address
+retains the blanket Access gate. Do not widen the exception to `/icons/*` or a bare hostname.
+The manifest adds home-screen identity, not a service worker or offline support. Installation and icon
+refresh depend on the browser; actual iPhone/iPad/Android installation requires physical-device verification.
+After deployment, remove any old home-screen shortcut, open Hearth and sign in in Chrome on the iPhone,
+then use **Share → Add to Home Screen** again to refresh a previously cached icon.
 Open Graph/Twitter metadata references the sharing card, but public crawlers cannot fetch the private
 website; distribute the downloadable card directly rather than bypassing Access for link previews.
 `npx task test` includes real Worker/Static Assets smoke coverage for metadata, MIME types, dimensions,
-ICO frames, vector delivery, and anonymous denial, alongside the MCP consent flow.
+ICO frames, vector delivery, public installation reads, and anonymous denial elsewhere, alongside the MCP consent flow.
 
 ## Check the app
 
@@ -267,7 +274,11 @@ identities fail closed. This does not change the household Google policy or expo
 6. After reviewing the plan and approving deployment, run `npx task deploy -- --yes`. This builds assets, updates the Worker, binds D1, and applies pending SQL migrations. Serialize deployments to the same stage across orbs. Production access is account-scoped: stage names are not an authorization boundary.
 7. Open the returned HTTPS Worker URL and sign in with one of the two allowed Google accounts.
 
-All production website requests, including assets and API, pass through Cloudflare Access. Keep the Worker-level allowlist in place; do not add bypass or account-wide policies as a workaround. The separate MCP Worker protects only consent with Access and uses OAuth for its API (see below). Credential configuration and read access do not establish deployment permissions; verify cloud writes only during an approved bootstrap or deployment.
+Production website requests pass through Cloudflare Access, with a narrow custom-domain exception for
+the installation files listed in `src/install-assets.ts`. Keep the Worker-level allowlist in place; do
+not add broad bypass or account-wide policies as a workaround. The separate MCP Worker protects only
+consent with Access and uses OAuth for its API (see below). Credential configuration and read access
+do not establish deployment permissions; verify cloud writes only during an approved bootstrap or deployment.
 
 `alchemy.run.ts` is the production infrastructure source of truth. Its inferred environment types are used directly by `src/server.ts`. `cloudflare.config.ts` shares the entrypoint, compatibility date, and asset routing with the on-demand Preview workflow below. Its default export configures **cf Preview builds only**; Alchemy still owns production infrastructure and local development. `alchemy dev` keeps its state and SQLite data locally in `.alchemy/`; cloud operations use `Cloudflare.state()` so separate orbs share deployment state. Never run destructive infrastructure commands casually. Keep production bootstrap, deployment, and migrations out of orb setup, resume, and preview services.
 
@@ -320,7 +331,9 @@ Each Preview has a hostname-specific Access application, copied household allow 
 service token restricted to that application. `LOCAL_DEV` remains `false`; the normal signed Access JWT
 checks run in the Worker. `PREVIEW_CLIENT_ID` binds that Preview's service identity for reads and writes
 to its isolated D1. Production leaves this binding unset and keeps its smoke identity read-only.
-No public bypass is installed. Automation credentials are saved mode `0600`
+A second Access application named with the `-install` suffix mirrors the production path-specific
+installation-file exception. It is tracked by `list`, `down`, rollback, and expiry cleanup, including
+when it is the only resource left after partial cleanup. Automation credentials are saved mode `0600`
 under the gitignored `.wrangler/hearth-previews/<name>/` directory; never print, commit, or share them.
 The legacy `.wrangler` state paths remain unchanged so existing Previews and credentials stay recoverable.
 A new orb running `up` rotates only that Preview's token if its one-time secret is unavailable locally.
@@ -331,8 +344,9 @@ npx task preview -- request <name-from-list> GET /api/household
 npx task preview -- request <name-from-list> POST '/api/demo?today=2026-09-28' '{}'
 ```
 
-The built-in smoke test checks anonymous denial, authenticated HTML/JavaScript/API, and a disposable
-D1 write/read/delete cycle without clearing existing fixtures. Its ten warm API timings include Access
+The built-in smoke test checks anonymous installation PNG/manifest GET/HEAD, denied installation POST
+and private/descendant paths, authenticated HTML/JavaScript/API, and a disposable D1 write/read/delete
+cycle without clearing existing fixtures. Its ten warm API timings include Access
 and network latency from the orb, not Worker CPU or a load test. For performance comparisons use the
 same fixtures, client location, and multiple runs. Preview logs are enabled in Cloudflare's Preview
 Observability tab; `cf` does not yet stream native Preview logs.

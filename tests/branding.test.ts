@@ -56,10 +56,10 @@ it("serves branded HTML, install metadata, and the review kit through the actual
   expect(html).toContain('href="/favicon.ico"');
   expect(html).toContain('href="/favicon.svg"');
   expect(html).toContain('href="/apple-touch-icon.png"');
-  expect(html).toContain('href="/site.webmanifest" crossorigin="use-credentials"');
+  expect(html).toContain('<link rel="manifest" href="/site.webmanifest" />');
   expect(html).toContain('content="https://hearth.joesaia.trade/brand/social-card.png"');
 
-  const manifestResponse = await worker.dispatchFetch("https://hearth.example/site.webmanifest");
+  const manifestResponse = await protectedWorker.dispatchFetch("https://hearth.example/site.webmanifest");
   expect(manifestResponse.status).toBe(200);
   expect(manifestResponse.headers.get("content-type")).toContain("application/manifest+json");
   const manifest = await manifestResponse.json();
@@ -159,12 +159,58 @@ it("delivers outlined vector masters, a single-color mask, and a valid multi-fra
   }
 });
 
-it("keeps logo, favicon, manifest, kit, and sharing assets behind production authentication", async () => {
+it("serves only the installation images and manifest to installers without an Access session", async () => {
+  const images: [string, number][] = [
+    ["/apple-touch-icon.png", 180],
+    ["/icons/apple-touch-icon-120.png", 120],
+    ["/icons/apple-touch-icon-152.png", 152],
+    ["/icons/apple-touch-icon-167.png", 167],
+    ["/icons/apple-touch-icon-180.png", 180],
+    ["/icons/icon-192.png", 192],
+    ["/icons/icon-512.png", 512],
+    ["/icons/maskable-192.png", 192],
+    ["/icons/maskable-512.png", 512],
+  ];
+
+  for (const [path, size] of images) {
+    const response = await protectedWorker.dispatchFetch(`https://hearth.example${path}?v=install`);
+    expect(response.status, path).toBe(200);
+    expect(response.headers.get("content-type"), path).toContain("image/png");
+    const bytes = Buffer.from(await response.arrayBuffer());
+    expect(bytes.subarray(0, 8).toString("hex"), path).toBe("89504e470d0a1a0a");
+    expect(bytes.readUInt32BE(16), path).toBe(size);
+    expect(bytes.readUInt32BE(20), path).toBe(size);
+  }
+
+  for (const path of [...images.map(([path]) => path), "/site.webmanifest"]) {
+    const head = await protectedWorker.dispatchFetch(`https://hearth.example${path}`, { method: "HEAD" });
+    expect(head.status, path).toBe(200);
+    expect(await head.text(), path).toBe("");
+
+    for (const method of ["POST", "PUT", "DELETE", "OPTIONS"]) {
+      const denied = await protectedWorker.dispatchFetch(`https://hearth.example${path}`, { method });
+      expect(denied.status, `${method} ${path}`).toBe(403);
+    }
+  }
+});
+
+it("keeps the app, API, other assets, and installation path lookalikes behind authentication", async () => {
   for (const path of [
+    "/",
+    "/api/household",
+    "/index.html",
     "/favicon.svg",
     "/favicon.ico",
-    "/apple-touch-icon.png",
-    "/site.webmanifest",
+    "/icons/favicon-32.png",
+    "/icons/",
+    "/icons/missing.png",
+    "/apple-touch-icon.png/",
+    "/apple-touch-icon.png/private",
+    "/apple-touch-icon.png.bak",
+    "/site.webmanifest/private",
+    "/icons/icon-512.png/private",
+    "/icons/../index.html",
+    "/%61pple-touch-icon.png",
     "/brand/logo.svg",
     "/brand/",
     "/brand/social-card.png",
