@@ -68,6 +68,19 @@ tasks:
   groceries:smoke:
     desc: Grocery browser E2E (requires agent-browser and an empty disposable local household; optional -- local URL)
     cmds: ["node tools/groceries-smoke.ts {{.CLI_ARGS}}"]
+  shopping:smoke:
+    desc: Reorder-animation browser E2E (requires local sample meals and agent-browser; restores existing order; optional -- local URL)
+    cmds: ["node tools/shopping-reorder-smoke.ts {{.CLI_ARGS}}"]
+  ui:setup:
+    desc: Install pinned cross-browser UI inspection tools outside the checkout
+    env:
+      UV_USE_IO_URING: "0"
+    cmds:
+      - npm install --prefix /tmp/hearth-ui --no-save --package-lock=false playwright@1.58.2 node@22.16.0
+      - /tmp/hearth-ui/node_modules/node/bin/node /tmp/hearth-ui/node_modules/playwright/cli.js install --with-deps chromium webkit
+  ui:smoke:
+    desc: Desktop and emulated iPhone/iPad usability E2E (run ui:setup first; requires local sample meals; optional -- local URL)
+    cmds: ["node tools/ui-smoke.ts {{.CLI_ARGS}}"]
   matching:eval:
     desc: Real Cloudflare matching evaluation (-- normalization|models|history|preview|preview-ui [report.json] [normalizer-model]; preview requires an empty owning thread Preview)
     cmds: ["node tools/matching-eval.ts {{.CLI_ARGS}}"]

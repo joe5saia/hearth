@@ -78,24 +78,25 @@ export function saveGrocery(db: D1Database, item: GroceryItem) {
 
     const grocery = { ...decoded, name: decoded.name.trim(), aisle: decoded.aisle.trim() };
 
-    yield* database(() =>
-      db
-        .prepare(`INSERT INTO groceries(id,name,url,aisle,quantity,unit,aliases) VALUES(?,?,?,?,?,?,?)
-        ON CONFLICT(id) DO UPDATE SET name=excluded.name,url=excluded.url,aisle=excluded.aisle,quantity=excluded.quantity,unit=excluded.unit,aliases=excluded.aliases`)
-        .bind(
-          grocery.id,
-          grocery.name,
-          grocery.url,
-          grocery.aisle,
-          grocery.quantity,
-          grocery.unit,
-          JSON.stringify(grocery.aliases),
-        )
-        .run(),
-    );
+    yield* database(() => groceryStatement(db, grocery).run());
 
     return { grocery };
   });
+}
+
+export function groceryStatement(db: D1Database, grocery: GroceryItem) {
+  return db
+    .prepare(`INSERT INTO groceries(id,name,url,aisle,quantity,unit,aliases) VALUES(?,?,?,?,?,?,?)
+        ON CONFLICT(id) DO UPDATE SET name=excluded.name,url=excluded.url,aisle=excluded.aisle,quantity=excluded.quantity,unit=excluded.unit,aliases=excluded.aliases`)
+    .bind(
+      grocery.id,
+      grocery.name,
+      grocery.url,
+      grocery.aisle,
+      grocery.quantity,
+      grocery.unit,
+      JSON.stringify(grocery.aliases),
+    );
 }
 
 export function deleteGrocery(db: D1Database, id: GroceryId) {

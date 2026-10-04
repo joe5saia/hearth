@@ -39,7 +39,6 @@ import {
   checkKey,
   dateKey,
   displayAmount,
-  purchaseAmount,
   quantity,
   shoppingList,
   units,
@@ -66,6 +65,20 @@ import {
 } from "./domain";
 
 type Page = "plan" | "recipes" | "shopping" | "groceries";
+
+type ShoppingEdit = { kind: "order"; order: ShoppingOrder } | { kind: "check"; key: string; checked: 0 | 1 };
+
+function applyShoppingEdit(state: Pick<Household, "shoppingOrder" | "checks">, edit: ShoppingEdit) {
+  return edit.kind === "order"
+    ? { checks: state.checks, shoppingOrder: edit.order }
+    : {
+        shoppingOrder: state.shoppingOrder,
+        checks: [
+          ...state.checks.filter((entry) => entry.key !== edit.key),
+          ...(edit.checked ? [{ key: edit.key, checked: edit.checked }] : []),
+        ],
+      };
+}
 
 type Modal =
   | { kind: "collections" }
@@ -250,38 +263,96 @@ export function App() {
   const [extra, setExtra] = useState("");
   const [hideChecked, setHideChecked] = useState(false);
   const [shoppingMode, setShoppingMode] = useState(false);
+  const [shoppingPending, setShoppingPending] = useState(0);
+  const shoppingEdits = useRef<ShoppingEdit[]>([]);
+  const shoppingWrites = useRef<Promise<unknown>>(Promise.resolve());
+  const shoppingRevision = useRef(0);
+  const confirmedShopping = useRef<Pick<Household, "shoppingOrder" | "checks">>(emptyHousehold);
   const [timerHeaderHost, setTimerHeaderHost] = useState<HTMLDivElement | null>(null);
   const [timerDialogHost, setTimerDialogHost] = useState<HTMLDivElement | null>(null);
   const weekInput = useRef<HTMLInputElement>(null);
-  const topbar = useRef<HTMLDivElement>(null);
   const chatgptButton = useRef<HTMLButtonElement>(null);
 
-  useEffect(() => {
-    const header = topbar.current;
-
-    if (!header) return;
-
-    const observer = new ResizeObserver(() => {
-      header.parentElement?.style.setProperty(
-        "--app-header-height",
-        `${header.getBoundingClientRect().height}px`,
-      );
-    });
-
-    observer.observe(header);
-
-    return () => observer.disconnect();
-  }, []);
-
   const refresh = useCallback(async () => {
+    const revision = shoppingRevision.current;
     const response = await api("household");
-    setData(Schema.decodeUnknownSync(HouseholdSchema)(await response.json()));
+    const household = Schema.decodeUnknownSync(HouseholdSchema)(await response.json());
+
+    // A refresh started before a shopping edit must not replace newer acknowledged/optimistic state.
+    if (revision === shoppingRevision.current) {
+      confirmedShopping.current = { checks: household.checks, shoppingOrder: household.shoppingOrder };
+    }
+
+    setData({ ...household, ...shoppingEdits.current.reduce(applyShoppingEdit, confirmedShopping.current) });
     setLoaded(true);
   }, []);
+
+  const saveShoppingEdit = (edit: ShoppingEdit) => {
+    shoppingEdits.current.push(edit);
+    shoppingRevision.current++;
+    setShoppingPending(shoppingEdits.current.length);
+    setError("");
+    setData((current) => ({ ...current, ...applyShoppingEdit(current, edit) }));
+
+    const saved = shoppingWrites.current.then(async () => {
+      let acknowledged = false;
+
+      try {
+        await api(
+          edit.kind === "order" ? "shopping-order" : "checks",
+          "PUT",
+          edit.kind === "order" ? edit.order : { key: edit.key, checked: edit.checked },
+        );
+        acknowledged = true;
+        shoppingRevision.current++;
+        confirmedShopping.current = applyShoppingEdit(confirmedShopping.current, edit);
+
+        if (edit.kind === "order") setToast("Store route saved");
+
+        if (shoppingEdits.current.at(-1) === edit) await refresh();
+      } catch (failure) {
+        const superseded = shoppingEdits.current
+          .slice(shoppingEdits.current.indexOf(edit) + 1)
+          .some(
+            (pending) =>
+              pending.kind === edit.kind &&
+              (edit.kind === "order" || (pending.kind === "check" && pending.key === edit.key)),
+          );
+
+        if (!superseded)
+          setError(
+            acknowledged
+              ? "Your shopping change was saved, but the household could not be refreshed. Reload to retry."
+              : failure instanceof Error
+                ? failure.message
+                : "Please try again.",
+          );
+      } finally {
+        shoppingEdits.current = shoppingEdits.current.filter((pending) => pending !== edit);
+        shoppingRevision.current++;
+        const shopping = shoppingEdits.current.reduce(applyShoppingEdit, confirmedShopping.current);
+        setData((current) => ({ ...current, ...shopping }));
+        setShoppingPending(shoppingEdits.current.length);
+      }
+
+      return acknowledged;
+    });
+
+    shoppingWrites.current = saved;
+
+    return saved;
+  };
 
   useEffect(() => {
     refresh().catch((failure: Error) => setError(failure.message));
   }, [refresh]);
+  useEffect(() => {
+    if (!shoppingPending) return;
+    const warn = (event: BeforeUnloadEvent) => event.preventDefault();
+    window.addEventListener("beforeunload", warn);
+
+    return () => window.removeEventListener("beforeunload", warn);
+  }, [shoppingPending]);
   useEffect(() => {
     const sync = () => setPage(pageFromHash());
     window.addEventListener("hashchange", sync);
@@ -398,30 +469,6 @@ export function App() {
   const totalCompleted = completed + data.extras.filter((item) => item.checked).length;
   const rangeMeals = data.meals.filter((meal) => meal.date >= start && meal.date <= end);
 
-  const exportList = () => {
-    const text = [
-      `Hearth shopping list · ${start} to ${end}`,
-      "",
-      ...items.map(
-        (item) =>
-          `${isChecked(checkKey(item, start, end)) ? "[x]" : "[ ]"} ${item.grocery?.aisle ? `[Aisle ${item.grocery.aisle}] ` : ""}${item.name} — ${purchaseAmount(item)}; need ${item.needs.map(displayAmount).join(" + ")}${item.warnings.length ? `\n  WARNING: ${item.warnings.join(" ")}` : ""}`,
-      ),
-      "",
-      "Household extras",
-      ...data.extras.map((item) => `${item.checked ? "[x]" : "[ ]"} ${item.name}`),
-      "",
-      "Meal notes (not included in ingredient totals)",
-      ...rangeMeals.flatMap((meal) => (meal.note ? [`${meal.date}: ${meal.note}`] : [])),
-    ].join("\n");
-
-    const url = URL.createObjectURL(new Blob([text], { type: "text/plain" }));
-    const anchor = document.createElement("a");
-    anchor.href = url;
-    anchor.download = `hearth-shopping-${start}.txt`;
-    anchor.click();
-    URL.revokeObjectURL(url);
-  };
-
   return (
     <div className={`app-shell${page === "shopping" && shoppingMode ? " shopping-mode" : ""}`}>
       <aside className="sidebar">
@@ -460,7 +507,7 @@ export function App() {
         </nav>
       </aside>
       <main>
-        <div className="topbar" ref={topbar}>
+        <div className="topbar">
           <a className="mobile-brand" href="#plan" aria-label="Hearth meal plan">
             <picture>
               <source media="(min-width: 601px)" srcSet="/brand/icon-small.svg" />
@@ -526,10 +573,6 @@ export function App() {
               ) : page === "recipes" ? (
                 <button className="primary" onClick={newRecipe}>
                   <Plus size={17} /> Add a recipe
-                </button>
-              ) : page === "shopping" ? (
-                <button className="secondary" onClick={exportList}>
-                  <ArrowDownToLine size={17} /> Export list
                 </button>
               ) : null}
             </header>
@@ -717,41 +760,6 @@ export function App() {
                     Shop this week <ArrowRight size={16} />
                   </button>
                 </div>
-                {data.recipes.length > 0 && (
-                  <section className="inspiration">
-                    <div className="section-heading">
-                      <div>
-                        <h2>A few familiar favorites</h2>
-                        <p>Good ideas for the days still open.</p>
-                      </div>
-                      <button className="text-button" onClick={() => navigate("recipes")}>
-                        All saved recipes <ArrowRight size={16} />
-                      </button>
-                    </div>
-                    <div className="recipe-tiles">
-                      {data.recipes.slice(0, 4).map((recipe) => (
-                        <button
-                          key={recipe.id}
-                          className="recipe-tile"
-                          onClick={() => setModal({ kind: "recipe", recipe })}
-                        >
-                          <Photo recipe={recipe} />
-                          <div>
-                            <span className="category-label">{recipe.category}</span>
-                            <h3>{recipe.title}</h3>
-                            <p>
-                              <Clock3 size={13} /> {recipe.minutes} min <span>·</span>
-                              <Users size={13} /> {recipe.servings} servings
-                            </p>
-                          </div>
-                          <span className="tile-arrow">
-                            <ArrowRight size={16} />
-                          </span>
-                        </button>
-                      ))}
-                    </div>
-                  </section>
-                )}
               </>
             )}
             {page === "recipes" && (
@@ -932,32 +940,50 @@ export function App() {
                 <div className="shopping-summary">
                   <div role="status">
                     <strong>
-                      {totalItems === 0
-                        ? "Your list is ready to fill"
-                        : totalCompleted === totalItems
-                          ? "All done. Happy cooking!"
-                          : `${totalItems - totalCompleted} items left to pick up`}
+                      {shoppingMode
+                        ? totalItems === 0
+                          ? "Empty list"
+                          : totalCompleted === totalItems
+                            ? "All done!"
+                            : `${totalItems - totalCompleted} left`
+                        : totalItems === 0
+                          ? "Your list is ready to fill"
+                          : totalCompleted === totalItems
+                            ? "All done. Happy cooking!"
+                            : `${totalItems - totalCompleted} items left to pick up`}
                     </strong>
-                    <span>
-                      {totalCompleted} of {totalItems} checked, including household extras
+                    <span className={shoppingPending > 0 ? "shopping-save-status" : undefined}>
+                      {shoppingPending > 0
+                        ? shoppingMode
+                          ? "Saving…"
+                          : "Saving changes…"
+                        : `${totalCompleted} of ${totalItems} checked, including household extras`}
                     </span>
                   </div>
                   <div className="shopping-controls">
                     <button
                       className={shoppingMode ? "primary" : "secondary"}
+                      aria-label={shoppingMode ? "Exit shopping mode" : "Shopping mode"}
                       aria-pressed={shoppingMode}
                       onClick={() => setShoppingMode(!shoppingMode)}
                     >
                       <ShoppingBasket size={16} />
-                      {shoppingMode ? "Exit shopping mode" : "Shopping mode"}
+                      {shoppingMode ? "Exit" : "Shopping mode"}
                     </button>
                     <button
                       className={`secondary ${hideChecked ? "selected" : ""}`}
+                      aria-label={hideChecked ? "Show checked items" : "Hide checked items"}
                       aria-pressed={hideChecked}
                       onClick={() => setHideChecked(!hideChecked)}
                     >
                       <SlidersHorizontal size={16} />{" "}
-                      {hideChecked ? "Show checked items" : "Hide checked items"}
+                      {shoppingMode
+                        ? hideChecked
+                          ? "Show checked"
+                          : "Hide checked"
+                        : hideChecked
+                          ? "Show checked items"
+                          : "Hide checked items"}
                     </button>
                   </div>
                 </div>
@@ -987,13 +1013,20 @@ export function App() {
                       groceries={data.groceries}
                       order={data.shoppingOrder}
                       busy={busy}
+                      shoppingMode={shoppingMode}
                       hideChecked={hideChecked}
                       checked={(item) => isChecked(checkKey(item, start, end))}
                       toggle={(item) => {
                         const key = checkKey(item, start, end);
-                        void mutate("checks", "PUT", { key, checked: isChecked(key) ? 0 : 1 });
+
+                        const pending = shoppingEdits.current.findLast(
+                          (edit) => edit.kind === "check" && edit.key === key,
+                        );
+
+                        const checked = pending?.kind === "check" ? pending.checked : isChecked(key) ? 1 : 0;
+                        void saveShoppingEdit({ kind: "check", key, checked: checked ? 0 : 1 });
                       }}
-                      saveOrder={(order) => mutate("shopping-order", "PUT", order, "Store route saved")}
+                      saveOrder={(order) => saveShoppingEdit({ kind: "order", order })}
                       edit={(item) => setModal({ kind: "grocery", item })}
                       manage={() => navigate("groceries")}
                     />

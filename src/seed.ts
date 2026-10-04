@@ -1,5 +1,81 @@
 import { Schema } from "effect";
-import { addDays, weekStart, RecipeSchema, MealSchema } from "./domain";
+import { addDays, weekStart, RecipeSchema, MealSchema, GroceryItemSchema } from "./domain";
+
+// Product links are illustrative; sample data never represents a live store catalog.
+export const sampleGroceries = Schema.decodeUnknownSync(Schema.Array(GroceryItemSchema))([
+  {
+    id: "sample-avocados",
+    name: "Fresh avocados",
+    aliases: ["Avocado"],
+    quantity: 1,
+    unit: "each",
+    aisle: "Produce",
+    url: "https://example.com/groceries/avocados",
+  },
+  {
+    id: "sample-tomatoes",
+    name: "Cherry tomatoes",
+    aliases: ["Cherry tomatoes"],
+    quantity: 500,
+    unit: "g",
+    aisle: "Produce",
+    url: "https://example.com/groceries/tomatoes",
+  },
+  {
+    id: "sample-spinach",
+    name: "Baby spinach",
+    aliases: ["Spinach"],
+    quantity: 200,
+    unit: "g",
+    aisle: "Produce",
+    url: "",
+  },
+  {
+    id: "sample-pasta",
+    name: "Penne pasta",
+    aliases: ["Pasta"],
+    quantity: 500,
+    unit: "g",
+    aisle: "4",
+    url: "https://example.com/groceries/pasta",
+  },
+  {
+    id: "sample-rice",
+    name: "Long-grain rice",
+    aliases: ["Rice"],
+    quantity: 500,
+    unit: "g",
+    aisle: "4",
+    url: "",
+  },
+  {
+    id: "sample-beans",
+    name: "Canned black beans",
+    aliases: ["Black beans"],
+    quantity: 1,
+    unit: "can",
+    aisle: "5",
+    url: "https://example.com/groceries/black-beans",
+  },
+  {
+    id: "sample-chicken",
+    name: "Boneless chicken thighs",
+    aliases: ["Chicken thighs"],
+    quantity: 500,
+    unit: "g",
+    aisle: "Meat",
+    url: "",
+  },
+  {
+    id: "sample-oil",
+    name: "Extra virgin olive oil",
+    aliases: ["Olive oil"],
+    quantity: 500,
+    unit: "ml",
+    aisle: "6",
+    url: "https://example.com/groceries/olive-oil",
+  },
+]);
 
 export const sampleRecipes = Schema.decodeUnknownSync(Schema.Array(RecipeSchema))([
   {

@@ -29,6 +29,7 @@ const products: GroceryItem[] = [
   { id: `${prefix}-oil`, name: "Olive oil", aliases: ["oil"], quantity: 500, unit: "ml", aisle: "10", url: "https://example.com/oil" },
   { id: `${prefix}-bread`, name: "Whole-wheat bread", aliases: ["bread"], quantity: 20, unit: "slice", aisle: "Bakery", url: "https://example.com/bread" },
   { id: `${prefix}-limes`, name: "Fresh limes · 2 lb bag", aliases: ["lime"], quantity: 2, unit: "lb", aisle: "Produce", url: "https://www.shoprite.com/sm/pickup/rsid/3000/product/fresh-limes-2-lb-bag-id-00000000096867" },
+  { id: `${prefix}-oats`, name: "Rolled oats", aliases: [], quantity: 500, unit: "g", aisle: "10", url: "" },
 ];
 const recipes: Recipe[] = [
   { id: `${prefix}-dinner`, title: "Lime rice bowls", description: "A simple weeknight dinner.", servings: 2, minutes: 30, category: "", photo: "", source: "", rating: "neutral", instructions: ["Cook the rice and serve with lime."], ingredients: [
@@ -135,10 +136,64 @@ try {
   browser("wait", "--fn", "!document.querySelector('[aria-label=\"Move Aisle Bakery up\"]').disabled");
   browser("click", '[aria-label="Move Aisle Bakery up"]');
   browser("wait", "--fn", "document.querySelector('.route-aisle h3').textContent === 'Aisle Bakery'");
-  browser("click", '[aria-label="Move Olive oil up"]');
+  browser("wait", "--fn", "!document.querySelector('[aria-label=\"Move Olive oil up\"]').disabled");
+  submit('[aria-label="Move Olive oil up"]');
   browser("wait", "--fn", "!document.querySelector('[aria-label=\"Move Olive oil down\"]').disabled");
   browser("set", "viewport", "390", "844", "2");
   check("document.documentElement.scrollWidth <= innerWidth && [...document.querySelectorAll('.route-move button')].every(el => el.getBoundingClientRect().width >= 44 && el.getBoundingClientRect().height >= 44)", "narrow route editor fits and has 44px reorder controls");
+  check("[...document.querySelectorAll('.route-drag')].every(el => el.getBoundingClientRect().width >= 44 && el.getBoundingClientRect().height >= 44)", "drag handles retain 44px targets");
+  const aisleOrder = () => JSON.parse(browser("eval", "[...document.querySelector('[aria-label=\"Arrange Aisle 10\"]').querySelectorAll('.route-product > span')].map(el => el.childNodes[0].textContent)"));
+  const dragPoints = () => {
+    browser("eval", "document.querySelector('[aria-label=\"Arrange Aisle 10\"]').scrollIntoView({block:'center'})");
+    browser("eval", "new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)))");
+    return JSON.parse(browser("eval", "(() => { const aisle = document.querySelector('[aria-label=\"Arrange Aisle 10\"]'); const source = aisle.querySelector('[aria-label=\"Drag Olive oil within Aisle 10\"]').getBoundingClientRect(); const target = [...aisle.querySelectorAll('.route-product')].find(el => !el.textContent.includes('Olive oil') && el === aisle.querySelector('.route-product:last-child')) ?? aisle.querySelector('.route-product'); const rect = target.getBoundingClientRect(); return { x: source.left + source.width / 2, y: source.top + source.height / 2, end: rect.top + rect.height / 2 + (source.top < rect.top ? 5 : -5) }; })()"));
+  };
+  assert.deepEqual(aisleOrder(), ["Olive oil", "Long-grain rice", "Rolled oats"]);
+  const beforeDrag = (await household()).shoppingOrder;
+  let point = dragPoints();
+  browser("mouse", "move", String(Math.round(point.x)), String(Math.round(point.y)));
+  browser("mouse", "down", "left");
+  browser("mouse", "move", String(Math.round(point.x)), String(Math.round(point.end)));
+  check("!!document.querySelector('.is-dragging') && !!document.querySelector('.drop-target')", "dragging shows the moving row and drop target");
+  assert.deepEqual((await household()).shoppingOrder, beforeDrag, "Drag must not save until dropped.");
+  browser("mouse", "up", "left");
+  browser("wait", "--fn", "document.querySelector('[aria-label=\"Arrange Aisle 10\"] .route-product:last-child > span').textContent.startsWith('Olive oil') && !document.querySelector('[aria-label=\"Drag Olive oil within Aisle 10\"]').disabled");
+  assert.deepEqual(aisleOrder(), ["Long-grain rice", "Rolled oats", "Olive oil"], "Multi-position drag must insert, not swap.");
+  const afterDrag = (await household()).shoppingOrder;
+  assert.deepEqual(afterDrag.aisles, beforeDrag.aisles);
+  assert.deepEqual(afterDrag.items.filter(key => key.includes('-bread') || key.includes('-limes')), beforeDrag.items.filter(key => key.includes('-bread') || key.includes('-limes')));
+  console.log("PASS mouse drag persists insertion order without changing other aisles");
+
+  // Native Chromium touch input, not synthetic DOM PointerEvents; no browser dependency needed.
+  const socket = new WebSocket(browser("get", "cdp-url"));
+  await new Promise<void>((resolve, reject) => { socket.addEventListener("open", () => resolve(), { once: true }); socket.addEventListener("error", reject, { once: true }); });
+  let sequence = 0;
+  let sessionId: string | undefined;
+  const pending = new Map<number, { resolve: (value: any) => void; reject: (error: Error) => void }>();
+  socket.addEventListener("message", event => { const message = JSON.parse(String(event.data)); const request = pending.get(message.id); if (!request) return; pending.delete(message.id); message.error ? request.reject(new Error(message.error.message)) : request.resolve(message.result); });
+  const cdp = (method: string, params: object = {}) => new Promise<any>((resolve, reject) => { const id = ++sequence; pending.set(id, { resolve, reject }); socket.send(JSON.stringify({ id, method, params, sessionId })); });
+  try {
+    const { targetInfos } = await cdp("Target.getTargets");
+    const target = targetInfos.find((entry: any) => entry.type === "page" && entry.url.startsWith(url));
+    assert(target, "Local smoke tab must exist.");
+    sessionId = (await cdp("Target.attachToTarget", { targetId: target.targetId, flatten: true })).sessionId;
+    await cdp("Emulation.setTouchEmulationEnabled", { enabled: true, maxTouchPoints: 1 });
+    browser("eval", "window.lastDragPointer = ''; document.addEventListener('pointerdown', event => {window.lastDragPointer = event.pointerType;}, {once:true})");
+    point = dragPoints();
+    await cdp("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x: point.x, y: point.y }] });
+    await cdp("Input.dispatchTouchEvent", { type: "touchMove", touchPoints: [{ x: point.x, y: point.end }] });
+    check("window.lastDragPointer === 'touch' && !!document.querySelector('.drop-target')", "native touch activates the vertical drag handle");
+    await cdp("Input.dispatchTouchEvent", { type: "touchCancel", touchPoints: [] });
+    check("!document.querySelector('.is-dragging')", "canceling a touch drag clears feedback");
+    assert.deepEqual((await household()).shoppingOrder, afterDrag, "Canceled touch must not save.");
+    await cdp("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x: point.x, y: point.y }] });
+    await cdp("Input.dispatchTouchEvent", { type: "touchMove", touchPoints: [{ x: point.x, y: point.end }] });
+    await cdp("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+    browser("wait", "--fn", "document.querySelector('[aria-label=\"Arrange Aisle 10\"] .route-product > span').textContent.startsWith('Olive oil') && !document.querySelector('[aria-label=\"Drag Olive oil within Aisle 10\"]').disabled");
+    assert.deepEqual(aisleOrder(), ["Olive oil", "Long-grain rice", "Rolled oats"]);
+    assert.deepEqual((await household()).shoppingOrder, beforeDrag, "Reverse touch drag must restore the persisted order.");
+    console.log("PASS touch drag up persists and touch cancellation leaves order unchanged");
+  } finally { socket.close(); }
   browser("eval", "document.querySelector('.route-editor').scrollIntoView()");
   screenshot("grocery-route");
   browser("reload");
@@ -148,23 +203,30 @@ try {
   browser("check", '[aria-label="Picked up Long-grain rice"]');
   browser("wait", "--fn", "!document.querySelector('[aria-label=\"Picked up Long-grain rice\"]').disabled");
   browser("find", "role", "button", "click", "--name", "Hide checked items", "--exact");
-  check("!document.querySelector('[aria-label=\"Picked up Long-grain rice\"]') && document.querySelector('.shopping-summary').textContent.includes('4 items left')", "checked products hide and remaining count updates");
+  check("!document.querySelector('[aria-label=\"Picked up Long-grain rice\"]') && document.querySelector('.shopping-summary').textContent.includes('4 left')", "checked products hide and remaining count updates");
   browser("find", "role", "button", "click", "--name", "Show checked items", "--exact");
   browser("uncheck", '[aria-label="Picked up Long-grain rice"]');
   browser("wait", "--fn", "!document.querySelector('[aria-label=\"Picked up Long-grain rice\"]').disabled");
   check("document.documentElement.scrollWidth <= innerWidth", "390px shopping mode has no horizontal overflow");
+  check("[...document.querySelectorAll('.purchase-row')].filter(el => !el.querySelector('.purchase-warning')).every(el => el.getBoundingClientRect().height <= 88) && [...document.querySelectorAll('.purchase-details summary')].every(el => el.getBoundingClientRect().height >= 44)", "compact rows retain 44px disclosure targets");
+  check("[...document.querySelectorAll('.purchase-warning')].every(el => el.getClientRects().length > 0) && !document.querySelector('.purchase-details[open]')", "warnings remain visible with details collapsed");
+  browser("click", '[aria-label="Details for Long-grain rice"]');
+  check("[...document.querySelectorAll('.purchase-details[open]')].some(el => el.textContent.includes('Lime rice bowls') && el.textContent.includes('Rice for lunch') && el.querySelector('a').href === 'https://example.com/rice')", "expanded linked row retains recipe sources and product URL");
+  browser("click", '.purchase-details[open] button');
+  browser("wait", ".grocery-form");
+  check("document.querySelector('.grocery-form input').value === 'Long-grain rice'", "expanded linked row edits the correct product");
+  browser("find", "role", "button", "click", "--name", "Cancel", "--exact");
+  browser("click", '[aria-label="Details for Long-grain rice"]');
   browser("eval", "scrollTo(0,0)");
   screenshot("shopping-mode-mobile");
   browser("eval", "document.querySelector('.purchase-group').scrollIntoView(); scrollBy(0, -285)");
-  check("document.querySelector('.shopping-summary').getBoundingClientRect().top >= document.querySelector('.topbar').getBoundingClientRect().bottom", "sticky shopping controls remain below the app header");
+  check("Math.abs(document.querySelector('.shopping-summary').getBoundingClientRect().top) <= 1 && !document.querySelector('.topbar').getClientRects().length", "compact shopping controls stay pinned with app headers hidden");
   screenshot("shopping-mode-in-store");
   browser("set", "viewport", "1280", "1000", "2");
   browser("eval", "scrollTo(0,0)");
   screenshot("shopping-mode-desktop");
-  browser("eval", "(() => { const original = URL.createObjectURL; URL.createObjectURL = function(blob) { blob.text().then(text => window.exportedList = text); return original.call(this, blob); }; })()");
-  browser("find", "role", "button", "click", "--name", "Export list", "--exact");
-  browser("wait", "--fn", "!!window.exportedList");
-  check("window.exportedList.includes('Buy 1 × 500 g; need 450 g') && window.exportedList.includes('WARNING: Cannot convert') && window.exportedList.indexOf('[Aisle Bakery]') < window.exportedList.indexOf('[Aisle 2]')", "export preserves purchase counts, warnings, and route order");
+  browser("find", "role", "button", "click", "--name", "Exit shopping mode", "--exact");
+  check("!document.querySelector('.shopping-mode') && document.querySelector('.topbar').getClientRects().length > 0 && document.querySelector('.shopping-range').getClientRects().length > 0 && !document.body.textContent.includes('Export list')", "exit restores normal page headers without removed export control");
   console.log("Grocery browser smoke passed.");
 } catch (error) {
   console.error(browser("eval", "({form: document.querySelector('.grocery-form')?.innerText, fields: [...document.querySelectorAll('.grocery-form input')].map(input => ({type:input.type,value:input.value,valid:input.validity.valid,message:input.validationMessage}))})"));

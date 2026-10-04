@@ -635,7 +635,7 @@ export function recipeMcp(db: D1Database, ai?: Ai) {
         "add_demo_data",
         {
           description:
-            "Populate an empty household with the app's sample recipes, meal plan and shopping extra. Fails if ANY recipes exist. today is an explicit YYYY-MM-DD date in the user's calendar. This creates real shared data; use only when the user requests sample content.",
+            "Populate an empty household with the app's sample recipes, linked grocery products, meal plan and shopping extra. Existing matching grocery products are reused, not overwritten. Fails if ANY recipes exist. today is an explicit YYYY-MM-DD date in the user's calendar. This creates real shared data; use only when the user requests sample content.",
           inputSchema: mcpSchema(Schema.Struct({ today: date })),
           outputSchema: mcpSchema(ok),
           annotations: {

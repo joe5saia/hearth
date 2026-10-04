@@ -910,6 +910,41 @@ describe("real Worker with disposable SQLite D1", () => {
     expect(
       household.recipes.find((recipe) => recipe.id === sampleRecipes[0].id)?.ingredients[0].groceryItemId,
     ).toBe("demo-link");
+    expect(household.groceries).toHaveLength(8);
+    expect(household.groceries.find((item) => item.id === "demo-link")).toEqual(grocery);
+    expect(household.groceries.some((item) => item.id === "sample-chicken")).toBe(false);
+
+    const items = shoppingList(
+      household.recipes,
+      household.meals,
+      "2026-09-21",
+      "2026-09-27",
+      household.groceries,
+    );
+
+    expect(items.find((item) => item.grocery?.id === "sample-pasta")).toMatchObject({
+      packages: 2,
+      needs: [{ quantity: 600, unit: "g" }],
+      warnings: [],
+    });
+    expect(items.find((item) => item.grocery?.id === "sample-avocados")).toMatchObject({
+      packages: 3,
+      needs: [{ quantity: 3, unit: "each" }],
+    });
+    expect(items.find((item) => item.grocery?.id === "sample-oil")?.packages).toBe(1);
+    expect(items.find((item) => item.grocery?.id === "sample-oil")?.warnings[0]).toContain("smaller pack");
+    expect(items.some((item) => !item.grocery)).toBe(true);
+    expect((await send("demo?today=2026-09-27", "POST", "{}")).status).toBe(409);
+    expect(await (await worker.dispatchFetch("http://localhost/api/household")).json()).toEqual(household);
+  });
+  it("rolls back sample groceries and recipes when the demo batch cannot finish", async () => {
+    expect(
+      (await send("extras", "PUT", JSON.stringify({ id: "sample-extra", name: "Keep this", checked: 0 })))
+        .status,
+    ).toBe(200);
+    const before = await (await worker.dispatchFetch("http://localhost/api/household")).json();
+    expect((await send("demo?today=2026-09-27", "POST", "{}")).status).toBe(500);
+    expect(await (await worker.dispatchFetch("http://localhost/api/household")).json()).toEqual(before);
   });
   it("imports a draft without writing, then persists reviewed fields and the exact source URL", async () => {
     const source =

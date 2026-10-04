@@ -6,6 +6,7 @@ import {
   type Recipe,
   type RecipeDraft,
   type Rating,
+  type GroceryItem,
 } from "./domain";
 import { getGroceries, linkIngredients } from "./groceries";
 import { Conflict, MissingReference, NotFound, ValidationError, database, stored } from "./storage";
@@ -65,15 +66,19 @@ export function getRecipes(db: D1Database, ids: readonly RecipeId[]) {
   });
 }
 
-export function matchRecipeIngredients(db: D1Database, recipes: readonly Recipe[]) {
+export function matchRecipeIngredients(
+  db: D1Database,
+  recipes: readonly Recipe[],
+  groceries?: readonly GroceryItem[],
+) {
   return Effect.gen(function* () {
-    const groceries = yield* getGroceries(db);
+    const catalog = groceries ?? (yield* getGroceries(db));
 
     return yield* Effect.forEach(recipes, (recipe) =>
       Effect.gen(function* () {
         return {
           ...recipe,
-          ingredients: yield* linkIngredients(recipe.ingredients, groceries),
+          ingredients: yield* linkIngredients(recipe.ingredients, catalog),
         };
       }),
     );

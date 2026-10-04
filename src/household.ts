@@ -16,8 +16,8 @@ import {
 } from "./domain";
 import { database, stored, ValidationError, MissingReference, NotFound, Conflict } from "./storage";
 import { parseRecipe, recipeStatement, matchRecipeIngredients, type RecipeRow } from "./recipes";
-import { parseGrocery, type GroceryRow } from "./groceries";
-import { sampleRecipes, sampleMeals } from "./seed";
+import { getGroceries, groceryStatement, matchGrocery, parseGrocery, type GroceryRow } from "./groceries";
+import { sampleRecipes, sampleMeals, sampleGroceries } from "./seed";
 
 const validate = <S extends Schema.Constraint>(schema: S, input: S["Type"], message: string) =>
   Schema.decodeUnknownEffect(schema)(input).pipe(Effect.mapError(() => new ValidationError({ message })));
@@ -207,9 +207,20 @@ export const addDemoData = (db: D1Database, today: CalendarDate) =>
       db.prepare("SELECT name FROM collections").all<{ name: string }>(),
     );
 
-    const linkedSamples = yield* matchRecipeIngredients(db, sampleRecipes);
+    const groceries = yield* getGroceries(db);
+
+    const additions = sampleGroceries.filter(
+      (sample) =>
+        !groceries.some(
+          (grocery) =>
+            grocery.id === sample.id || sample.aliases.some((alias) => matchGrocery(alias, [grocery])),
+        ),
+    );
+
+    const linkedSamples = yield* matchRecipeIngredients(db, sampleRecipes, [...groceries, ...additions]);
     yield* database(() =>
       db.batch([
+        ...additions.map((grocery) => groceryStatement(db, grocery)),
         ...linkedSamples.map((recipe) =>
           recipeStatement(db, {
             ...recipe,
