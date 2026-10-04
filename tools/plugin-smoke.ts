@@ -16,16 +16,21 @@ const screenshot = (name: string) => {
   settle();
   browser("screenshot", resolve(`.amp/in/artifacts/${name}.png`));
 };
+const openSetup = () => {
+  browser("click", '[aria-label="Page options"]');
+  browser("click", '[aria-label="Use Hearth in ChatGPT"]');
+};
 
 try {
   await mkdir(".amp/in/artifacts", { recursive: true });
   browser("open", url);
-  browser("wait", '[aria-label="Use Hearth in ChatGPT"]');
+  browser("wait", '[aria-label="Page options"]');
   for (const [width, height] of [[1280, 1000], [820, 900], [390, 844], [320, 740]]) {
     browser("set", "viewport", String(width), String(height), "2");
     settle();
     check("document.documentElement.scrollWidth <= innerWidth", `header fits at ${width}px`);
-    check("(() => { const r = document.querySelector('.chatgpt-open').getBoundingClientRect(); return r.width >= 44 && r.height >= 44 && r.right <= innerWidth; })()", `ChatGPT entry has a visible 44px target at ${width}px`);
+    browser("click", '[aria-label="Page options"]');
+    check("(() => { const r = document.querySelector('[aria-label=\"Use Hearth in ChatGPT\"]').getBoundingClientRect(); return r.width >= 44 && r.height >= 44 && r.right <= innerWidth; })()", `ChatGPT menu entry has a visible 44px target at ${width}px`);
     browser("click", '[aria-label="Use Hearth in ChatGPT"]');
     browser("wait", 'dialog[open] .chatgpt-setup');
     check("document.querySelector('dialog').getAttribute('aria-label') === 'Use Hearth in ChatGPT'", "dialog has an accessible name");
@@ -37,11 +42,11 @@ try {
     if (width === 390) screenshot("hearth-chatgpt-narrow");
     browser("press", "Escape");
     browser("wait", "--fn", "!document.querySelector('dialog[open]')");
-    browser("wait", "--fn", "document.activeElement.getAttribute('aria-label') === 'Use Hearth in ChatGPT'");
-    check("document.activeElement.getAttribute('aria-label') === 'Use Hearth in ChatGPT'", "Escape closes and restores focus");
+    browser("wait", "--fn", "document.activeElement.getAttribute('aria-label') === 'Page options'");
+    check("document.activeElement.getAttribute('aria-label') === 'Page options'", "Escape closes and restores focus to the menu trigger");
   }
   browser("set", "viewport", "390", "844", "2");
-  browser("click", '[aria-label="Use Hearth in ChatGPT"]');
+  openSetup();
   for (const index of [1, 2]) {
     const selector = `.chatgpt-setup details:nth-of-type(${index}) summary`;
     browser("eval", `document.querySelector(${JSON.stringify(selector)}).scrollIntoView({block:'center'})`);
@@ -53,7 +58,7 @@ try {
   check("document.querySelector('dialog').scrollWidth <= document.querySelector('dialog').clientWidth", "expanded setup and endpoint fit narrow layout");
   screenshot("hearth-chatgpt-update");
   browser("press", "Escape");
-  browser("click", '[aria-label="Use Hearth in ChatGPT"]');
+  openSetup();
   browser("click", '[aria-label="Close dialog"]');
   check("!document.querySelector('dialog[open]')", "close button dismisses dialog");
   console.log("Plugin browser smoke passed. External release downloads and ChatGPT installation require a published web archive and account access; not exercised.");

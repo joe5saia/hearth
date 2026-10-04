@@ -96,11 +96,11 @@ async function auditLayout(page: any, touch: boolean) {
       removedControls: [...document.querySelectorAll("button,a,h2")].filter((element) =>
         ["Export list", "A few familiar favorites"].includes(element.textContent?.trim() ?? "") && visible(element),
       ).length,
-      phoneChat: (innerWidth <= 600 || expectTouch && innerHeight <= 500) && [...document.querySelectorAll('[aria-label="Use Hearth in ChatGPT"]')].some(visible),
-      phoneHeadingMisaligned: innerWidth <= 600 && [...document.querySelectorAll(".page-heading")].some((heading) => {
+      phoneChat: (innerWidth <= 600 || expectTouch && innerHeight <= 500) && [...document.querySelectorAll('[aria-label="Use Hearth in ChatGPT"]')].some(element => visible(element) && !element.closest(".page-options")),
+      phoneHeadingMisaligned: innerWidth <= 600 && [...document.querySelectorAll(".topbar")].some((heading) => {
         if (!visible(heading)) return false;
         const title = heading.querySelector("h1")?.getBoundingClientRect();
-        const action = heading.querySelector("button")?.getBoundingClientRect();
+        const action = heading.querySelector(".page-add")?.getBoundingClientRect();
         return !!title && !!action && Math.abs(title.top - action.top) > 16;
       }),
     };
@@ -133,7 +133,7 @@ async function commonNavigation(page: any, touch: boolean, label: string, captur
   await check(label, page.context().browser()?.browserType().name() ?? "webkit", `${page.viewportSize().width}×${page.viewportSize().height}`, "meal plan navigation, date disclosure, and unsaved meal cancellation", async () => {
     await page.goto(`${root}/#plan`); await settle(page);
     await activate(page.getByRole("button", { name: "Next week" }), touch);
-    await activate(page.getByText("Jump to date", { exact: true }).first(), touch);
+    await activate(page.getByLabel("Jump to date", { exact: true }), touch);
     await auditLayout(page, touch);
     await activate(page.getByRole("button", { name: "Add a meal" }).first(), touch);
     const dialog = page.getByRole("dialog", { name: "Add a meal" });
@@ -157,6 +157,14 @@ async function commonNavigation(page: any, touch: boolean, label: string, captur
       await page.getByLabel("Preview recipe scale").selectOption("2");
       if (capture) await screenshot(page, `${label}-recipe-detail`);
       await auditLayout(page, touch);
+      for (const [name, destination] of [["Ingredients", "recipe-ingredients"], ["Steps", "recipe-steps"]]) {
+        await page.getByRole("link", { name, exact: true }).focus();
+        await page.keyboard.press("Enter");
+        assert.equal(new URL(page.url()).hash, "#recipes", "Cooking shortcuts must preserve app navigation");
+        assert.equal(await page.evaluate(() => document.activeElement?.id), destination, "Keyboard focus must follow the cooking shortcut");
+        await page.keyboard.press("Tab");
+        if (name === "Ingredients") assert(await page.getByLabel("Preview recipe scale").evaluate((element: HTMLElement) => element === document.activeElement), "Tab must continue from Ingredients, not return to the shortcut toolbar");
+      }
       await detail.evaluate((element: HTMLElement) => { element.scrollTop = element.scrollHeight; });
       assert(await detail.evaluate((element: HTMLElement) => element.scrollHeight <= element.clientHeight || element.scrollTop > 0), "long recipe details must scroll vertically");
       await cancelDialog(page);
@@ -182,6 +190,21 @@ async function commonNavigation(page: any, touch: boolean, label: string, captur
       await editor.getByRole("button", { name: "Close" }).last().click();
     });
     await cancelDialog(page);
+    for (const name of ["Import recipe", "Manage collections"]) {
+      for (const escape of [true, false]) {
+        const options = page.getByLabel("Page options", { exact: true });
+        await options.focus(); await page.keyboard.press("Enter");
+        await page.getByRole("button", { name, exact: true }).focus();
+        await page.keyboard.press("Enter");
+        await page.locator("dialog[open]").waitFor();
+        if (escape) {
+          await page.keyboard.press("Escape");
+          await page.locator("dialog[open]").waitFor({ state: "detached" });
+        } else await cancelDialog(page);
+        await settle(page);
+        assert(await options.evaluate((element: HTMLElement) => element === document.activeElement), `${name} dismissal must return focus to visible Page options`);
+      }
+    }
   });
 
   await check(label, page.context().browser()?.browserType().name() ?? "webkit", `${page.viewportSize().width}×${page.viewportSize().height}`, "groceries catalog and unsaved grocery cancellation", async () => {
@@ -246,6 +269,7 @@ async function shoppingAndTimers(page: any, touch: boolean, label: string, captu
       if ((await restored.isChecked()) !== was) await activate(restored, touch);
       await page.locator(".shopping-save-status").waitFor({ state: "detached" });
     }
+    await activate(page.getByLabel("Page options", { exact: true }), touch);
     await activate(page.getByRole("button", { name: "Arrange route" }), touch);
     assert(await page.locator(".route-editor").isVisible());
     await activate(page.getByRole("button", { name: "Shopping mode" }), touch);
@@ -360,6 +384,7 @@ async function shoppingAndTimers(page: any, touch: boolean, label: string, captu
       await auditLayout(page, touch);
       await page.setViewportSize(viewport);
     }
+    await activate(page.getByLabel("Page options", { exact: true }), touch);
     await activate(page.getByRole("button", { name: "Arrange route" }), touch);
     const route = page.getByRole("region", { name: `Arrange ${groupLabel}`, exact: true });
     const routeNames = await route.locator(".route-product > span").evaluateAll((nodes: Element[]) => nodes.map(node => node.childNodes[0].textContent));
@@ -458,6 +483,48 @@ try {
     if (await tablet.page.locator("dialog[open]").count()) await cancelDialog(tablet.page);
     await commonNavigation(tablet.page, true, "webkit-ipad-landscape", true);
     await shoppingAndTimers(tablet.page, true, "webkit-ipad-landscape", true);
+    await closeContext(tablet.context);
+
+    const enlarged = await makeContext(wk, { width: 320, height: 568 }, true, true);
+    const zoom = enlarged.page;
+    await zoom.goto(`${root}/#recipes`); await settle(zoom);
+    await activate(zoom.locator(".timer-toggle"), true);
+    await zoom.locator('[name="timerName"]').fill("Large text timer");
+    await zoom.locator('[name="timerMinutes"]').fill("2");
+    await activate(zoom.getByRole("button", { name: "Start timer", exact: true }), true);
+    await activate(zoom.getByRole("button", { name: "Collapse timers" }), true);
+    await zoom.locator(".recipe-row-main").first().tap();
+    await check("webkit-active-modal-320", "webkit", "320×568 DPR2", "active countdown, quick controls, title and Close do not overlap", async () => {
+      await zoom.locator(".recipe-detail").waitFor();
+      await auditLayout(zoom, true);
+      const heading = await zoom.locator(".modal-heading").boundingBox();
+      const timer = await zoom.locator(".timer-header").boundingBox();
+      const close = await zoom.getByRole("button", { name: "Close dialog" }).boundingBox();
+      assert(timer.y >= close.y + close.height, "active timer must use its own header row");
+      assert(timer.y + timer.height <= heading.y + heading.height, "timer must stay inside the dialog header");
+      for (const button of await zoom.locator(".timer-header-actions button").all()) {
+        const bounds = await button.boundingBox();
+        assert(bounds.width >= 44 && bounds.height >= 44);
+      }
+      await screenshot(zoom, "active-modal-320");
+    });
+    await cancelDialog(zoom);
+    await zoom.evaluate(() => { document.documentElement.style.fontSize = "200%"; });
+    for (const route of ["plan", "recipes", "shopping", "groceries"]) {
+      await check(`webkit-text200-${route}`, "webkit", "320×568 DPR2 200% text", "no horizontal overflow; labeled tabs and active countdown remain contained", async () => {
+        await zoom.locator(`nav a[href="#${route}"]`).tap();
+        await settle(zoom);
+        assert.equal(await zoom.evaluate(() => document.documentElement.scrollWidth - innerWidth), 0);
+        for (const label of await zoom.locator(".nav-label").all()) {
+          const bounds = await label.boundingBox();
+          const parent = await label.locator("..").boundingBox();
+          assert(bounds.x >= parent.x && bounds.x + bounds.width <= parent.x + parent.width + 1, "tab text must wrap within its target");
+        }
+        assert(await zoom.locator(".timer-toggle strong").evaluate((element: HTMLElement) => element.scrollWidth <= element.clientWidth), "countdown must not clip");
+        await screenshot(zoom, `text200-${route}`);
+      });
+    }
+    await closeContext(enlarged.context);
   } finally {
     await Promise.allSettled(contexts.map(closeContext));
     await Promise.allSettled([chrome.close(), wk.close()]);

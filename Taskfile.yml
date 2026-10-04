@@ -81,6 +81,12 @@ tasks:
   ui:smoke:
     desc: Desktop and emulated iPhone/iPad usability E2E (run ui:setup first; requires local sample meals; optional -- local URL)
     cmds: ["node tools/ui-smoke.ts {{.CLI_ARGS}}"]
+  ui:demo:
+    desc: Record a captioned mobile workflow demo with persisted-state assertions and cleanup (run ui:setup first; local sample household only)
+    cmds: ["node tools/ui-demo.ts {{.CLI_ARGS}}"]
+  ui:demo:smoke:
+    desc: Exercise demo save rejection and interrupted-recording cleanup against disposable local data (run serially after ui:setup)
+    cmds: ["node tools/ui-demo-failure-smoke.ts {{.CLI_ARGS}}"]
   matching:eval:
     desc: Real Cloudflare matching evaluation (-- normalization|models|history|preview|preview-ui [report.json] [normalizer-model]; preview requires an empty owning thread Preview)
     cmds: ["node tools/matching-eval.ts {{.CLI_ARGS}}"]

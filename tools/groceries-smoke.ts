@@ -79,6 +79,7 @@ try {
   browser("set", "viewport", "1280", "900", "2");
   browser("wait", ".grocery-manager");
   check("document.querySelector('.grocery-coverage').textContent.includes('5 / 6 ingredients linked')", "automatic linking and central coverage");
+  browser("click", ".grocery-coverage summary");
   submit('[aria-label="Edit recipe Lime rice bowls"]');
   browser("wait", '[aria-label="Ingredient 1 quantity"]');
   browser("fill", '[aria-label="Ingredient 1 quantity"]', "250");
@@ -131,6 +132,7 @@ try {
   check("[...document.querySelectorAll('.purchase-group h3')].map(el => el.textContent).join('|') === 'Aisle 2|Aisle 10|Aisle Bakery|Aisle Produce'", "numeric then alphabetical aisle order");
   check("[...document.querySelectorAll('.purchase-row')].find(el => el.textContent.includes('Long-grain rice')).textContent.includes('Buy 1 × 500 g') && [...document.querySelectorAll('.purchase-row')].find(el => el.textContent.includes('Long-grain rice')).textContent.includes('Need 450 g')", "combined recipes round up only after aggregation");
   check("[...document.querySelectorAll('.purchase-row')].find(el => el.textContent.includes('Fresh limes')).textContent.includes('Cannot convert') && [...document.querySelectorAll('.purchase-row')].find(el => el.textContent.includes('Whole-wheat bread')).textContent.includes('10×')", "incompatible units and excess-purchase warnings visible");
+  browser("click", '[aria-label="Page options"]');
   browser("find", "role", "button", "click", "--name", "Arrange route", "--exact");
   browser("click", '[aria-label="Move Aisle Bakery up"]');
   browser("wait", "--fn", "!document.querySelector('[aria-label=\"Move Aisle Bakery up\"]').disabled");

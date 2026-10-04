@@ -17,7 +17,6 @@ import {
   ChevronRight,
   Clock3,
   CookingPot,
-  Leaf,
   Plus,
   Search,
   ShoppingBasket,
@@ -27,6 +26,7 @@ import {
   ThumbsDown,
   ThumbsUp,
   Minus,
+  MoreHorizontal,
   Users,
   X,
   ExternalLink,
@@ -263,6 +263,7 @@ export function App() {
   const [extra, setExtra] = useState("");
   const [hideChecked, setHideChecked] = useState(false);
   const [shoppingMode, setShoppingMode] = useState(false);
+  const [arranging, setArranging] = useState(false);
   const [shoppingPending, setShoppingPending] = useState(0);
   const shoppingEdits = useRef<ShoppingEdit[]>([]);
   const shoppingWrites = useRef<Promise<unknown>>(Promise.resolve());
@@ -271,7 +272,7 @@ export function App() {
   const [timerHeaderHost, setTimerHeaderHost] = useState<HTMLDivElement | null>(null);
   const [timerDialogHost, setTimerDialogHost] = useState<HTMLDivElement | null>(null);
   const weekInput = useRef<HTMLInputElement>(null);
-  const chatgptButton = useRef<HTMLButtonElement>(null);
+  const pageOptions = useRef<HTMLElement>(null);
 
   const refresh = useCallback(async () => {
     const revision = shoppingRevision.current;
@@ -361,6 +362,8 @@ export function App() {
   }, []);
   useEffect(() => {
     window.scrollTo({ top: 0 });
+    setArranging(false);
+    pageOptions.current?.closest("details")?.removeAttribute("open");
   }, [page]);
   useEffect(() => {
     if (!toast) return;
@@ -481,58 +484,139 @@ export function App() {
             aria-current={page === "plan" ? "page" : undefined}
             className={page === "plan" ? "active" : ""}
           >
-            <CalendarDays size={19} /> Meal plan <span className="nav-dot" />
+            <CalendarDays size={19} /> <span className="nav-label">Meal plan</span>{" "}
+            <span className="nav-dot" />
           </a>
           <a
             href="#recipes"
             aria-current={page === "recipes" ? "page" : undefined}
             className={page === "recipes" ? "active" : ""}
           >
-            <BookOpen size={19} /> Recipes <span className="nav-count">{data.recipes.length}</span>
+            <BookOpen size={19} /> <span className="nav-label">Recipes</span>{" "}
+            <span className="nav-count">{data.recipes.length}</span>
           </a>
           <a
             href="#shopping"
             aria-current={page === "shopping" ? "page" : undefined}
             className={page === "shopping" ? "active" : ""}
           >
-            <ShoppingBasket size={19} /> Shopping list
+            <ShoppingBasket size={19} /> <span className="nav-label">Shopping list</span>
           </a>
           <a
             href="#groceries"
             aria-current={page === "groceries" ? "page" : undefined}
             className={page === "groceries" ? "active" : ""}
           >
-            <Package size={19} /> Grocery items
+            <Package size={19} /> <span className="nav-label">Groceries</span>
           </a>
         </nav>
       </aside>
       <main>
-        <div className="topbar">
+        <header className="topbar">
           <a className="mobile-brand" href="#plan" aria-label="Hearth meal plan">
-            <picture>
-              <source media="(min-width: 601px)" srcSet="/brand/icon-small.svg" />
-              <img src="/brand/logo.svg" alt="Hearth" width="136" height="37" />
-            </picture>
+            <img src="/brand/icon-small.svg" alt="Hearth" width="28" height="28" />
           </a>
+          <h1>
+            {page === "plan"
+              ? "Meal plan"
+              : page === "recipes"
+                ? "Recipes"
+                : page === "groceries"
+                  ? "Groceries"
+                  : "Shopping list"}
+          </h1>
           <div className="timer-slot" ref={setTimerHeaderHost} />
-          <button
-            className="secondary"
-            onClick={() => {
-              setError("");
-              setModal({ kind: "import" });
+          {page === "plan" ? (
+            <button className="primary page-add" aria-label="Add a meal" onClick={() => addMeal()}>
+              <Plus size={17} /> <span>Add meal</span>
+            </button>
+          ) : page === "recipes" ? (
+            <button className="primary page-add" aria-label="Add a recipe" onClick={newRecipe}>
+              <Plus size={17} /> <span>Add recipe</span>
+            </button>
+          ) : page === "groceries" ? (
+            <button
+              className="primary page-add"
+              aria-label="Add grocery item"
+              disabled={busy}
+              onClick={() => setModal({ kind: "grocery", item: newGrocery() })}
+            >
+              <Plus size={17} /> <span>Add item</span>
+            </button>
+          ) : null}
+          <details
+            className="page-options"
+            onKeyDown={(event) => {
+              if (event.key === "Escape") {
+                event.currentTarget.removeAttribute("open");
+                pageOptions.current?.focus();
+                event.stopPropagation();
+              }
+            }}
+            onBlur={(event) => {
+              if (!event.currentTarget.contains(event.relatedTarget))
+                event.currentTarget.removeAttribute("open");
             }}
           >
-            <ArrowDownToLine size={16} /> Import recipe
-          </button>
-          <button
-            ref={chatgptButton}
-            className="secondary chatgpt-open"
-            aria-label="Use Hearth in ChatGPT"
-            onClick={() => setModal({ kind: "chatgpt" })}
-          >
-            <MessageCircle size={18} /> <span>ChatGPT</span>
-          </button>
-        </div>
+            <summary ref={pageOptions} aria-label="Page options">
+              <MoreHorizontal size={20} />
+            </summary>
+            <div className="page-options-menu">
+              {page === "shopping" && (
+                <>
+                  <button
+                    aria-pressed={arranging}
+                    onClick={(event) => {
+                      event.currentTarget.closest("details")?.removeAttribute("open");
+                      setArranging(!arranging);
+                    }}
+                  >
+                    <SlidersHorizontal size={16} /> {arranging ? "Done arranging" : "Arrange route"}
+                  </button>
+                  <button
+                    onClick={(event) => {
+                      event.currentTarget.closest("details")?.removeAttribute("open");
+                      navigate("groceries");
+                    }}
+                  >
+                    <Package size={16} /> Manage grocery items
+                  </button>
+                </>
+              )}
+              {page === "recipes" && (
+                <>
+                  <button
+                    onClick={(event) => {
+                      event.currentTarget.closest("details")?.removeAttribute("open");
+                      setError("");
+                      setModal({ kind: "import" });
+                    }}
+                  >
+                    <ArrowDownToLine size={16} /> Import recipe
+                  </button>
+                  <button
+                    onClick={(event) => {
+                      event.currentTarget.closest("details")?.removeAttribute("open");
+                      setError("");
+                      setModal({ kind: "collections" });
+                    }}
+                  >
+                    <SlidersHorizontal size={16} /> Manage collections
+                  </button>
+                </>
+              )}
+              <button
+                aria-label="Use Hearth in ChatGPT"
+                onClick={(event) => {
+                  event.currentTarget.closest("details")?.removeAttribute("open");
+                  setModal({ kind: "chatgpt" });
+                }}
+              >
+                <MessageCircle size={18} /> Use Hearth in ChatGPT
+              </button>
+            </div>
+          </details>
+        </header>
         {error && !modal && (
           <div className="error" role="alert">
             {error}{" "}
@@ -554,40 +638,17 @@ export function App() {
           </div>
         ) : (
           <>
-            <header className={`page-heading ${page === "plan" ? "plan-heading" : ""}`}>
-              <div>
-                <h1>
-                  {page === "plan"
-                    ? "Meal Plan"
-                    : page === "recipes"
-                      ? "Recipes"
-                      : page === "groceries"
-                        ? "Grocery items"
-                        : "Shopping list"}
-                </h1>
-              </div>
-              {page === "plan" ? (
-                <button className="primary" onClick={() => addMeal()}>
-                  <Plus size={17} /> Add a meal
-                </button>
-              ) : page === "recipes" ? (
-                <button className="primary" onClick={newRecipe}>
-                  <Plus size={17} /> Add a recipe
-                </button>
-              ) : null}
-            </header>
             {page === "groceries" && (
               <GroceryManager
                 groceries={data.groceries}
                 recipes={data.recipes}
                 busy={busy}
-                add={() => setModal({ kind: "grocery", item: newGrocery() })}
                 edit={(item) => setModal({ kind: "grocery", item })}
                 editRecipe={(recipe) => setModal({ kind: "editor", recipe })}
                 match={matchGroceries}
               />
             )}
-            {data.recipes.length === 0 && (
+            {data.recipes.length === 0 && (page === "plan" || page === "recipes") && (
               <section className="welcome">
                 <Sprout size={36} />
                 <div>
@@ -614,60 +675,81 @@ export function App() {
               <>
                 <div className="section-toolbar">
                   <div className="week-navigation">
-                    <div className="button-group">
-                      <button aria-label="Previous week" onClick={() => setWeek(addDays(week, -7))}>
-                        <ChevronLeft size={17} />
-                      </button>
-                      <button aria-label="Next week" onClick={() => setWeek(addDays(week, 7))}>
-                        <ChevronRight size={17} />
-                      </button>
-                    </div>
-                    <h2>
-                      {readableDate(week, { month: "short", day: "numeric" })}
-                      {week.slice(0, 4) !== addDays(week, 6).slice(0, 4) && <span>, {week.slice(0, 4)}</span>}
-                      {" – "}
-                      {readableDate(addDays(week, 6), { month: "short", day: "numeric" })}
-                      <span>, {addDays(week, 6).slice(0, 4)}</span>
-                    </h2>
-                    <button className="today-button" onClick={() => setWeek(weekStart())}>
-                      This week
+                    <button
+                      className="icon-button"
+                      aria-label="Previous week"
+                      onClick={() => setWeek(addDays(week, -7))}
+                    >
+                      <ChevronLeft size={17} />
+                    </button>
+                    <details className="date-disclosure week-picker">
+                      <summary aria-label="Jump to date">
+                        <h2>
+                          {readableDate(week, { month: "short", day: "numeric" })}
+                          {week.slice(0, 4) !== addDays(week, 6).slice(0, 4) && (
+                            <span>, {week.slice(0, 4)}</span>
+                          )}
+                          {" – "}
+                          {readableDate(addDays(week, 6), { month: "short", day: "numeric" })}
+                          <span>, {addDays(week, 6).slice(0, 4)}</span>
+                        </h2>
+                        <ChevronDown size={16} />
+                      </summary>
+                      <form
+                        className="week-jump"
+                        key={week}
+                        onSubmit={(event) => {
+                          event.preventDefault();
+                          const date = weekInput.current?.value;
+
+                          if (date && validDate(date)) {
+                            setWeek(weekStart(Schema.decodeUnknownSync(DateSchema)(date)));
+                            event.currentTarget.closest("details")?.removeAttribute("open");
+                          }
+                        }}
+                      >
+                        <label htmlFor="week-jump">Jump to date</label>
+                        <input
+                          id="week-jump"
+                          ref={weekInput}
+                          type="date"
+                          required
+                          aria-label="Jump to week containing date"
+                          defaultValue={week}
+                        />
+                        <button className="today-button">Go</button>
+                        <button
+                          type="button"
+                          className="today-button"
+                          onClick={(event) => {
+                            setWeek(weekStart());
+                            event.currentTarget.closest("details")?.removeAttribute("open");
+                          }}
+                        >
+                          This week
+                        </button>
+                      </form>
+                    </details>
+                    <button
+                      className="icon-button"
+                      aria-label="Next week"
+                      onClick={() => setWeek(addDays(week, 7))}
+                    >
+                      <ChevronRight size={17} />
                     </button>
                   </div>
-                  <span className="muted small">
-                    <span className="olive-dot" /> {weekMeals.length} meals planned{" "}
-                    <span className="toolbar-separator">|</span>{" "}
-                    {new Set(weekMeals.map((meal) => meal.date)).size} of 7 days
-                  </span>
-                </div>
-                <details className="date-disclosure">
-                  <summary>
-                    <CalendarDays size={16} /> Jump to date <ChevronDown size={16} />
-                  </summary>
-                  <form
-                    className="week-jump"
-                    key={week}
-                    onSubmit={(event) => {
-                      event.preventDefault();
-                      const date = weekInput.current?.value;
-
-                      if (date && validDate(date))
-                        setWeek(weekStart(Schema.decodeUnknownSync(DateSchema)(date)));
+                  <button
+                    className="text-button shop-week"
+                    onClick={() => {
+                      setStart(week);
+                      setEnd(addDays(week, 6));
+                      navigate("shopping");
                     }}
                   >
-                    <label htmlFor="week-jump">
-                      <CalendarDays size={16} /> Jump to date
-                    </label>
-                    <input
-                      id="week-jump"
-                      ref={weekInput}
-                      type="date"
-                      required
-                      aria-label="Jump to week containing date"
-                      defaultValue={week}
-                    />
-                    <button className="today-button">Go</button>
-                  </form>
-                </details>
+                    <ShoppingBasket size={17} />
+                    <span>Shop this week</span>
+                  </button>
+                </div>
                 <div className="calendar">
                   {Array.from({ length: 7 }, (_, index) => {
                     const day = addDays(week, index);
@@ -692,6 +774,13 @@ export function App() {
                           <span>{readableDate(day, { weekday: "short" })}</span>
                           <span className="day-number">{Number(day.slice(-2))}</span>
                           {today && <small>Today</small>}
+                          <button
+                            className="add-day"
+                            aria-label={`Add meal for ${readableDate(day)}`}
+                            onClick={() => addMeal(day)}
+                          >
+                            <Plus size={17} />
+                          </button>
                         </div>
                         <div className="day-meals">
                           {meals.map((meal) => {
@@ -727,38 +816,13 @@ export function App() {
                           })}
                           {meals.length === 0 && (
                             <div className="open-day">
-                              <Leaf size={23} strokeWidth={1} />
-                              <p>
-                                A little room
-                                <br />
-                                for spontaneity
-                              </p>
+                              <p>No meals planned</p>
                             </div>
                           )}
-                          <button
-                            className="add-day"
-                            aria-label={`Add meal for ${readableDate(day)}`}
-                            onClick={() => addMeal(day)}
-                          >
-                            <Plus size={15} />
-                            <span>Add meal</span>
-                          </button>
                         </div>
                       </section>
                     );
                   })}
-                </div>
-                <div className="plan-footer">
-                  <button
-                    className="text-button"
-                    onClick={() => {
-                      setStart(week);
-                      setEnd(addDays(week, 6));
-                      navigate("shopping");
-                    }}
-                  >
-                    Shop this week <ArrowRight size={16} />
-                  </button>
                 </div>
               </>
             )}
@@ -769,13 +833,13 @@ export function App() {
                     <Search size={18} />
                     <input
                       aria-label="Search recipes"
-                      placeholder="Find a recipe or ingredient…"
+                      placeholder="Search recipes"
                       value={search}
                       onChange={(event) => setSearch(event.target.value)}
                     />
                   </label>
                   <label>
-                    <span className="muted small">Collection</span>
+                    <span className="sr-only">Collection</span>
                     <select
                       aria-label="Filter by collection"
                       value={
@@ -796,18 +860,10 @@ export function App() {
                       ))}
                     </select>
                   </label>
-                  <button
-                    className="secondary"
-                    onClick={() => {
-                      setError("");
-                      setModal({ kind: "collections" });
-                    }}
-                  >
-                    <SlidersHorizontal size={16} /> Manage collections
-                  </button>
                 </div>
                 <p className="muted small">
                   {matchingRecipes.length} {matchingRecipes.length === 1 ? "recipe" : "recipes"}
+                  {selectedCollection && ` · ${selectedCollection.name}`}
                 </p>
                 <div className="recipe-list">
                   {matchingRecipes.map((recipe) => (
@@ -835,29 +891,52 @@ export function App() {
                         </div>
                       </button>
                       <div className="recipe-row-actions">
-                        <div className="recipe-rating" role="group" aria-label={`Rate ${recipe.title}`}>
-                          {(["up", "neutral", "down"] as const).map((rating) => (
-                            <button
-                              key={rating}
-                              type="button"
-                              className={`rating-${rating}`}
-                              aria-label={`${rating === "up" ? "Thumbs up" : rating === "down" ? "Thumbs down" : "Neutral"} for ${recipe.title}`}
-                              aria-pressed={recipe.rating === rating}
-                              disabled={busy}
-                              onClick={() =>
-                                mutate(`recipes/rating/${encodeURIComponent(recipe.id)}`, "PUT", { rating })
-                              }
-                            >
-                              {rating === "up" ? (
-                                <ThumbsUp size={16} />
-                              ) : rating === "down" ? (
-                                <ThumbsDown size={16} />
-                              ) : (
-                                <Minus size={16} />
-                              )}
-                            </button>
-                          ))}
-                        </div>
+                        <details className="recipe-rating-picker">
+                          <summary aria-label={`Rate ${recipe.title}`}>
+                            {recipe.rating === "up" ? (
+                              <ThumbsUp size={16} />
+                            ) : recipe.rating === "down" ? (
+                              <ThumbsDown size={16} />
+                            ) : (
+                              <Minus size={16} />
+                            )}
+                            {recipe.rating === "up"
+                              ? "Liked"
+                              : recipe.rating === "down"
+                                ? "Disliked"
+                                : "Neutral"}
+                          </summary>
+                          <div
+                            className="recipe-rating"
+                            role="group"
+                            aria-label={`Rating choices for ${recipe.title}`}
+                          >
+                            {(["up", "neutral", "down"] as const).map((rating) => (
+                              <button
+                                key={rating}
+                                type="button"
+                                className={`rating-${rating}`}
+                                aria-label={`${rating === "up" ? "Thumbs up" : rating === "down" ? "Thumbs down" : "Neutral"} for ${recipe.title}`}
+                                aria-pressed={recipe.rating === rating}
+                                disabled={busy}
+                                onClick={(event) => {
+                                  event.currentTarget.closest("details")?.removeAttribute("open");
+                                  mutate(`recipes/rating/${encodeURIComponent(recipe.id)}`, "PUT", {
+                                    rating,
+                                  });
+                                }}
+                              >
+                                {rating === "up" ? (
+                                  <ThumbsUp size={16} />
+                                ) : rating === "down" ? (
+                                  <ThumbsDown size={16} />
+                                ) : (
+                                  <Minus size={16} />
+                                )}
+                              </button>
+                            ))}
+                          </div>
+                        </details>
                         <button
                           className="secondary small-button"
                           onClick={() => addMeal(undefined, recipe.id)}
@@ -939,36 +1018,44 @@ export function App() {
                 {start > end && <p className="error">The end date must come after the start date.</p>}
                 <div className="shopping-summary">
                   <div role="status">
-                    <strong>
-                      {shoppingMode
-                        ? totalItems === 0
+                    <strong className={shoppingPending > 0 ? "shopping-save-status" : undefined}>
+                      {shoppingPending > 0
+                        ? "Saving…"
+                        : totalItems === 0
                           ? "Empty list"
                           : totalCompleted === totalItems
                             ? "All done!"
-                            : `${totalItems - totalCompleted} left`
-                        : totalItems === 0
-                          ? "Your list is ready to fill"
-                          : totalCompleted === totalItems
-                            ? "All done. Happy cooking!"
-                            : `${totalItems - totalCompleted} items left to pick up`}
+                            : `${totalItems - totalCompleted} left`}
                     </strong>
-                    <span className={shoppingPending > 0 ? "shopping-save-status" : undefined}>
-                      {shoppingPending > 0
-                        ? shoppingMode
-                          ? "Saving…"
-                          : "Saving changes…"
-                        : `${totalCompleted} of ${totalItems} checked, including household extras`}
+                    <span>
+                      {totalCompleted} of {totalItems} checked
                     </span>
                   </div>
                   <div className="shopping-controls">
+                    <a
+                      className="text-button"
+                      href="#household-extras"
+                      onClick={(event) => {
+                        event.preventDefault();
+                        document.getElementById("household-extras")?.scrollIntoView({ block: "start" });
+                        document
+                          .querySelector<HTMLInputElement>('[aria-label="New household item"]')
+                          ?.focus({ preventScroll: true });
+                      }}
+                    >
+                      Extras
+                    </a>
                     <button
                       className={shoppingMode ? "primary" : "secondary"}
                       aria-label={shoppingMode ? "Exit shopping mode" : "Shopping mode"}
                       aria-pressed={shoppingMode}
-                      onClick={() => setShoppingMode(!shoppingMode)}
+                      onClick={() => {
+                        setArranging(false);
+                        setShoppingMode(!shoppingMode);
+                      }}
                     >
                       <ShoppingBasket size={16} />
-                      {shoppingMode ? "Exit" : "Shopping mode"}
+                      {shoppingMode ? "Exit" : "Focus"}
                     </button>
                     <button
                       className={`secondary ${hideChecked ? "selected" : ""}`}
@@ -976,44 +1063,19 @@ export function App() {
                       aria-pressed={hideChecked}
                       onClick={() => setHideChecked(!hideChecked)}
                     >
-                      <SlidersHorizontal size={16} />{" "}
-                      {shoppingMode
-                        ? hideChecked
-                          ? "Show checked"
-                          : "Hide checked"
-                        : hideChecked
-                          ? "Show checked items"
-                          : "Hide checked items"}
+                      <SlidersHorizontal size={16} /> {hideChecked ? "Show checked" : "Hide checked"}
                     </button>
                   </div>
                 </div>
                 <div className="shopping-layout">
-                  <section className="shopping-panel">
-                    <div className="shopping-heading">
-                      <div>
-                        <h2>
-                          For your meals <span className="count-pill">{items.length}</span>
-                        </h2>
-                        <p>
-                          Whole packages for your combined recipes and meal scales. Warnings mark amounts to
-                          review.
-                        </p>
-                      </div>
-                    </div>
-                    <div className="progress-row">
-                      <div className="progress-track">
-                        <div style={{ width: `${items.length ? (completed / items.length) * 100 : 0}%` }} />
-                      </div>
-                      <span>
-                        {completed} of {items.length} checked
-                      </span>
-                    </div>
+                  <section className="shopping-panel" aria-label="Meal ingredients">
                     <ShoppingItems
                       items={items}
                       groceries={data.groceries}
                       order={data.shoppingOrder}
                       busy={busy}
                       shoppingMode={shoppingMode}
+                      arranging={arranging}
                       hideChecked={hideChecked}
                       checked={(item) => isChecked(checkKey(item, start, end))}
                       toggle={(item) => {
@@ -1049,16 +1111,9 @@ export function App() {
                     )}
                   </section>
                   <aside className="shopping-side">
-                    <section className="extras-panel">
-                      <span className="extras-icon">
-                        <ShoppingBasket size={22} />
-                      </span>
-                      <h2>A little extra</h2>
-                      <p>
-                        Snacks, staples, and everything else.
-                        <br />
-                        Kept here across every date range.
-                      </p>
+                    <section className="extras-panel" id="household-extras">
+                      <h2>Household extras</h2>
+                      <p>Kept across date ranges.</p>
                       <form
                         className="extra-form"
                         onSubmit={async (event) => {
@@ -1121,14 +1176,9 @@ export function App() {
                         <p className="extras-complete">All household extras are checked.</p>
                       )}
                     </section>
-                    <section className="notes-panel">
-                      <Sprout size={25} strokeWidth={1.2} />
-                      <h3>A note before you shop</h3>
-                      <p>Check the pantry first. You might already have a few things on the list.</p>
-                    </section>
                     {rangeMeals.some((meal) => meal.note) && (
-                      <section className="meal-notes-panel">
-                        <h3>Notes from your plan</h3>
+                      <details className="meal-notes-panel">
+                        <summary>Notes from your plan</summary>
                         <p>Reminders only — not added to ingredient totals. Add any extras above.</p>
                         {rangeMeals.map((meal) =>
                           meal.note ? (
@@ -1144,19 +1194,12 @@ export function App() {
                             </div>
                           ) : null,
                         )}
-                      </section>
+                      </details>
                     )}
                   </aside>
                 </div>
               </>
             )}
-            <footer className="page-footer">
-              <span>
-                <img src="/brand/logo-monochrome.svg" alt="Hearth" width="96" height="26" />
-              </span>
-              <p>A little less “what’s for dinner?”</p>
-              <Leaf size={15} />
-            </footer>
           </>
         )}
       </main>
@@ -1214,6 +1257,7 @@ export function App() {
           close={() => {
             setModal(null);
             setError("");
+            requestAnimationFrame(() => pageOptions.current?.focus());
           }}
         >
           <div className="modal-form">
@@ -1361,7 +1405,14 @@ export function App() {
         </Dialog>
       )}
       {modal?.kind === "import" && (
-        <Dialog timerHost={setTimerDialogHost} title="Import a recipe" close={() => setModal(null)}>
+        <Dialog
+          timerHost={setTimerDialogHost}
+          title="Import a recipe"
+          close={() => {
+            setModal(null);
+            requestAnimationFrame(() => pageOptions.current?.focus());
+          }}
+        >
           <RecipeImport imported={(recipe, warnings) => setModal({ kind: "editor", recipe, warnings })} />
         </Dialog>
       )}
@@ -1370,7 +1421,7 @@ export function App() {
           title="Use Hearth in ChatGPT"
           close={() => {
             setModal(null);
-            requestAnimationFrame(() => chatgptButton.current?.focus());
+            requestAnimationFrame(() => pageOptions.current?.focus());
           }}
         >
           <ChatGPTSetup />
@@ -1724,11 +1775,9 @@ function RecipeDetail({
 
   return (
     <div className="recipe-detail" tabIndex={0} role="region" aria-label={`${recipe.title} recipe`}>
-      <Photo recipe={recipe} className="detail-hero" />
       <div className="detail-title">
         <span className="category-label">{recipe.category}</span>
         <h1>{recipe.title}</h1>
-        <p>{recipe.description}</p>
         <div className="detail-meta">
           <span>
             <Clock3 size={16} />
@@ -1744,9 +1793,37 @@ function RecipeDetail({
             </button>
           )}
         </div>
+        <div className="recipe-section-nav">
+          <a
+            href="#recipe-ingredients"
+            onClick={(event) => {
+              event.preventDefault();
+              const section = document.getElementById("recipe-ingredients");
+              section?.scrollIntoView({ block: "start" });
+              section?.focus({ preventScroll: true });
+            }}
+          >
+            Ingredients
+          </a>
+          <a
+            href="#recipe-steps"
+            onClick={(event) => {
+              event.preventDefault();
+              const section = document.getElementById("recipe-steps");
+              section?.scrollIntoView({ block: "start" });
+              section?.focus({ preventScroll: true });
+            }}
+          >
+            Steps
+          </a>
+          <button className="primary" onClick={plan}>
+            {meal ? <ChevronLeft size={16} /> : <Plus size={16} />}{" "}
+            {meal ? "Back to meal" : "Add to meal plan"}
+          </button>
+        </div>
       </div>
       <div className="detail-columns">
-        <section>
+        <section id="recipe-ingredients" tabIndex={-1}>
           <div className="ingredients-heading">
             <h2>Ingredients</h2>
             <select
@@ -1838,7 +1915,7 @@ function RecipeDetail({
             </button>
           )}
         </section>
-        <section>
+        <section id="recipe-steps" tabIndex={-1}>
           <h2>Let’s make it</h2>
           <ol className="instructions">
             {recipe.instructions.map((step, index) => (
@@ -1853,6 +1930,11 @@ function RecipeDetail({
           </p>
         </section>
       </div>
+      <details className="recipe-about">
+        <summary>About this recipe</summary>
+        <Photo recipe={recipe} className="detail-hero" />
+        <p>{recipe.description}</p>
+      </details>
       <div className="detail-footer">
         {recipe.source ? (
           <a href={recipe.source} target="_blank" rel="noreferrer">
@@ -1861,9 +1943,6 @@ function RecipeDetail({
         ) : (
           <span>From our kitchen</span>
         )}
-        <button className="primary" onClick={plan}>
-          {meal ? <ChevronLeft size={16} /> : <Plus size={16} />} {meal ? "Back to meal" : "Add to meal plan"}
-        </button>
       </div>
     </div>
   );
@@ -2073,40 +2152,43 @@ function RecipeForm({
             </select>
           </label>
         </div>
-        <label>
-          Source URL <span className="muted">(optional)</span>
-          <input
-            type="url"
-            placeholder="https://…"
-            value={draft.source}
-            onChange={(event) => setDraft({ ...draft, source: event.target.value })}
-          />
-        </label>
-        <div className="photo-fields">
+        <details className="form-details">
+          <summary>Source & photo (optional)</summary>
           <label>
-            Photo URL <span className="muted">(or upload below)</span>
+            Source URL <span className="muted">(optional)</span>
             <input
+              type="url"
               placeholder="https://…"
-              value={draft.photo.startsWith("data:") ? "Uploaded photo" : draft.photo}
-              readOnly={draft.photo.startsWith("data:")}
-              onChange={(event) => setDraft({ ...draft, photo: event.target.value })}
+              value={draft.source}
+              onChange={(event) => setDraft({ ...draft, source: event.target.value })}
             />
           </label>
-          <label className="file-label">
-            Upload a photo
-            <input
-              type="file"
-              accept="image/jpeg,image/png,image/webp"
-              onChange={(event) => upload(event.target.files?.[0])}
-            />
-          </label>
-          {draft.photo && (
-            <button type="button" className="text-button" onClick={() => setDraft({ ...draft, photo: "" })}>
-              Remove photo
-            </button>
-          )}
-          {photoError && <p className="error">{photoError}</p>}
-        </div>
+          <div className="photo-fields">
+            <label>
+              Photo URL <span className="muted">(or upload below)</span>
+              <input
+                placeholder="https://…"
+                value={draft.photo.startsWith("data:") ? "Uploaded photo" : draft.photo}
+                readOnly={draft.photo.startsWith("data:")}
+                onChange={(event) => setDraft({ ...draft, photo: event.target.value })}
+              />
+            </label>
+            <label className="file-label">
+              Upload a photo
+              <input
+                type="file"
+                accept="image/jpeg,image/png,image/webp"
+                onChange={(event) => upload(event.target.files?.[0])}
+              />
+            </label>
+            {draft.photo && (
+              <button type="button" className="text-button" onClick={() => setDraft({ ...draft, photo: "" })}>
+                Remove photo
+              </button>
+            )}
+            {photoError && <p className="error">{photoError}</p>}
+          </div>
+        </details>
         <div className="editor-section">
           <h2>Ingredients</h2>
           <p className="field-hint">

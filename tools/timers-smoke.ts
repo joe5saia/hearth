@@ -100,7 +100,8 @@ try {
   check("document.querySelector('.timer-panel').inert && document.activeElement.classList.contains('timer-toggle')", "Escape collapses inert drawer and restores focus");
   browser("click", 'nav a[href="#recipes"]');
   check("document.querySelector('.timer-toggle-label > span').textContent === 'Quick pasta'", "timer stays in header across pages");
-  browser("click", ".topbar > .secondary");
+  browser("click", '[aria-label="Page options"]');
+  browser("find", "role", "button", "click", "--name", "Import recipe", "--exact");
   browser("wait", "dialog[open] .timer-toggle");
   check("document.querySelectorAll('.timer-toggle').length === 1 && document.querySelector('dialog[open] .timer-toggle').textContent.includes('Quick pasta')", "single live timer controller moves into dialog header");
   browser("click", ".timer-toggle");

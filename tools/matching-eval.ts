@@ -158,6 +158,7 @@ if (mode === "models" || mode === "normalization" || mode === "history") {
         browser("set", "viewport", "1280", "900", "2");
         browser("wait", ".grocery-manager");
         browser("fill", '.grocery-search input', "White");
+        browser("click", ".grocery-coverage summary");
         browser("eval", `(() => { const original = window.fetch; window.__matchingReport = null; window.fetch = async (...args) => { const response = await original(...args); if (args[0] === '/api/groceries/match') window.__matchingReport = await response.clone().json(); return response; }; })()`);
         browser("find", "role", "button", "click", "--name", "Match ingredients", "--exact");
         assert.equal(browser("eval", "[...document.querySelectorAll('button')].some(b => b.textContent.includes('Matching…') && b.disabled)"), "true");

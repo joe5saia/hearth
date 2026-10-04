@@ -8,6 +8,10 @@ const url = process.argv.slice(2).find(argument => !argument.startsWith("--")) ?
 assert(["localhost", "127.0.0.1"].includes(new URL(url).hostname), "Use local development only.");
 const session = `shopping-${process.pid}`;
 const browser = (...args: string[]) => execFileSync("agent-browser", ["--session", session, ...args], { encoding: "utf8", timeout: 90_000 }).trim();
+const toggleRoute = () => {
+  browser("click", '[aria-label="Page options"]');
+  browser("click", '.page-options-menu button[aria-pressed]');
+};
 const household = async () => {
   const response = await fetch(`${url}/api/household`);
   assert(response.ok);
@@ -144,7 +148,7 @@ try {
     return { dropTop: w.dropTop, frames: w.frames };
   });
   const finalTop = motion.frames.at(-1).top;
-  assert(motion.frames.every((frame: any) => frame.top >= Math.min(motion.dropTop, finalTop) - 2 && frame.top <= Math.max(motion.dropTop, finalTop) + 2), "Dropped item must settle directly, never snap back to its old slot.");
+  assert(motion.frames.every((frame: any) => frame.top >= Math.min(motion.dropTop, finalTop) - 2 && frame.top <= Math.max(motion.dropTop, finalTop) + 2), `Dropped item must settle directly, never snap back to its old slot: ${JSON.stringify({ dropTop: motion.dropTop, finalTop, minimum: Math.min(...motion.frames.map((frame: any) => frame.top)), maximum: Math.max(...motion.frames.map((frame: any) => frame.top)), scrolls: [...new Set(motion.frames.map((frame: any) => frame.scroll))] })}`);
   assert(motion.frames.filter((frame: any) => frame.elapsed > 350).every((frame: any) => Math.abs(frame.top - finalTop) < 1), "Save acknowledgement must not restart the animation.");
   assert.equal(new Set(motion.frames.map((frame: any) => frame.scroll)).size, 1, "Reordering must not jump the viewport.");
   const saved = await household();
@@ -155,7 +159,8 @@ try {
 
   browser("click", '[aria-label="Shopping mode"]');
   browser("wait", "--fn", "!document.querySelector('.toast')");
-  browser("record", "start", resolve(".amp/in/artifacts/shopping-reorder.webm"), "--fps", "30", "--cursor");
+  // H.264 avoids the VP8 encoder falling behind on DPR2 orb captures; motion assertions still sample every animation frame.
+  browser("record", "start", resolve(".amp/in/artifacts/shopping-reorder.mp4"), "--fps", "30", "--cursor");
   recording = true;
   const beforeCancel = await names();
   await drag(true, true);
@@ -241,7 +246,7 @@ try {
   const groupLabel = await evaluate(() => (window as any).smokeGroup.getAttribute("aria-label"));
   await cdp("Emulation.setEmulatedMedia", { features: [] });
   browser("click", '[aria-label="Exit shopping mode"]');
-  browser("click", '.route-toolbar button[aria-pressed]');
+  toggleRoute();
   browser("set", "viewport", "1280", "900", "2");
   await evaluate(() => {
     const w = window as any;
@@ -308,7 +313,7 @@ try {
   assert.deepEqual(await names(), afterKeyboard, "Both moves must be usable while the first save is pending.");
   assert.deepEqual((await household()).shoppingOrder, queuedBaseline);
   assert.equal(await evaluate(() => { const event = new Event("beforeunload", { cancelable: true }); window.dispatchEvent(event); return event.defaultPrevented; }), true, "Pending changes must install an unsaved-exit warning.");
-  browser("click", '.route-toolbar button[aria-pressed]');
+  toggleRoute();
   await cdp("Runtime.evaluate", { expression: `window.smokeGroup = document.querySelector(${JSON.stringify(`[aria-label="${groupLabel}"]`)}); true;`, returnByValue: true });
   const checkboxLabels = await evaluate(() => [...(window as any).smokeGroup.querySelectorAll('input[type="checkbox"]')].filter((box: any) => !box.checked).slice(0, 2).map((box: any) => box.getAttribute("aria-label")));
   assert.equal(checkboxLabels.length, 2, "Use two unchecked linked sample products.");
@@ -328,7 +333,7 @@ try {
     sample();
   });
   browser("eval", "scrollTo(0,0)");
-  assert.equal(await evaluate(() => document.querySelector('.shopping-save-status')?.textContent), "Saving changes…");
+  assert.equal(await evaluate(() => document.querySelector('.shopping-save-status')?.textContent), "Saving…");
   browser("screenshot", resolve(".amp/in/artifacts/shopping-saving-desktop.png"));
   browser("wait", "--fn", "!document.querySelector('.shopping-save-status')");
   const history = await evaluate(() => (window as any).writeHistory);
@@ -343,7 +348,7 @@ try {
   assert.deepEqual((await household()).checks, original.checks);
   console.log("PASS delayed saves allow consecutive reorders and rapid check/uncheck across products, preserve order, and do not flicker");
 
-  browser("click", '.route-toolbar button[aria-pressed]');
+  toggleRoute();
   await cdp("Runtime.evaluate", { expression: `window.smokeGroup = document.querySelector(${JSON.stringify(`[aria-label="Arrange ${groupLabel}"]`)}); window.saveDelay = 500; window.rejectNextSave = true;`, returnByValue: true });
   await keyMove("down"); await keyMove("up");
   browser("wait", "--fn", "!document.querySelector('.shopping-save-status')");
@@ -372,7 +377,7 @@ try {
   assert.deepEqual(await names(), afterKeyboard);
   console.log("PASS latest-write failure rolls back correctly, and stale refresh cannot overwrite a newer acknowledged save");
 
-  browser("click", '.route-toolbar button[aria-pressed]');
+  toggleRoute();
   await cdp("Runtime.evaluate", { expression: `window.smokeGroup = document.querySelector(${JSON.stringify(`[aria-label="${groupLabel}"]`)}); window.rejectNextSave = true; window.saveDelay = 500;`, returnByValue: true });
   for (const label of checkboxLabels) browser("click", `[aria-label=${JSON.stringify(label)}]`);
   browser("wait", "--fn", "!document.querySelector('.shopping-save-status')");

@@ -1,18 +1,9 @@
-.route-toolbar {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 18px 24px;
-  border-bottom: 1px solid var(--line);
-}
 .aisle-heading {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  padding: 14px 24px;
+  padding: 8px 16px;
   background: #eef0e6;
 }
 .aisle-heading h3 {
@@ -233,6 +224,13 @@
   gap: 8px;
   flex-wrap: wrap;
 }
+.shopping-controls a {
+  display: flex;
+  align-items: center;
+  min-height: 44px;
+  padding: 8px;
+  font-size: 0.875rem;
+}
 .shopping-mode .shopping-layout {
   grid-template-columns: minmax(0, 1fr);
   max-width: 850px;
@@ -245,17 +243,11 @@
 }
 .shopping-mode .sidebar,
 .shopping-mode .topbar,
-.shopping-mode .page-heading,
 .shopping-mode .shopping-range,
 .shopping-mode .welcome,
-.shopping-mode .page-footer,
-.shopping-mode .route-toolbar,
-.shopping-mode .shopping-heading,
-.shopping-mode .progress-row,
-.shopping-mode .shopping-summary [role="status"] > span:not(.shopping-save-status),
+.shopping-mode .shopping-summary [role="status"] > span,
 .shopping-mode .extras-icon,
 .shopping-mode .extras-panel > p,
-.shopping-mode .notes-panel,
 .shopping-mode .meal-notes-panel > p {
   display: none;
 }
@@ -375,7 +367,6 @@
   color: var(--olive);
 }
 @media (max-width: 600px) {
-  .route-toolbar,
   .route-editor {
     padding: 16px;
   }
@@ -389,11 +380,47 @@
   .shopping-mode .shopping-side {
     grid-template-columns: minmax(0, 1fr);
   }
-  .shopping-controls {
-    width: 100%;
+  .shopping-controls,
+  .shopping-mode .shopping-controls {
+    width: auto;
+    max-width: 100%;
+    flex-wrap: wrap;
   }
   .shopping-controls button {
-    flex: 1;
+    flex: none;
+    padding: 8px;
+    font-size: 0.875rem;
+    gap: 4px;
+  }
+  .shopping-summary {
+    gap: 4px;
+    flex-wrap: wrap;
+    margin-block: 4px 8px;
+  }
+  .shopping-summary > div[role="status"] {
+    display: flex;
+    gap: 6px;
+    align-items: baseline;
+    flex-wrap: wrap;
+  }
+  .shopping-summary strong,
+  .shopping-summary span {
+    font-size: 0.875rem;
+  }
+  .shopping-summary strong {
+    min-width: 8ch;
+    white-space: nowrap;
+  }
+  .shopping-summary span {
+    margin-top: 0;
+  }
+  .shopping-summary > [role="status"] > span {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
   }
   .ingredient-editor > .ingredient-link-editor {
     grid-row: 3;

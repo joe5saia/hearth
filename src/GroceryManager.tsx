@@ -1,6 +1,6 @@
 import { useId, useState } from "react";
 import { Schema } from "effect";
-import { Link2, Pencil, Plus, RefreshCw, Search } from "lucide-react";
+import { Link2, Pencil, RefreshCw, Search } from "lucide-react";
 import { displayAmount, units, UnitSchema, type GroceryDraft, type GroceryItem, type Recipe } from "./domain";
 import type { MatchReport } from "./domain";
 import "./grocery-manager.css";
@@ -225,21 +225,12 @@ export type GroceryManagerProps = {
   groceries: readonly GroceryItem[];
   recipes: readonly Recipe[];
   busy: boolean;
-  add: () => void;
   edit: (item: GroceryItem) => void;
   editRecipe: (recipe: Recipe) => void;
   match: () => Promise<Readonly<MatchReport>>;
 };
 
-export function GroceryManager({
-  groceries,
-  recipes,
-  busy,
-  add,
-  edit,
-  editRecipe,
-  match,
-}: GroceryManagerProps) {
+export function GroceryManager({ groceries, recipes, busy, edit, editRecipe, match }: GroceryManagerProps) {
   const [search, setSearch] = useState("");
   const [matching, setMatching] = useState(false);
   const [matchMessage, setMatchMessage] = useState("");
@@ -293,19 +284,6 @@ export function GroceryManager({
 
   return (
     <div className="grocery-manager">
-      <div className="grocery-toolbar">
-        <p>Connect recipe ingredients to the products you buy.</p>
-        <div className="grocery-actions">
-          <button type="button" className="secondary" disabled={locked} onClick={() => void retryMatch()}>
-            <RefreshCw size={16} aria-hidden="true" />
-            {matching ? "Matching…" : "Match ingredients"}
-          </button>
-          <button type="button" className="primary" disabled={locked} onClick={add}>
-            <Plus size={16} aria-hidden="true" />
-            Add grocery item
-          </button>
-        </div>
-      </div>
       {matchMessage && (
         <p className={matchFailed ? "error" : "grocery-note"} role={matchFailed ? "alert" : "status"}>
           {matchMessage}
@@ -313,7 +291,7 @@ export function GroceryManager({
       )}
       <section aria-label="Grocery catalog" className="grocery-catalog">
         <label className="grocery-search">
-          <span>Search grocery items</span>
+          <span className="sr-only">Search grocery items</span>
           <div>
             <Search size={18} aria-hidden="true" />
             <input
@@ -356,11 +334,6 @@ export function GroceryManager({
                         <Link2 size={14} aria-hidden="true" />
                         {count ? `Linked: ${count} ingredient${count === 1 ? "" : "s"}` : "Not linked"}
                       </span>
-                      {item.url.trim() ? (
-                        <span>URL added</span>
-                      ) : (
-                        <span className="grocery-gap">Missing URL</span>
-                      )}
                     </div>
                   </div>
                   <button
@@ -378,56 +351,67 @@ export function GroceryManager({
           </ul>
         )}
       </section>
-      <section className="grocery-coverage" aria-labelledby="grocery-coverage-heading">
-        <h2 id="grocery-coverage-heading">Recipe coverage</h2>
-        <p className="grocery-note">
-          {linked} / {total} ingredients linked · {total - linked} unlinked
-        </p>
-        <p className="grocery-note">
-          Linked products with setup gaps: {missingAisle} missing aisle · {missingUrl} missing URL. A product
-          may have both gaps.
-        </p>
-        <p className="grocery-note">
-          Match ingredients uses AI to search product and alternate names, then chooses a suitable product
-          using the original ingredient and recipe instructions. Uncertain matches stay unlinked. Edit a
-          recipe to review or change its links.
-        </p>
-        {!recipes.length ? (
-          <p className="grocery-empty">Add recipes to see ingredient coverage here.</p>
-        ) : (
-          <ul className="grocery-recipe-list">
-            {coverage.map(({ recipe, unlinked, linked: count }) => (
-              <li key={recipe.id}>
-                <div>
-                  <h3>{recipe.title}</h3>
-                  <p>
-                    {count} / {recipe.ingredients.length} ingredients linked
-                  </p>
-                  {unlinked.length ? (
-                    <p className="grocery-unlinked">
-                      Unlinked: {unlinked.map((ingredient) => ingredient.name).join(", ")}
+      <details className="grocery-coverage">
+        <summary>
+          <span>Recipe coverage</span>
+          <span className="grocery-note">{total - linked} unlinked</span>
+        </summary>
+        <div className="grocery-coverage-content">
+          <div className="grocery-actions">
+            <p className="grocery-note">
+              {linked} / {total} ingredients linked
+            </p>
+            <button type="button" className="secondary" disabled={locked} onClick={() => void retryMatch()}>
+              <RefreshCw size={16} aria-hidden="true" />
+              {matching ? "Matching…" : "Match ingredients"}
+            </button>
+          </div>
+          <p className="grocery-note">
+            Linked products with setup gaps: {missingAisle} missing aisle · {missingUrl} missing URL. A
+            product may have both gaps.
+          </p>
+          <p className="grocery-note">
+            Match ingredients uses AI to search product and alternate names, then chooses a suitable product
+            using the original ingredient and recipe instructions. Uncertain matches stay unlinked. Edit a
+            recipe to review or change its links.
+          </p>
+          {!recipes.length ? (
+            <p className="grocery-empty">Add recipes to see ingredient coverage here.</p>
+          ) : (
+            <ul className="grocery-recipe-list">
+              {coverage.map(({ recipe, unlinked, linked: count }) => (
+                <li key={recipe.id}>
+                  <div>
+                    <h3>{recipe.title}</h3>
+                    <p>
+                      {count} / {recipe.ingredients.length} ingredients linked
                     </p>
-                  ) : (
-                    <p className="grocery-note">
-                      {recipe.ingredients.length ? "All ingredients linked" : "No ingredients yet"}
-                    </p>
-                  )}
-                </div>
-                <button
-                  type="button"
-                  className="secondary"
-                  disabled={locked}
-                  onClick={() => editRecipe(recipe)}
-                  aria-label={`Edit recipe ${recipe.title}`}
-                >
-                  <Pencil size={15} aria-hidden="true" />
-                  Edit recipe
-                </button>
-              </li>
-            ))}
-          </ul>
-        )}
-      </section>
+                    {unlinked.length ? (
+                      <p className="grocery-unlinked">
+                        Unlinked: {unlinked.map((ingredient) => ingredient.name).join(", ")}
+                      </p>
+                    ) : (
+                      <p className="grocery-note">
+                        {recipe.ingredients.length ? "All ingredients linked" : "No ingredients yet"}
+                      </p>
+                    )}
+                  </div>
+                  <button
+                    type="button"
+                    className="secondary"
+                    disabled={locked}
+                    onClick={() => editRecipe(recipe)}
+                    aria-label={`Edit recipe ${recipe.title}`}
+                  >
+                    <Pencil size={15} aria-hidden="true" />
+                    Edit recipe
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      </details>
     </div>
   );
 }

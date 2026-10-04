@@ -7,7 +7,6 @@ import {
   ExternalLink,
   GripVertical,
   Pencil,
-  Route,
   TriangleAlert,
 } from "lucide-react";
 import {
@@ -64,6 +63,7 @@ export function ShoppingItems({
   order,
   busy,
   shoppingMode,
+  arranging,
   hideChecked,
   checked,
   toggle,
@@ -76,6 +76,7 @@ export function ShoppingItems({
   order: ShoppingOrder;
   busy: boolean;
   shoppingMode: boolean;
+  arranging: boolean;
   hideChecked: boolean;
   checked: (item: ShoppingItem) => boolean;
   toggle: (item: ShoppingItem) => void;
@@ -83,8 +84,6 @@ export function ShoppingItems({
   edit: (item: GroceryItem) => void;
   manage: () => void;
 }) {
-  const [arranging, setArranging] = useState(false);
-
   const [dragging, setDragging] = useState<{
     id: string;
     aisle: string;
@@ -190,8 +189,6 @@ export function ShoppingItems({
 
   useEffect(() => {
     if (shoppingMode) {
-      setArranging(false);
-
       if (dragRef.current) setDrag(null);
     }
   }, [shoppingMode]);
@@ -334,14 +331,6 @@ export function ShoppingItems({
 
   return (
     <div ref={rootRef} className={dragging?.moved ? "is-reordering" : undefined}>
-      <div className="route-toolbar">
-        <button className="secondary" aria-pressed={arranging} onClick={() => setArranging(!arranging)}>
-          <Route size={16} /> {arranging ? "Done arranging" : "Arrange route"}
-        </button>
-        <button className="text-button" onClick={manage}>
-          Manage grocery items
-        </button>
-      </div>
       {arranging && !shoppingMode ? (
         <div className="route-editor">
           <p className="field-hint">

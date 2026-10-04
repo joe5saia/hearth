@@ -1,35 +1,45 @@
 .grocery-manager {
   display: grid;
-  gap: 24px;
+  gap: 12px;
   min-width: 0;
 }
-.grocery-toolbar,
 .grocery-actions {
   display: flex;
   align-items: center;
-  gap: 12px;
+  justify-content: space-between;
+  gap: 8px;
   flex-wrap: wrap;
 }
-.grocery-toolbar {
-  justify-content: space-between;
-}
-.grocery-toolbar > p,
 .grocery-note,
 .grocery-recipe-list p {
   font-size: 13px;
   line-height: 1.6;
 }
-.grocery-note,
-.grocery-toolbar > p {
+.grocery-note {
   color: var(--muted);
 }
 .grocery-catalog,
 .grocery-coverage {
-  padding: 22px;
+  padding: 12px 16px;
   border: 1px solid var(--line);
   border-radius: 10px;
   background: #fffefa;
   min-width: 0;
+}
+.grocery-coverage > summary {
+  cursor: pointer;
+  min-height: 44px;
+  align-content: center;
+  font-weight: 600;
+}
+.grocery-coverage > summary > .grocery-note {
+  float: right;
+  font-weight: 400;
+}
+.grocery-coverage-content {
+  display: grid;
+  gap: 8px;
+  padding-top: 8px;
 }
 .grocery-search {
   display: grid;
@@ -57,7 +67,7 @@
 .grocery-recipe-list {
   list-style: none;
   padding: 0;
-  margin: 16px 0 0;
+  margin: 8px 0 0;
 }
 .grocery-item {
   display: grid;
@@ -73,7 +83,6 @@
   padding: 0;
 }
 .grocery-product h2,
-.grocery-coverage > h2,
 .grocery-recipe-list h3 {
   font-family: var(--serif);
   color: var(--olive);
@@ -83,9 +92,6 @@
 .grocery-product h2,
 .grocery-recipe-list h3 {
   font-size: 17px;
-}
-.grocery-coverage > h2 {
-  font-size: 22px;
 }
 .grocery-recipe-list p {
   margin-top: 5px;
@@ -163,13 +169,7 @@
 @media (max-width: 600px) {
   .grocery-catalog,
   .grocery-coverage {
-    padding: 16px;
-  }
-  .grocery-actions {
-    width: 100%;
-  }
-  .grocery-actions > button {
-    flex: 1 1 160px;
+    padding: 8px 12px;
   }
   .grocery-metadata {
     column-gap: 10px;
