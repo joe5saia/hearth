@@ -18,6 +18,7 @@ import { database, stored, ValidationError, MissingReference, NotFound, Conflict
 import { parseRecipe, recipeStatement, matchRecipeIngredients, type RecipeRow } from "./recipes";
 import { getGroceries, groceryStatement, matchGrocery, parseGrocery, type GroceryRow } from "./groceries";
 import { sampleRecipes, sampleMeals, sampleGroceries } from "./seed";
+import { record } from "./observability";
 
 const validate = <S extends Schema.Constraint>(schema: S, input: S["Type"], message: string) =>
   Schema.decodeUnknownEffect(schema)(input).pipe(Effect.mapError(() => new ValidationError({ message })));
@@ -58,6 +59,12 @@ export const getHousehold = (db: D1Database) =>
       D1Result<{ aisles: string; items: string }>,
     ];
 
+    yield* record("household_snapshot", {
+      recipes: recipes.results.length,
+      meals: meals.results.length,
+      groceries: groceries.results.length,
+    });
+
     return yield* stored(() =>
       Schema.decodeUnknownSync(HouseholdSchema)({
         recipes: recipes.results.map(parseRecipe),
@@ -74,7 +81,7 @@ export const getHousehold = (db: D1Database) =>
           : { aisles: [], items: [] },
       }),
     );
-  });
+  }).pipe(Effect.withSpan("household.load"));
 
 export const listCollections = (db: D1Database) =>
   Effect.gen(function* () {

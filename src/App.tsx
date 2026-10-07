@@ -4,6 +4,7 @@ import { KitchenTimers } from "./KitchenTimers";
 import { GroceryForm, GroceryManager } from "./GroceryManager";
 import { ShoppingItems } from "./ShoppingItems";
 import { ChatGPTSetup } from "./ChatGPTSetup";
+import { browserEvent, browserOperation, browserResponse } from "./browser-observability";
 import { matchGrocery } from "./groceries";
 import { MatchReportSchema } from "./domain";
 import {
@@ -126,7 +127,7 @@ const pageFromHash = (): Page =>
 
 async function api(
   path: string,
-  method = "GET",
+  method: "GET" | "POST" | "PUT" | "DELETE" = "GET",
   body?:
     | RecipeDraft
     | Collection
@@ -137,15 +138,40 @@ async function api(
     | { id: string; name: string; checked: number }
     | { key: string; checked: number }
     | { rating: Rating },
+  operationId = crypto.randomUUID(),
 ) {
+  const started = performance.now();
+
   const init: RequestInit = {
     method,
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", "X-Hearth-Operation-Id": operationId },
   };
 
-  if (body && method !== "GET" && method !== "HEAD") init.body = JSON.stringify(body);
+  if (body && method !== "GET") init.body = JSON.stringify(body);
 
-  const response = await fetch(`/api/${path}`, init);
+  let response: Response;
+
+  try {
+    response = await fetch(`/api/${path}`, init);
+  } catch (failure) {
+    browserEvent("browser_request", {
+      operation: browserOperation(path),
+      method,
+      outcome: "network_error",
+      durationMs: performance.now() - started,
+      relatedOperationId: operationId,
+    });
+    throw failure;
+  }
+
+  browserEvent("browser_request", {
+    operation: browserOperation(path),
+    method,
+    status: response.status,
+    outcome: response.ok ? "success" : "error",
+    durationMs: performance.now() - started,
+    ...browserResponse(response, operationId),
+  });
 
   if (!response.ok) {
     const failure = Schema.decodeUnknownOption(Schema.Struct({ error: Schema.String }))(
@@ -273,11 +299,31 @@ export function App() {
   const [timerDialogHost, setTimerDialogHost] = useState<HTMLDivElement | null>(null);
   const weekInput = useRef<HTMLInputElement>(null);
   const pageOptions = useRef<HTMLElement>(null);
+  const initialLoad = useRef(true);
 
-  const refresh = useCallback(async () => {
+  const refresh = useCallback(async (operationId = crypto.randomUUID()) => {
+    const started = performance.now();
     const revision = shoppingRevision.current;
-    const response = await api("household");
-    const household = Schema.decodeUnknownSync(HouseholdSchema)(await response.json());
+    const response = await api("household", "GET", undefined, operationId);
+    const body = await response.text();
+    const downloaded = performance.now();
+    let household: Household;
+
+    try {
+      household = Schema.decodeUnknownSync(HouseholdSchema)(JSON.parse(body));
+    } catch (failure) {
+      browserEvent("browser_household", {
+        outcome: "error",
+        reason: "decode_error",
+        durationMs: performance.now() - started,
+        ...browserResponse(response, operationId),
+      });
+      throw failure;
+    }
+
+    const decoded = performance.now();
+    const initial = initialLoad.current;
+    initialLoad.current = false;
 
     // A refresh started before a shopping edit must not replace newer acknowledged/optimistic state.
     if (revision === shoppingRevision.current) {
@@ -286,9 +332,28 @@ export function App() {
 
     setData({ ...household, ...shoppingEdits.current.reduce(applyShoppingEdit, confirmedShopping.current) });
     setLoaded(true);
+    requestAnimationFrame(() =>
+      requestAnimationFrame(() =>
+        browserEvent("browser_household", {
+          outcome: "success",
+          initial,
+          durationMs: initial ? performance.now() : performance.now() - started,
+          downloadMs: downloaded - started,
+          decodeMs: decoded - downloaded,
+          bytes: new TextEncoder().encode(body).byteLength,
+          recipes: household.recipes.length,
+          meals: household.meals.length,
+          groceries: household.groceries.length,
+          ...browserResponse(response, operationId),
+        }),
+      ),
+    );
   }, []);
 
   const saveShoppingEdit = (edit: ShoppingEdit) => {
+    const started = performance.now();
+    const operationId = crypto.randomUUID();
+    const queueDepth = shoppingEdits.current.length + 1;
     shoppingEdits.current.push(edit);
     shoppingRevision.current++;
     setShoppingPending(shoppingEdits.current.length);
@@ -296,22 +361,34 @@ export function App() {
     setData((current) => ({ ...current, ...applyShoppingEdit(current, edit) }));
 
     const saved = shoppingWrites.current.then(async () => {
+      const dequeued = performance.now();
       let acknowledged = false;
+      let written = dequeued;
+      let refreshed = dequeued;
+      let outcome: "success" | "error" | "saved_refresh_failed" = "success";
 
       try {
         await api(
           edit.kind === "order" ? "shopping-order" : "checks",
           "PUT",
           edit.kind === "order" ? edit.order : { key: edit.key, checked: edit.checked },
+          operationId,
         );
+        written = performance.now();
         acknowledged = true;
         shoppingRevision.current++;
         confirmedShopping.current = applyShoppingEdit(confirmedShopping.current, edit);
 
         if (edit.kind === "order") setToast("Store route saved");
 
-        if (shoppingEdits.current.at(-1) === edit) await refresh();
+        if (shoppingEdits.current.at(-1) === edit) await refresh(operationId);
+        refreshed = performance.now();
       } catch (failure) {
+        outcome = acknowledged ? "saved_refresh_failed" : "error";
+
+        if (!acknowledged) written = performance.now();
+        refreshed = performance.now();
+
         const superseded = shoppingEdits.current
           .slice(shoppingEdits.current.indexOf(edit) + 1)
           .some(
@@ -329,6 +406,17 @@ export function App() {
                 : "Please try again.",
           );
       } finally {
+        browserEvent("browser_shopping_save", {
+          operation: edit.kind === "order" ? "shopping-order" : "checks",
+          outcome,
+          acknowledged,
+          queueDepth,
+          queueMs: dequeued - started,
+          writeMs: written - dequeued,
+          refreshMs: acknowledged ? refreshed - written : 0,
+          durationMs: performance.now() - started,
+          relatedOperationId: operationId,
+        });
         shoppingEdits.current = shoppingEdits.current.filter((pending) => pending !== edit);
         shoppingRevision.current++;
         const shopping = shoppingEdits.current.reduce(applyShoppingEdit, confirmedShopping.current);
@@ -364,6 +452,15 @@ export function App() {
     window.scrollTo({ top: 0 });
     setArranging(false);
     pageOptions.current?.closest("details")?.removeAttribute("open");
+    const started = performance.now();
+
+    const frame = requestAnimationFrame(() =>
+      requestAnimationFrame(() =>
+        browserEvent("browser_navigation", { durationMs: performance.now() - started }),
+      ),
+    );
+
+    return () => cancelAnimationFrame(frame);
   }, [page]);
   useEffect(() => {
     if (!toast) return;
@@ -380,17 +477,22 @@ export function App() {
 
   const mutate = async (
     path: string,
-    method: string,
+    method: Parameters<typeof api>[1],
     body: Parameters<typeof api>[2],
     message = "",
     close = false,
   ) => {
+    const started = performance.now();
+    const operationId = crypto.randomUUID();
+    let acknowledged = false;
+    let outcome: "success" | "error" | "saved_refresh_failed" = "success";
     setBusy(true);
     setError("");
 
     try {
-      await api(path, method, body);
-      await refresh();
+      await api(path, method, body, operationId);
+      acknowledged = true;
+      await refresh(operationId);
 
       if (close) setModal(null);
 
@@ -398,29 +500,53 @@ export function App() {
 
       return true;
     } catch (failure) {
+      outcome = acknowledged ? "saved_refresh_failed" : "error";
       setError(failure instanceof Error ? failure.message : "Please try again.");
 
       return false;
     } finally {
+      browserEvent("browser_mutation", {
+        operation: browserOperation(path),
+        outcome,
+        acknowledged,
+        durationMs: performance.now() - started,
+        relatedOperationId: operationId,
+      });
       setBusy(false);
     }
   };
 
   const matchGroceries = async () => {
+    const started = performance.now();
+    const operationId = crypto.randomUUID();
+    let acknowledged = false;
+    let outcome: "success" | "error" | "saved_refresh_failed" = "error";
     setBusy(true);
     setError("");
 
     try {
-      const response = await api("groceries/match", "POST");
+      const response = await api("groceries/match", "POST", undefined, operationId);
+      acknowledged = true;
 
       const result = Schema.decodeUnknownSync(Schema.Struct({ report: MatchReportSchema }))(
         await response.json(),
       );
 
-      await refresh();
+      await refresh(operationId).catch((failure) => {
+        outcome = "saved_refresh_failed";
+        throw failure;
+      });
+      outcome = "success";
 
       return result.report;
     } finally {
+      browserEvent("browser_mutation", {
+        operation: "groceries.match",
+        outcome,
+        acknowledged,
+        durationMs: performance.now() - started,
+        relatedOperationId: operationId,
+      });
       setBusy(false);
     }
   };

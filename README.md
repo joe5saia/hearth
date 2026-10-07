@@ -217,6 +217,16 @@ Use `npx task audit:production` to check production dependencies and `npx task a
 Individual checks are available as `typecheck`, `lint`, `format:check`, and `test`; use
 `npx task format` to apply formatting.
 
+## Performance monitoring and tracing
+
+[The Axiom plan and runbook](OBSERVABILITY.md) covers the server-first rollout, measured operations,
+browser correlation/Web Vitals, privacy and sampling limits, dataset/secret setup, dashboard queries,
+proposed SLOs/alerts, and the remaining native Cloudflare/synthetic-monitoring work before broader access.
+Missing ingestion credentials disable exports; ordinary local development does not send household telemetry.
+`npx task test` exercises Worker/D1/KV instrumentation with disposable ingestion receivers.
+`npx task telemetry:smoke` builds the actual SPA and exercises browser telemetry, persistence, failed saves,
+decode/network failures and ingestion outages against a disposable Worker/D1; it requires `agent-browser`.
+
 ## Repeatable performance benchmark
 
 ```sh
@@ -235,6 +245,8 @@ Each workload gets five warmups and 25 timed samples. CPU samples average ten ca
 one request through JSON body consumption. Output includes median and p95 milliseconds per operation,
 raw/gzipped response and production JS/CSS sizes, and Node/CPU metadata. Gzip sizes use Node's default
 compression settings, which can differ from Vite's size report. Setup, migration, and build time are excluded.
+API measurements also compare export disabled with 100% traces/events delivered to a disposable local
+ingestion receiver (`household-api-telemetry`); this is not a live Axiom/Cloudflare network benchmark.
 
 Initial September 2026 pass, same orb (warm-run medians, milliseconds):
 

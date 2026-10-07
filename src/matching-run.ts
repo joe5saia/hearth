@@ -1,5 +1,6 @@
 import { Data, Effect } from "effect";
 import { database, stored } from "./storage";
+import { record } from "./observability";
 import { parseRecipe, type RecipeRow } from "./recipes";
 import { parseGrocery, type GroceryRow } from "./groceries";
 import {
@@ -26,6 +27,7 @@ export const matchGroceries = (db: D1Database, ai?: Ai, ray?: string | null) =>
     );
 
     if (!ai) {
+      yield* record("matching_failure", { reason: "ai_unavailable", outcome: "error" });
       console.error(
         JSON.stringify({
           event: "ingredient_matching_failed",
@@ -62,7 +64,11 @@ export const matchGroceries = (db: D1Database, ai?: Ai, ray?: string | null) =>
       const originals = yield* stored(() => rows.results.map(parseRecipe));
       const groceries = yield* stored(() => products.results.map(parseGrocery));
       stage = "matching";
-      const result = yield* matchIngredients(ai, originals, groceries, db, runId);
+
+      const result = yield* matchIngredients(ai, originals, groceries, db, runId).pipe(
+        Effect.withSpan("matching.ingredients"),
+      );
+
       stage = "persistence";
 
       const changed = result.recipes.flatMap((recipe, index) => {
@@ -123,6 +129,9 @@ export const matchGroceries = (db: D1Database, ai?: Ai, ray?: string | null) =>
       return result.report;
     }).pipe(
       Effect.tapError((error) =>
+        record("matching_failure", { reason: matchingFailureReason(error), outcome: "error" }),
+      ),
+      Effect.tapError((error) =>
         Effect.sync(() => {
           console.error(
             JSON.stringify({
@@ -138,6 +147,10 @@ export const matchGroceries = (db: D1Database, ai?: Ai, ray?: string | null) =>
     );
 
     report.totalMs = performance.now() - started;
+    yield* record("matching_completed", {
+      ...report,
+      outcome: report.failed || report.conflicts ? "partial" : "complete",
+    });
     console.info(
       JSON.stringify({
         event: "ingredient_matching_completed",
@@ -148,4 +161,4 @@ export const matchGroceries = (db: D1Database, ai?: Ai, ray?: string | null) =>
     );
 
     return { ok: true as const, report };
-  });
+  }).pipe(Effect.withSpan("matching.run"));

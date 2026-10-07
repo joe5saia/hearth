@@ -89,7 +89,7 @@ for (const [name, recipeCount, mealCount, photoBytes] of [
   await measure(`${name}/shopping-month`, () => shoppingList(recipes, meals, "2026-09-01", "2026-09-28"), 10);
   await measure(`${name}/format-list`, () => items.map((item) => item.needs.map(displayAmount)), 10);
 
-  const worker = new Miniflare(
+  const options = (enabled: boolean) =>
     convertV4MiniflareOptions({
       workers: [
         {
@@ -98,11 +98,23 @@ for (const [name, recipeCount, mealCount, photoBytes] of [
           script: entry.code,
           compatibilityDate: "2026-09-08",
           d1Databases: ["DB"],
-          bindings: { LOCAL_DEV: "true" },
+          bindings: {
+            LOCAL_DEV: "true",
+            AXIOM_TOKEN: enabled ? "disposable-benchmark-ingestion" : "",
+            AXIOM_EVENTS_DATASET: "benchmark-events",
+            AXIOM_TRACES_DATASET: "benchmark-traces",
+          },
+          outboundService: async (request) => {
+            assert.equal(new URL(request.url).hostname, "us-east-1.aws.edge.axiom.co");
+            await request.text();
+
+            return Response.json({ ingested: 1, failed: 0 });
+          },
         },
       ],
-    }),
-  );
+    });
+
+  const worker = new Miniflare(options(false));
 
   try {
     const db = await worker.getD1Database("DB");
@@ -158,12 +170,20 @@ for (const [name, recipeCount, mealCount, photoBytes] of [
       meals: meals.toSorted((a, b) => a.date.localeCompare(b.date) || a.id.localeCompare(b.id)),
       extras: [],
       checks: [],
+      groceries: [],
+      shoppingOrder: { aisles: [], items: [] },
     });
     payloads.push({ name, bytes: Buffer.byteLength(body), gzipBytes: gzipSync(body).length });
     await measure(`${name}/household-api`, async () => {
       const response = await worker.dispatchFetch("http://localhost/api/household");
       assert.equal(response.status, 200);
       await response.json(); // Include transfer and JSON parsing, not just response headers.
+    });
+    await worker.setOptions(options(true));
+    await measure(`${name}/household-api-telemetry`, async () => {
+      const response = await worker.dispatchFetch("http://localhost/api/household");
+      assert.equal(response.status, 200);
+      await response.json();
     });
   } finally {
     await worker.dispose();
@@ -184,7 +204,7 @@ const assets = await Promise.all(
 const report = {
   environment: { node: process.version, cpu: cpus()[0]?.model, platform: process.platform },
   methodology:
-    "25 warm samples after 5 warmups; CPU samples average 10 operations; local disposable D1; no network/auth/cold-start/browser timing",
+    "25 warm samples after 5 warmups; CPU samples average 10 operations; local disposable D1; API telemetry off vs 100% traces/events to a disposable ingestion receiver; no real network/auth/cold-start/browser timing",
   measurements,
   payloads,
   assets,

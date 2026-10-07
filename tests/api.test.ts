@@ -998,7 +998,17 @@ describe("real Worker with disposable SQLite D1", () => {
     expect((await send("demo?today=2026-09-27", "POST", "{}")).status).toBe(200);
     await worker.setOptions(options("false"));
 
-    for (const path of ["/", "/api/household"]) {
+    expect(
+      (
+        await worker.dispatchFetch("http://localhost/api/telemetry", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Origin: "http://localhost" },
+          body: "[]",
+        })
+      ).status,
+    ).toBe(403);
+
+    for (const path of ["/", "/api/household", "/api/telemetry"]) {
       const denied = await worker.dispatchFetch(`http://localhost${path}`);
       expect(denied.status).toBe(403);
       expect(denied.headers.get("WWW-Authenticate")).toBeNull();

@@ -6,6 +6,9 @@ tasks:
   install:
     desc: Install pinned dependencies (bootstrap with npm ci if Task is not installed)
     cmds: [npm ci]
+  deps:add:
+    desc: Add a pinned dependency (-- package@version; updates package.json and lockfile)
+    cmds: ["npm install --save-exact {{.CLI_ARGS}}"]
   orb:setup:
     desc: Prepare the orb, reusing unchanged and validated dependencies
     cmds: [bash -n .agents/setup, .agents/setup]
@@ -62,6 +65,11 @@ tasks:
   test:
     desc: Run local integration smoke tests (optional -- test paths or Vitest flags)
     cmds: ["npm test -- {{.CLI_ARGS}}"]
+  telemetry:smoke:
+    desc: Built-SPA browser E2E with disposable Worker/D1 (optional -- --live sends validation data to Axiom; requires authorization and agent-browser)
+    cmds:
+      - task: build
+      - node tools/telemetry-smoke.ts {{.CLI_ARGS}}
   timers:smoke:
     desc: Browser E2E with a real one-minute expiry (requires agent-browser and running local dev; optional -- local URL)
     cmds: ["node tools/timers-smoke.ts {{.CLI_ARGS}}"]

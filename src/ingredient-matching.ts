@@ -2,6 +2,7 @@ import { Data, Effect, Option, Schema } from "effect";
 import { GroceryId } from "./domain.ts";
 import type { GroceryItem, Ingredient, Recipe, MatchReport } from "./domain.ts";
 import { database, stored, type StorageError, type StoredDataError } from "./storage.ts";
+import { record } from "./observability";
 
 export const normalizationModel = "@cf/meta/llama-3.2-3b-instruct";
 
@@ -34,26 +35,42 @@ export function matchingFailureReason(error: MatchingFailure): string {
 }
 
 const runModel = (ai: Pick<Ai, "run">, model: string, input: Parameters<Ai["run"]>[1]) =>
-  Effect.tryPromise({
-    try: (signal) => ai.run(model, input, { signal }),
-    catch: (cause) =>
-      new MatchingError({
-        reason:
-          cause instanceof SyntaxError
-            ? "invalid_response"
-            : cause instanceof Error && cause.name === "TimeoutError"
-              ? "timeout"
-              : cause instanceof Error && cause.name === "AbortError"
-                ? "aborted"
-                : "dependency_or_internal_error",
-        cause,
+  Effect.gen(function* () {
+    const started = performance.now();
+
+    const result = yield* Effect.tryPromise({
+      try: (signal) => ai.run(model, input, { signal }),
+      catch: (cause) =>
+        new MatchingError({
+          reason:
+            cause instanceof SyntaxError
+              ? "invalid_response"
+              : cause instanceof Error && cause.name === "TimeoutError"
+                ? "timeout"
+                : cause instanceof Error && cause.name === "AbortError"
+                  ? "aborted"
+                  : "dependency_or_internal_error",
+          cause,
+        }),
+    }).pipe(
+      Effect.timeoutOrElse({
+        duration: "15 seconds",
+        orElse: () => Effect.fail(new MatchingError({ reason: "timeout" })),
       }),
-  }).pipe(
-    Effect.timeoutOrElse({
-      duration: "15 seconds",
-      orElse: () => Effect.fail(new MatchingError({ reason: "timeout" })),
-    }),
-  );
+      Effect.tapError((error) =>
+        record("model_failure", {
+          model,
+          reason: error.reason,
+          outcome: "error",
+          durationMs: performance.now() - started,
+        }),
+      ),
+    );
+
+    yield* record("model_call", { model, outcome: "success", durationMs: performance.now() - started });
+
+    return result;
+  }).pipe(Effect.withSpan("ai.model", { attributes: { model } }, { captureStackTrace: false }));
 
 const Normalized = Schema.Struct({ core: Schema.String });
 

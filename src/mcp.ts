@@ -1,5 +1,6 @@
 import { createMcpHandler, McpServer, type ServerContext } from "@modelcontextprotocol/server";
-import { Effect, Schema, Struct } from "effect";
+import { Effect, Schema, Struct, Tracer } from "effect";
+import { record, type Observation } from "./observability";
 import {
   checkKey,
   matchesRecipeSearch,
@@ -117,15 +118,26 @@ const readAnnotations = {
   openWorldHint: false,
 };
 
-function result<T extends Record<string, unknown>>(
-  context: ServerContext,
-  operation: Effect.Effect<T, HouseholdError | AiUnavailable>,
-) {
-  const failure = (text: string) => ({ isError: true as const, content: [{ type: "text" as const, text }] });
-  const unavailable = "Household storage is unavailable. Read the current state before retrying a write.";
+export function recipeMcp(db: D1Database, ai?: Ai, observation?: Observation, tracer = Tracer.nativeTracer) {
+  function result<T extends Record<string, unknown>>(
+    name: string,
+    context: ServerContext,
+    operation: Effect.Effect<T, HouseholdError | AiUnavailable>,
+  ) {
+    const failure = (text: string) => ({
+      isError: true as const,
+      content: [{ type: "text" as const, text }],
+    });
 
-  return Effect.runPromise(
-    operation.pipe(
+    const unavailable = "Household storage is unavailable. Read the current state before retrying a write.";
+
+    const started = performance.now();
+
+    const program = operation.pipe(
+      Effect.tapError((error) =>
+        record("mcp_tool_failure", { operation: name, reason: error._tag, outcome: "error" }),
+      ),
+      Effect.withSpan(`mcp.${name}`),
       Effect.match({
         onSuccess: (data) => ({
           content: [{ type: "text" as const, text: JSON.stringify(data) }],
@@ -136,13 +148,27 @@ function result<T extends Record<string, unknown>>(
             error._tag === "StorageError" || error._tag === "StoredDataError" ? unavailable : error.message,
           ),
       }),
-      Effect.catchCause(() => Effect.succeed(failure(unavailable))),
-    ),
-    { signal: context.mcpReq.signal },
-  );
-}
+      Effect.catchCause(() =>
+        record("mcp_tool_failure", {
+          operation: name,
+          reason: context.mcpReq.signal.aborted ? "aborted" : "internal_error",
+          outcome: "error",
+        }).pipe(Effect.as(failure(unavailable))),
+      ),
+      Effect.tap((output) =>
+        record("mcp_tool", {
+          operation: name,
+          outcome: "isError" in output ? "error" : "success",
+          durationMs: performance.now() - started,
+        }),
+      ),
+    );
 
-export function recipeMcp(db: D1Database, ai?: Ai) {
+    return observation
+      ? observation.run(program, tracer, context.mcpReq.signal)
+      : Effect.runPromise(program, { signal: context.mcpReq.signal });
+  }
+
   return createMcpHandler(
     () => {
       const server = new McpServer(
@@ -163,7 +189,7 @@ export function recipeMcp(db: D1Database, ai?: Ai) {
           outputSchema: mcpSchema(Schema.Struct({ collections: Schema.Array(collection) })),
           annotations: readAnnotations,
         },
-        (_input, context) => result(context, listCollections(db)),
+        (_input, context) => result("list_collections", context, listCollections(db)),
       );
       server.registerTool(
         "search_recipes",
@@ -206,6 +232,7 @@ export function recipeMcp(db: D1Database, ai?: Ai) {
         },
         ({ query, limit, offset }, context) =>
           result(
+            "search_recipes",
             context,
             Effect.gen(function* () {
               const rows = yield* database(() =>
@@ -226,6 +253,10 @@ export function recipeMcp(db: D1Database, ai?: Ai) {
               );
 
               const hasMore = offset + limit < matching.length;
+              yield* record("mcp_search", {
+                recipes: rows.results.length,
+                batchSize: Math.min(limit, Math.max(0, matching.length - offset)),
+              });
 
               return {
                 recipes: matching.slice(offset, offset + limit),
@@ -250,7 +281,7 @@ export function recipeMcp(db: D1Database, ai?: Ai) {
           outputSchema: mcpSchema(getOutput),
           annotations: readAnnotations,
         },
-        ({ ids }, context) => result(context, getRecipes(db, ids)),
+        ({ ids }, context) => result("get_recipes", context, getRecipes(db, ids)),
       );
 
       server.registerTool(
@@ -268,7 +299,7 @@ export function recipeMcp(db: D1Database, ai?: Ai) {
             openWorldHint: false,
           },
         },
-        ({ recipes }, context) => result(context, createRecipes(db, recipes)),
+        ({ recipes }, context) => result("create_recipes", context, createRecipes(db, recipes)),
       );
       server.registerTool(
         "update_recipes",
@@ -294,7 +325,7 @@ export function recipeMcp(db: D1Database, ai?: Ai) {
             openWorldHint: false,
           },
         },
-        ({ updates }, context) => result(context, updateRecipes(db, updates)),
+        ({ updates }, context) => result("update_recipes", context, updateRecipes(db, updates)),
       );
 
       server.registerTool(
@@ -318,7 +349,11 @@ export function recipeMcp(db: D1Database, ai?: Ai) {
           },
         },
         (input, context) =>
-          result(context, saveCollection(db, { ...input, id: input.id ?? crypto.randomUUID() })),
+          result(
+            "save_collection",
+            context,
+            saveCollection(db, { ...input, id: input.id ?? crypto.randomUUID() }),
+          ),
       );
 
       server.registerTool(
@@ -331,7 +366,11 @@ export function recipeMcp(db: D1Database, ai?: Ai) {
           annotations: readAnnotations,
         },
         (_input, context) =>
-          result(context, getGroceries(db).pipe(Effect.map((groceries) => ({ groceries })))),
+          result(
+            "list_groceries",
+            context,
+            getGroceries(db).pipe(Effect.map((groceries) => ({ groceries }))),
+          ),
       );
 
       server.registerTool(
@@ -358,7 +397,11 @@ export function recipeMcp(db: D1Database, ai?: Ai) {
           },
         },
         (input, context) =>
-          result(context, saveGrocery(db, { ...input, id: input.id ?? GroceryId.make(crypto.randomUUID()) })),
+          result(
+            "save_grocery",
+            context,
+            saveGrocery(db, { ...input, id: input.id ?? GroceryId.make(crypto.randomUUID()) }),
+          ),
       );
 
       server.registerTool(
@@ -375,7 +418,7 @@ export function recipeMcp(db: D1Database, ai?: Ai) {
             openWorldHint: true,
           },
         },
-        (_input, context) => result(context, matchGroceries(db, ai)),
+        (_input, context) => result("match_groceries", context, matchGroceries(db, ai)),
       );
 
       server.registerTool(
@@ -389,6 +432,7 @@ export function recipeMcp(db: D1Database, ai?: Ai) {
         },
         ({ start, end }, context) =>
           result(
+            "list_meals",
             context,
             getHousehold(db).pipe(
               Effect.map((data) => ({
@@ -412,7 +456,8 @@ export function recipeMcp(db: D1Database, ai?: Ai) {
             openWorldHint: false,
           },
         },
-        (input, context) => result(context, saveMeal(db, { ...input, id: input.id ?? crypto.randomUUID() })),
+        (input, context) =>
+          result("save_meal", context, saveMeal(db, { ...input, id: input.id ?? crypto.randomUUID() })),
       );
 
       server.registerTool(
@@ -446,6 +491,7 @@ export function recipeMcp(db: D1Database, ai?: Ai) {
         },
         ({ start, end }, context) =>
           result(
+            "get_shopping_list",
             context,
             getHousehold(db).pipe(
               Effect.map((data) => {
@@ -492,7 +538,12 @@ export function recipeMcp(db: D1Database, ai?: Ai) {
             openWorldHint: false,
           },
         },
-        (input, context) => result(context, saveExtra(db, { ...input, id: input.id ?? crypto.randomUUID() })),
+        (input, context) =>
+          result(
+            "save_shopping_extra",
+            context,
+            saveExtra(db, { ...input, id: input.id ?? crypto.randomUUID() }),
+          ),
       );
 
       server.registerTool(
@@ -515,7 +566,7 @@ export function recipeMcp(db: D1Database, ai?: Ai) {
           },
         },
         ({ key, checked }, context) =>
-          result(context, setShoppingChecked(db, { key, checked: checked ? 1 : 0 })),
+          result("set_shopping_checked", context, setShoppingChecked(db, { key, checked: checked ? 1 : 0 })),
       );
 
       server.registerTool(
@@ -532,7 +583,7 @@ export function recipeMcp(db: D1Database, ai?: Ai) {
             openWorldHint: false,
           },
         },
-        (input, context) => result(context, setShoppingOrder(db, input)),
+        (input, context) => result("set_shopping_order", context, setShoppingOrder(db, input)),
       );
 
       server.registerTool(
@@ -548,6 +599,7 @@ export function recipeMcp(db: D1Database, ai?: Ai) {
         },
         ({ url }, context) =>
           result(
+            "import_recipe",
             context,
             importRecipeDraft(url).pipe(
               Effect.map((imported) => {
@@ -603,6 +655,7 @@ export function recipeMcp(db: D1Database, ai?: Ai) {
           },
           ({ id }, context) =>
             result(
+              name,
               context,
               Effect.gen(function* () {
                 if (path === "recipes") {
@@ -645,7 +698,7 @@ export function recipeMcp(db: D1Database, ai?: Ai) {
             openWorldHint: false,
           },
         },
-        ({ today }, context) => result(context, addDemoData(db, today)),
+        ({ today }, context) => result("add_demo_data", context, addDemoData(db, today)),
       );
 
       return server;

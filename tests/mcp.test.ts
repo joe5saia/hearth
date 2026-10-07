@@ -4,7 +4,7 @@ import { rolldown } from "rolldown";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { generateKeyPair, exportJWK, SignJWT } from "jose";
 import { z } from "zod";
-import { Effect } from "effect";
+import { Effect, Schema } from "effect";
 import { updateRecipes } from "../src/recipes";
 import type { GroceryItem } from "../src/domain";
 
@@ -15,6 +15,10 @@ let assertion: string;
 let token: string;
 
 let signingKey: CryptoKey;
+
+const telemetryPayloads: string[] = [];
+
+const telemetryEvents: Record<string, string | number | boolean>[] = [];
 
 const origin = "https://mcp.example.com";
 
@@ -267,8 +271,34 @@ beforeAll(async () => {
           compatibilityFlags: ["nodejs_compat", "global_fetch_strictly_public"],
           d1Databases: ["DB"],
           kvNamespaces: ["OAUTH_KV"],
-          bindings: { MCP_ORIGIN: origin, ACCESS_AUD: "mcp-test", PREVIEW_CLIENT_ID: "preview-test.access" },
+          bindings: {
+            MCP_ORIGIN: origin,
+            ACCESS_AUD: "mcp-test",
+            PREVIEW_CLIENT_ID: "preview-test.access",
+            AXIOM_TOKEN: "disposable-mcp-ingestion",
+            AXIOM_EVENTS_DATASET: "mcp-smoke-events",
+            AXIOM_TRACES_DATASET: "mcp-smoke-traces",
+          },
           outboundService: async (req) => {
+            if (["api.axiom.co", "us-east-1.aws.edge.axiom.co"].includes(new URL(req.url).hostname)) {
+              const body = await req.text();
+              telemetryPayloads.push(body);
+
+              if (new URL(req.url).pathname.startsWith("/v1/ingest/"))
+                telemetryEvents.push(
+                  ...Schema.decodeUnknownSync(
+                    Schema.Array(
+                      Schema.Record(
+                        Schema.String,
+                        Schema.Union([Schema.String, Schema.Number, Schema.Boolean]),
+                      ),
+                    ),
+                  )(JSON.parse(body)),
+                );
+
+              return Response.json({ ingested: 1, failed: 0 });
+            }
+
             if (req.url === "https://cooking.nytimes.com/recipes/1021434-coq-au-vin")
               return new Response(await readFile("tests/fixtures/nyt-coq-au-vin.html", "utf8"));
 
@@ -1147,4 +1177,45 @@ it("allows scaled shopping needs above ingredient input limits and seeds only an
   expect(await success("search_recipes", {})).toEqual(recipes);
   expect(await success("list_meals", { start: "2033-04-04", end: "2033-04-10" })).toEqual(meals);
   expect(await success("get_shopping_list", { start: "2033-04-04", end: "2033-04-10" })).toEqual(shopping);
+});
+
+it("exports MCP tool failures even under HTTP 200 and never exports OAuth credentials or search text", async () => {
+  const before = telemetryEvents.length;
+  await success("search_recipes", { query: "PRIVATE-SEARCH-NEVER-EXPORT" });
+  expect((await call("delete_recipe", { id: "PRIVATE-MISSING-ID-NEVER-EXPORT" })).isError).toBe(true);
+  await expect
+    .poll(() =>
+      telemetryEvents
+        .slice(before)
+        .some((event) => event.event === "mcp_tool_failure" && event.operation === "delete_recipe"),
+    )
+    .toBe(true);
+
+  const failure = telemetryEvents
+    .slice(before)
+    .find((event) => event.event === "mcp_tool_failure" && event.operation === "delete_recipe")!;
+
+  expect(
+    telemetryEvents.find(
+      (event) => event.event === "server_request" && event.requestId === failure.requestId,
+    ),
+  ).toMatchObject({ status: 200 });
+  expect(
+    telemetryEvents.find((event) => event.event === "mcp_tool" && event.requestId === failure.requestId),
+  ).toMatchObject({ outcome: "error" });
+  const exported = telemetryPayloads.join("\n");
+
+  for (const secret of [
+    assertion,
+    token,
+    "joe5saia@gmail.com",
+    "PRIVATE-SEARCH-NEVER-EXPORT",
+    "PRIVATE-MISSING-ID-NEVER-EXPORT",
+    "disposable-mcp-ingestion",
+    "code_verifier",
+    "SELECT ",
+  ])
+    expect(exported).not.toContain(secret);
+  expect(exported).toContain("oauth.dispatch");
+  expect(exported).toContain("mcp.delete_recipe");
 });

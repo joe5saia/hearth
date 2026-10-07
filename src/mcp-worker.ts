@@ -8,8 +8,9 @@ import OAuthProvider, {
 import { createRemoteJWKSet, jwtVerify } from "jose";
 import { recipeMcp } from "./mcp";
 import { consentPage } from "./mcp-consent";
+import { observedFetch, type TelemetryEnv } from "./observability";
 
-export interface McpEnv {
+export interface McpEnv extends TelemetryEnv {
   DB: D1Database;
   AI?: Ai;
   OAUTH_KV: KVNamespace;
@@ -101,45 +102,78 @@ async function authorize(request: Request, env: McpEnv & { OAUTH_PROVIDER: OAuth
 
 export default {
   async fetch(request: Request, env: McpEnv, ctx: ExecutionContext) {
-    if (new URL(request.url).origin !== env.MCP_ORIGIN)
-      return new Response("Unknown origin", { status: 421 });
+    const path = new URL(request.url).pathname;
 
-    const provider = new OAuthProvider<McpEnv>({
-      apiRoute: "/mcp",
-      apiHandler: {
-        async fetch(request, env, context) {
-          // SAFETY: OAuthProvider authenticates the token and supplies this resource context.
-          const auth = (context as OAuthResourceContext<unknown>).auth;
+    const operation = [
+      "/mcp",
+      "/authorize",
+      "/oauth/token",
+      "/oauth/register",
+      "/.well-known/oauth-authorization-server",
+      "/.well-known/oauth-protected-resource/mcp",
+    ].includes(path)
+      ? path.slice(1)
+      : "unknown";
 
-          if (!auth.scope.includes("recipes")) return insufficientScope(auth, ["recipes"]);
+    return observedFetch(request, env, ctx, "hearth-mcp", operation, async (observation, tracer) => {
+      if (new URL(request.url).origin !== env.MCP_ORIGIN)
+        return new Response("Unknown origin", { status: 421 });
 
-          return recipeMcp(env.DB, env.AI).fetch(request, {
-            authInfo: {
-              token: auth.token,
-              clientId: auth.clientId ?? "",
-              scopes: auth.scope,
-              expiresAt: auth.expiresAt,
-              resource: new URL(auth.audience),
-            },
-          });
+      const provider = new OAuthProvider<McpEnv>({
+        apiRoute: "/mcp",
+        apiHandler: {
+          async fetch(request, env, context) {
+            // SAFETY: OAuthProvider authenticates the token and supplies this resource context.
+            const auth = (context as OAuthResourceContext<unknown>).auth;
+
+            if (!auth.scope.includes("recipes")) return insufficientScope(auth, ["recipes"]);
+
+            return recipeMcp(env.DB, env.AI, observation, tracer).fetch(request, {
+              authInfo: {
+                token: auth.token,
+                clientId: auth.clientId ?? "",
+                scopes: auth.scope,
+                expiresAt: auth.expiresAt,
+                resource: new URL(auth.audience),
+              },
+            });
+          },
         },
-      },
-      defaultHandler: {
-        // SAFETY: OAuthProvider injects its documented OAuthHelpers binding before dispatch.
-        fetch: (request, env) => authorize(request, env as McpEnv & { OAUTH_PROVIDER: OAuthHelpers }),
-      },
-      authorizeEndpoint: "/authorize",
-      tokenEndpoint: "/oauth/token",
-      clientRegistrationEndpoint: "/oauth/register",
-      scopesSupported: ["recipes"],
-      requiredScopes: ["recipes"],
-      resourceMetadata: {
-        resource: `${env.MCP_ORIGIN}/mcp`,
-        authorization_servers: [env.MCP_ORIGIN],
-      },
-      clientIdMetadataDocumentEnabled: true,
-    });
+        defaultHandler: {
+          // SAFETY: OAuthProvider injects its documented OAuthHelpers binding before dispatch.
+          fetch: (request, env) =>
+            observation.step(
+              "oauth.consent",
+              () => authorize(request, env as McpEnv & { OAUTH_PROVIDER: OAuthHelpers }),
+              tracer,
+            ),
+        },
+        authorizeEndpoint: "/authorize",
+        tokenEndpoint: "/oauth/token",
+        clientRegistrationEndpoint: "/oauth/register",
+        scopesSupported: ["recipes"],
+        requiredScopes: ["recipes"],
+        resourceMetadata: {
+          resource: `${env.MCP_ORIGIN}/mcp`,
+          authorization_servers: [env.MCP_ORIGIN],
+        },
+        clientIdMetadataDocumentEnabled: true,
+      });
 
-    return provider.fetch(request, env, ctx);
+      const response = await observation.step(
+        "oauth.dispatch",
+        () => provider.fetch(request, env, ctx),
+        tracer,
+      );
+
+      if (response.status >= 400)
+        observation.event("oauth_failure", {
+          operation,
+          status: response.status,
+          outcome: response.status >= 500 ? "error" : "rejected",
+        });
+
+      return response;
+    });
   },
 };

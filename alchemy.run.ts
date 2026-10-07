@@ -4,8 +4,20 @@ import { AlchemyContext } from "alchemy/AlchemyContext";
 import * as Namespace from "alchemy/Namespace";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Redacted from "effect/Redacted";
 import { workerRuntime } from "./cloudflare.config";
 import { publicInstallPaths } from "./src/install-assets";
+
+// Secret bindings never enter the browser bundle. Missing credentials disable ingestion.
+const telemetry = {
+  AXIOM_TOKEN: Redacted.make(process.env.AXIOM_TOKEN ?? ""),
+  AXIOM_TRACES_DATASET: process.env.AXIOM_TRACES_DATASET || "hearth-traces",
+  AXIOM_EVENTS_DATASET: process.env.AXIOM_EVENTS_DATASET || "hearth-events",
+  AXIOM_REGION: process.env.AXIOM_REGION || "us-east-1",
+  TELEMETRY_ENVIRONMENT: "production",
+  TELEMETRY_VERSION: process.env.GITHUB_SHA ?? process.env.TELEMETRY_VERSION ?? "unversioned",
+  TELEMETRY_TRACE_SAMPLE_RATE: process.env.TELEMETRY_TRACE_SAMPLE_RATE || "1",
+};
 
 export const Database = Cloudflare.D1.Database("Database", {
   migrations: "./migrations",
@@ -94,7 +106,7 @@ export const Website = Cloudflare.Worker(
       compatibility: { date: workerRuntime.compatibilityDate },
       dev: { port: 8787 },
       assets: workerRuntime.assets,
-      env: dev ? env : { ...env, AI: Cloudflare.Workers.AI() },
+      env: dev ? env : { ...env, ...telemetry, AI: Cloudflare.Workers.AI() },
     } as const;
   }),
 );
@@ -138,6 +150,7 @@ export const Mcp = Cloudflare.Worker(
       },
       // No Worker `access` enrollment: only /authorize belongs behind Access.
       env: {
+        ...telemetry,
         DB: Database,
         AI: Cloudflare.Workers.AI(),
         OAUTH_KV: McpOAuth,

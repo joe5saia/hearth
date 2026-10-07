@@ -11,6 +11,7 @@ import {
 import { getGroceries, linkIngredients } from "./groceries";
 import { Conflict, MissingReference, NotFound, ValidationError, database, stored } from "./storage";
 import { importRecipe } from "./recipe-import";
+import { record } from "./observability";
 
 export type RecipeRow = Omit<RecipeDraft, "ingredients" | "instructions"> & {
   ingredients: string;
@@ -302,7 +303,7 @@ export function importRecipeDraft(url: string) {
           message:
             error instanceof Error ? error.message : "The recipe couldn’t be imported. Please try again.",
         }),
-    });
+    }).pipe(Effect.withSpan("import.download_parse"));
 
     const recipe = yield* Schema.decodeUnknownEffect(RecipeSchema)(result.recipe).pipe(
       Effect.mapError(
@@ -313,6 +314,13 @@ export function importRecipeDraft(url: string) {
       ),
     );
 
+    yield* record("import_completed", { ingredients: recipe.ingredients.length, outcome: "success" });
+
     return { recipe, warnings: result.warnings };
-  });
+  }).pipe(
+    Effect.tapError(() =>
+      record("import_failure", { reason: "invalid_or_unavailable", outcome: "rejected" }),
+    ),
+    Effect.withSpan("recipe.import"),
+  );
 }

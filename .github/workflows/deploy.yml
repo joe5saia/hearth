@@ -40,6 +40,11 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           GOOGLE_CLIENT_ID: ${{ vars.GOOGLE_CLIENT_ID }}
           GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
+          AXIOM_TOKEN: ${{ secrets.AXIOM_API_TOKEN }}
+          AXIOM_EVENTS_DATASET: ${{ vars.AXIOM_EVENTS_DATASET }}
+          AXIOM_TRACES_DATASET: ${{ vars.AXIOM_TRACES_DATASET }}
+          AXIOM_REGION: ${{ vars.AXIOM_REGION }}
+          TELEMETRY_TRACE_SAMPLE_RATE: ${{ vars.TELEMETRY_TRACE_SAMPLE_RATE }}
       - name: Production MCP smoke check
         run: npx task mcp:smoke
       - name: Build ChatGPT and portable plugin archives
