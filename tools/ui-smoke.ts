@@ -21,13 +21,17 @@ const contexts: any[] = [];
 const tempExtraIds = new Set<string>();
 const tempExtraNames = new Set<string>();
 const changedChecks = new Set<string>();
+const renamedAisles = new Map<string, string>();
 let changedOrder = false;
 let shot = 0;
 
 async function household() {
   const response = await fetch(`${root}/api/household`);
   assert(response.ok, `GET household returned ${response.status}`);
-  return response.json() as Promise<any>;
+  const data = await response.json() as any;
+  // Check rows have no display order; toggling a selected item may change D1 insertion order.
+  data.checks.sort((a: any, b: any) => a.key.localeCompare(b.key));
+  return data;
 }
 const original = await household();
 const originalText = JSON.stringify(original);
@@ -220,14 +224,49 @@ async function commonNavigation(page: any, touch: boolean, label: string, captur
 }
 
 async function shoppingAndTimers(page: any, touch: boolean, label: string, capture: boolean) {
-  await check(label, page.context().browser()?.browserType().name() ?? "webkit", `${page.viewportSize().width}×${page.viewportSize().height}`, "shopping dates, details/grips, mode, check-hide-show-restore, route recovery", async () => {
+  await check(label, page.context().browser()?.browserType().name() ?? "webkit", `${page.viewportSize().width}×${page.viewportSize().height}`, "focused page-options menu activates Arrange route with pointer input", async () => {
     await page.goto(`${root}/#shopping`); await settle(page);
-    await activate(page.locator(".shopping-range summary"), touch);
-    const start = page.getByLabel("Shopping start date"); const end = page.getByLabel("Shopping end date");
-    const startValue = await start.inputValue(); const endValue = await end.inputValue();
-    await start.fill(""); await end.fill("");
-    await page.getByText("Choose a date range").waitFor();
-    await start.fill(startValue); await end.fill(endValue);
+    const options = page.getByLabel("Page options", { exact: true });
+    await options.focus();
+    await page.keyboard.press("Enter");
+    await page.evaluate(() => {
+      const menu = document.querySelector(".page-options")!;
+      (window as any).optionsEvents = [];
+      for (const type of ["pointerdown", "focusout", "click"]) menu.addEventListener(type, (event: Event) => {
+        (window as any).optionsEvents.push({ type, target: (event.target as HTMLElement).tagName, related: (event as FocusEvent).relatedTarget instanceof HTMLElement ? ((event as FocusEvent).relatedTarget as HTMLElement).tagName : null });
+      }, { capture: true });
+    });
+    await activate(page.getByRole("button", { name: "Arrange route", exact: true }), touch);
+    assert(await page.locator(".route-editor").isVisible(), `Arrange route did not activate: ${JSON.stringify(await page.evaluate(() => (window as any).optionsEvents))}`);
+    await activate(options, touch);
+    await activate(page.getByRole("button", { name: "Done arranging", exact: true }), touch);
+    assert.equal(await page.locator(".route-editor").count(), 0);
+    await options.focus();
+    await page.keyboard.press("Enter");
+    // Exercise browsers that clear focus rather than focusing a pointer-activated menu button.
+    await page.evaluate(() => {
+      document.querySelector(".page-options-menu button")!.addEventListener("pointerdown", event => {
+        event.preventDefault();
+        if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
+      }, { once: true });
+    });
+    await activate(page.getByRole("button", { name: "Arrange route", exact: true }), touch);
+    assert(await page.locator(".route-editor").isVisible(), `Focus loss swallowed Arrange route: ${JSON.stringify(await page.evaluate(() => (window as any).optionsEvents))}`);
+    await activate(options, touch);
+    await activate(page.getByRole("button", { name: "Done arranging", exact: true }), touch);
+    await activate(options, touch);
+    await activate(page.getByRole("heading", { name: "Shopping list", exact: true }), touch);
+    assert.equal(await page.locator(".page-options").getAttribute("open"), null, "outside pointer input must still dismiss the menu");
+    await options.focus(); await page.keyboard.press("Enter");
+    await page.getByRole("button", { name: "Arrange route", exact: true }).focus();
+    await page.getByLabel("New household item").focus();
+    assert.equal(await page.locator(".page-options").getAttribute("open"), null, "moving keyboard focus outside must dismiss the menu");
+  });
+  await check(label, page.context().browser()?.browserType().name() ?? "webkit", `${page.viewportSize().width}×${page.viewportSize().height}`, "List Builder, details/grips, membership persistence and route recovery", async () => {
+    await page.goto(`${root}/#shopping`); await settle(page);
+    assert.equal(await page.locator(".shopping-range").count(), 0);
+    await activate(page.getByRole("button", { name: "List Builder", exact: true }), touch);
+    assert.equal(await page.locator(".purchase-row").count(), original.groceries.length);
     const extraName = `UI smoke extra ${Date.now()}`;
     tempExtraNames.add(extraName);
     await page.getByLabel("New household item").fill(extraName);
@@ -258,51 +297,49 @@ async function shoppingAndTimers(page: any, touch: boolean, label: string, captu
       await page.locator(".shopping-save-status").waitFor({ state: "detached" });
       const current = await household();
       for (const key of new Set([...current.checks.map((entry: any) => entry.key), ...original.checks.map((entry: any) => entry.key)])) {
-        const before = original.checks.some((entry: any) => entry.key === key && entry.checked === 1);
-        const after = current.checks.some((entry: any) => entry.key === key && entry.checked === 1);
+        const fallback = key.startsWith('["shopping-list",') ? 1 : 0;
+        const before = original.checks.find((entry: any) => entry.key === key)?.checked ?? fallback;
+        const after = current.checks.find((entry: any) => entry.key === key)?.checked ?? fallback;
         if (before !== after) changedChecks.add(key);
       }
-      await activate(page.getByRole("button", { name: "Hide checked items" }), touch);
-      if (!was) assert.equal(await page.getByLabel(name!).count(), 0, "checked item should hide");
-      await activate(page.getByRole("button", { name: "Show checked items" }), touch);
+      assert.equal(await page.locator(".purchase-row").count(), original.groceries.length, "Builder must always show every grocery");
       const restored = page.getByLabel(name!); await restored.waitFor();
       if ((await restored.isChecked()) !== was) await activate(restored, touch);
       await page.locator(".shopping-save-status").waitFor({ state: "detached" });
     }
+    await activate(page.getByRole("button", { name: "Exit List Builder" }), touch);
     await activate(page.getByLabel("Page options", { exact: true }), touch);
     await activate(page.getByRole("button", { name: "Arrange route" }), touch);
     assert(await page.locator(".route-editor").isVisible());
-    await activate(page.getByRole("button", { name: "Shopping mode" }), touch);
+    await activate(page.getByRole("button", { name: "List Builder", exact: true }), touch);
     assert(await page.locator(".app-shell.shopping-mode").isVisible());
     assert.equal(await page.locator(".route-editor").count(), 0, "shopping mode must replace the editor with a checklist");
     assert(await page.locator('.purchase-row input[type="checkbox"]').first().isVisible());
     if (capture) await screenshot(page, `${label}-shopping-mode`);
-    await activate(page.getByRole("button", { name: "Exit shopping mode" }), touch);
+    await activate(page.getByRole("button", { name: "Exit List Builder" }), touch);
     assert.equal(await page.locator(".route-editor").count(), 0, "exit must retain the usable checklist");
     await auditLayout(page, touch);
   });
 
-  await check(label, page.context().browser()?.browserType().name() ?? "webkit", `${page.viewportSize().width}×${page.viewportSize().height}`, "compact visible warning cue, full accessible disclosure, and no single-item grips", async () => {
+  await check(label, page.context().browser()?.browserType().name() ?? "webkit", `${page.viewportSize().width}×${page.viewportSize().height}`, "catalog package size, product disclosure, and no single-item grips", async () => {
+    await activate(page.getByRole("button", { name: "List Builder", exact: true }), touch);
     const counts = await page.locator(".purchase-group").evaluateAll((groups: Element[]) => groups.map(group => ({
       linked: group.getAttribute("aria-label") !== "Needs linking",
       rows: group.querySelectorAll(".purchase-row").length,
       grips: group.querySelectorAll(".route-drag").length,
     })));
     for (const group of counts) assert.equal(group.grips, group.linked && group.rows > 1 ? group.rows : 0);
-    const warning = page.locator(".purchase-row").filter({ has: page.locator(".purchase-review") }).first();
-    await warning.locator(".purchase-review").waitFor();
-    assert.equal(await warning.locator(".purchase-warning").first().isVisible(), false);
-    assert((await warning.locator("summary").getAttribute("aria-description")).includes("smaller pack"), "full warning must also be available to assistive technology");
-    const compactHeight = (await warning.boundingBox()).height;
+    assert.equal(await page.locator(".purchase-review,.purchase-need").count(), 0);
+    const product = page.locator(".purchase-row").first();
+    const compactHeight = (await product.boundingBox()).height;
     if (page.viewportSize().width >= 393) assert(compactHeight <= 82, `collapsed warning row is too tall: ${compactHeight}px`);
-    await activate(warning.locator("summary"), touch);
-    assert(await warning.locator(".purchase-warning").first().isVisible());
-    assert((await warning.locator(".purchase-warning").allTextContents()).join(" ").includes("smaller pack"), "full warning must remain readable");
+    await activate(product.locator("summary"), touch);
+    assert(await product.getByRole("button", { name: "Edit product" }).isVisible());
     await auditLayout(page, touch);
-    if (capture) await screenshot(page, `${label}-warning-expanded`);
-    await activate(warning.locator("summary"), touch);
-    assert.equal((await warning.boundingBox()).height, compactHeight);
-    if (capture) await screenshot(page, `${label}-warning-compact`);
+    if (capture) await screenshot(page, `${label}-product-expanded`);
+    await activate(product.locator("summary"), touch);
+    assert.equal((await product.boundingBox()).height, compactHeight);
+    if (capture) await screenshot(page, `${label}-builder-compact`);
   });
 
   await check(label, page.context().browser()?.browserType().name() ?? "webkit", `${page.viewportSize().width}×${page.viewportSize().height}`, "timer create, persistence, edit draft cancellation, focus, and cleanup", async () => {
@@ -327,6 +364,7 @@ async function shoppingAndTimers(page: any, touch: boolean, label: string, captu
   });
   await check(label, page.context().browser()?.browserType().name() ?? "webkit", `${page.viewportSize().width}×${page.viewportSize().height}`, `pointer drag, persisted insertion, ${touch ? "rotation cancellation, " : ""}keyboard arrows, quantities and checks preserved`, async () => {
     await page.goto(`${root}/#shopping`); await settle(page);
+    await activate(page.getByRole("button", { name: "List Builder", exact: true }), touch);
     const before = await household();
     const groupIndex = await page.locator(".purchase-group").evaluateAll((groups: Element[]) => groups.findIndex(group => group.querySelectorAll(".route-drag:not(:disabled)").length >= 3));
     assert(groupIndex >= 0, "sample meals must contain three linked products in one aisle");
@@ -366,6 +404,7 @@ async function shoppingAndTimers(page: any, touch: boolean, label: string, captu
     const persistedNames = ids.filter((id: string) => originalNames.includes(committed.groceries.find((item: any) => item.id === id)?.name)).map((id: string) => committed.groceries.find((item: any) => item.id === id).name);
     assert.deepEqual(persistedNames, [...originalNames.slice(1), originalNames[0]], "Worker must persist insertion, not a swap");
     await page.reload(); await settle(page);
+    await activate(page.getByRole("button", { name: "List Builder", exact: true }), touch);
     await group.locator(".purchase-row").first().waitFor();
     assert.deepEqual(await names(), persistedNames, "reload must retain the route");
     if (touch) {
@@ -384,6 +423,7 @@ async function shoppingAndTimers(page: any, touch: boolean, label: string, captu
       await auditLayout(page, touch);
       await page.setViewportSize(viewport);
     }
+    await activate(page.getByRole("button", { name: "Exit List Builder" }), touch);
     await activate(page.getByLabel("Page options", { exact: true }), touch);
     await activate(page.getByRole("button", { name: "Arrange route" }), touch);
     const route = page.getByRole("region", { name: `Arrange ${groupLabel}`, exact: true });
@@ -395,9 +435,146 @@ async function shoppingAndTimers(page: any, touch: boolean, label: string, captu
     assert.deepEqual(afterKeyboard, [routeNames[1], routeNames[0], ...routeNames.slice(2)]);
     await api("shopping-order", "PUT", before.shoppingOrder);
     await page.reload(); await settle(page);
+    await activate(page.getByRole("button", { name: "List Builder", exact: true }), touch);
     await group.locator(".purchase-row").first().waitFor();
     assert.deepEqual(await names(), originalNames);
     assert.deepEqual((await household()).checks, before.checks);
+    await activate(page.getByRole("button", { name: "Exit List Builder" }), touch);
+  });
+  await check(label, page.context().browser()?.browserType().name() ?? "webkit", `${page.viewportSize().width}×${page.viewportSize().height}`, "whole-aisle dragging, rename, cancellation and reload persistence", async () => {
+    await page.reload(); await settle(page);
+    await activate(page.getByLabel("Page options", { exact: true }), touch);
+    await activate(page.getByRole("button", { name: "Arrange route" }), touch);
+    const before = await household();
+    const sections = page.locator(".route-aisle");
+    const names = () => sections.locator("h3").allTextContents();
+    const initial = await names();
+    assert(initial.length >= 3, "aisle smoke needs three aisles");
+    const sourceIndex = 2;
+    const grip = sections.nth(sourceIndex).locator(".aisle-heading > .route-drag");
+    await grip.scrollIntoViewIfNeeded();
+    const box = await grip.boundingBox();
+    await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2 - 12);
+    await sections.first().evaluate((element: HTMLElement) => element.scrollIntoView({ block: "center" }));
+    const target = await sections.first().boundingBox();
+    await page.mouse.move(box.x + box.width / 2, target.y + target.height / 2 - 10, { steps: 15 });
+    await page.waitForFunction(() => !!document.querySelector(".route-aisle.drop-target"));
+    if (capture) await screenshot(page, `${label}-aisle-dragging`);
+    changedOrder = true;
+    await page.mouse.up();
+    await page.locator(".shopping-save-status").waitFor({ state: "detached" });
+    assert.deepEqual(await names(), [initial[2], initial[0], initial[1], ...initial.slice(3)]);
+    const moved = await household();
+    assert.deepEqual(moved.shoppingOrder.items, before.shoppingOrder.items);
+    assert.deepEqual(moved.groceries, before.groceries);
+    assert.deepEqual(moved.checks, before.checks);
+    const viewport = page.viewportSize();
+    const cancelGrip = sections.first().locator(".aisle-heading > .route-drag");
+    await cancelGrip.scrollIntoViewIfNeeded();
+    const cancelBox = await cancelGrip.boundingBox();
+    await page.mouse.move(cancelBox.x + 22, cancelBox.y + 22);
+    await page.mouse.down();
+    await page.mouse.move(cancelBox.x + 22, cancelBox.y + 40);
+    await page.waitForFunction(() => !!document.querySelector(".route-aisle.is-dragging"));
+    await page.setViewportSize({ ...viewport, width: viewport.width + 20 });
+    await page.waitForFunction(() => !document.querySelector(".route-aisle.is-dragging"));
+    await page.mouse.up();
+    await page.setViewportSize(viewport);
+    assert.deepEqual((await household()).shoppingOrder, moved.shoppingOrder, "resizing must cancel an aisle drag without saving");
+    await page.waitForFunction(() => !document.getAnimations().some(animation => animation.playState === "running"));
+    await page.evaluate(() => {
+      const fetch = window.fetch;
+      (window as any).aisleFetch = fetch;
+      window.fetch = (...args) => String(args[0]).endsWith("/api/shopping-order") && args[1]?.method === "PUT"
+        ? new Promise((_, reject) => setTimeout(() => reject(new Error("Aisle smoke rejected save")), 80)) : fetch(...args);
+    });
+    try {
+      await page.evaluate(() => {
+        const aisle = document.querySelector(".route-aisle")!;
+        const product = aisle.querySelector(".route-product")!;
+        const relativeTop = product.getBoundingClientRect().top - aisle.getBoundingClientRect().top;
+        const start = performance.now();
+        const w = window as any;
+        w.aisleFrameErrors = [];
+        w.aisleFramesDone = false;
+        const sample = () => {
+          w.aisleFrameErrors.push(Math.abs(product.getBoundingClientRect().top - aisle.getBoundingClientRect().top - relativeTop));
+          if (performance.now() - start < 700) requestAnimationFrame(sample);
+          else w.aisleFramesDone = true;
+        };
+        sample();
+      });
+      await activate(sections.first().locator('.aisle-heading button[aria-label$="down"]'), touch);
+      await page.waitForFunction(() => (window as any).aisleFramesDone);
+      await page.locator(".shopping-save-status").waitFor({ state: "detached" });
+      assert.deepEqual(await names(), [initial[2], initial[0], initial[1], ...initial.slice(3)]);
+      assert(await page.evaluate(() => (window as any).aisleFrameErrors.every((offset: number) => offset < 1)), "aisle animation/rollback must move products together with their heading");
+      assert.deepEqual((await household()).shoppingOrder, moved.shoppingOrder);
+    } finally {
+      await page.evaluate(() => { window.fetch = (window as any).aisleFetch; });
+    }
+    await page.reload(); await settle(page);
+    await activate(page.getByLabel("Page options", { exact: true }), touch);
+    await activate(page.getByRole("button", { name: "Arrange route" }), touch);
+    assert.deepEqual(await names(), [initial[2], initial[0], initial[1], ...initial.slice(3)]);
+    if (page.context().browser()?.browserType().name() === "chromium") {
+      const cdp = await page.context().newCDPSession(page);
+      try {
+        await cdp.send("Emulation.setTouchEmulationEnabled", { enabled: true, maxTouchPoints: 1 });
+        const touchGrip = sections.nth(1).locator(".aisle-heading > .route-drag");
+        await touchGrip.scrollIntoViewIfNeeded();
+        const touchBox = await touchGrip.boundingBox();
+        const touchTarget = await sections.nth(2).boundingBox();
+        await page.evaluate(() => { (window as any).aislePointer = ""; document.addEventListener("pointerdown", event => { (window as any).aislePointer = event.pointerType; }, { once: true }); });
+        await cdp.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x: touchBox.x + 22, y: touchBox.y + 22 }] });
+        await cdp.send("Input.dispatchTouchEvent", { type: "touchMove", touchPoints: [{ x: touchBox.x + 22, y: touchTarget.y + touchTarget.height / 2 + 10 }] });
+        await page.waitForFunction(() => !!document.querySelector(".route-aisle.drop-target"));
+        assert.equal(await page.evaluate(() => (window as any).aislePointer), "touch");
+        await cdp.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+        await page.locator(".shopping-save-status").waitFor({ state: "detached" });
+        assert.deepEqual((await household()).shoppingOrder, { ...moved.shoppingOrder, aisles: [moved.shoppingOrder.aisles[0], moved.shoppingOrder.aisles[2], moved.shoppingOrder.aisles[1], ...moved.shoppingOrder.aisles.slice(3)] });
+      } finally {
+        await cdp.send("Emulation.setTouchEmulationEnabled", { enabled: false });
+        await cdp.detach();
+      }
+      await api("shopping-order", "PUT", moved.shoppingOrder);
+      await page.reload(); await settle(page);
+      await activate(page.getByLabel("Page options", { exact: true }), touch);
+      await activate(page.getByRole("button", { name: "Arrange route" }), touch);
+    }
+    const oldName = moved.shoppingOrder.aisles[0];
+    const newName = `Smoke aisle ${Date.now()}`;
+    await activate(sections.first().getByRole("button", { name: /^Rename / }), touch);
+    await page.getByLabel("Aisle name", { exact: true }).fill("Canceled aisle");
+    await page.keyboard.press("Escape");
+    assert.equal(await page.getByLabel("Aisle name", { exact: true }).count(), 0);
+    assert.deepEqual((await household()).groceries, before.groceries);
+    await activate(sections.first().getByRole("button", { name: /^Rename / }), touch);
+    await page.getByLabel("Aisle name", { exact: true }).fill(newName);
+    await auditLayout(page, touch);
+    if (capture) await screenshot(page, `${label}-aisle-renaming`);
+    renamedAisles.set(newName, oldName);
+    await activate(page.getByRole("button", { name: "Save", exact: true }), touch);
+    await page.getByLabel("Aisle name", { exact: true }).waitFor({ state: "detached" });
+    const renamed = await household();
+    assert.deepEqual(renamed.groceries, before.groceries.map((item: any) => item.aisle === oldName ? { ...item, aisle: newName } : item));
+    assert.deepEqual(renamed.shoppingOrder, { ...moved.shoppingOrder, aisles: [newName, ...moved.shoppingOrder.aisles.slice(1)] });
+    assert.deepEqual(renamed.checks, before.checks);
+    await page.reload(); await settle(page);
+    await activate(page.getByRole("button", { name: "List Builder", exact: true }), touch);
+    assert.equal(await page.locator(".purchase-group h3").first().textContent(), `Aisle ${newName}`);
+    await api("shopping-aisles", "PUT", { from: newName, to: oldName });
+    renamedAisles.delete(newName);
+    await api("shopping-order", "PUT", before.shoppingOrder);
+    await page.reload(); await settle(page);
+    await activate(page.getByLabel("Page options", { exact: true }), touch);
+    await activate(page.getByRole("button", { name: "Arrange route" }), touch);
+    await auditLayout(page, touch);
+    if (capture) await screenshot(page, `${label}-aisle-controls`);
+    await activate(page.getByLabel("Page options", { exact: true }), touch);
+    await activate(page.getByRole("button", { name: "Done arranging" }), touch);
   });
 }
 
@@ -534,13 +711,18 @@ try {
 } finally {
   // Browser writes are drained and contexts closed before restoring the exact snapshot.
   try {
+    for (const [from, to] of renamedAisles) {
+      if ((await household()).groceries.some((item: any) => item.aisle === from))
+        await api("shopping-aisles", "PUT", { from, to });
+    }
     const current = await household();
     for (const extra of current.extras) if (tempExtraIds.has(extra.id) || tempExtraNames.has(extra.name)) await api(`extras/${encodeURIComponent(extra.id)}`, "DELETE");
     if (changedOrder && JSON.stringify(current.shoppingOrder) !== JSON.stringify(original.shoppingOrder)) await api("shopping-order", "PUT", original.shoppingOrder);
     const allCheckKeys = new Set([...changedChecks, ...current.checks.map((entry: any) => entry.key), ...original.checks.map((entry: any) => entry.key)]);
     for (const key of allCheckKeys) {
-      const wanted = original.checks.some((entry: any) => entry.key === key && entry.checked === 1) ? 1 : 0;
-      const now = current.checks.some((entry: any) => entry.key === key && entry.checked === 1) ? 1 : 0;
+      const fallback = key.startsWith('["shopping-list",') ? 1 : 0;
+      const wanted = original.checks.find((entry: any) => entry.key === key)?.checked ?? fallback;
+      const now = current.checks.find((entry: any) => entry.key === key)?.checked ?? fallback;
       if (wanted !== now) await api("checks", "PUT", { key, checked: wanted });
     }
     const restored = await household();

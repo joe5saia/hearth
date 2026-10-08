@@ -2,6 +2,7 @@ import { Effect, Schema } from "effect";
 import { Conflict, MissingReference, ValidationError, database, stored } from "./storage";
 import {
   GroceryItemSchema,
+  RenameAisleSchema,
   type GroceryItem,
   type GroceryDraft,
   type Ingredient,
@@ -99,14 +100,57 @@ export function groceryStatement(db: D1Database, grocery: GroceryItem) {
     );
 }
 
+export function renameAisle(db: D1Database, input: typeof RenameAisleSchema.Type) {
+  return Effect.gen(function* () {
+    const decoded = yield* Schema.decodeUnknownEffect(RenameAisleSchema)(input).pipe(
+      Effect.mapError(() => new ValidationError({ message: "Enter an aisle name up to 150 characters." })),
+    );
+
+    const from = decoded.from;
+    const to = decoded.to.trim();
+
+    if (from === to) return { ok: true as const };
+
+    const [result] = yield* database(() =>
+      db.batch([
+        db
+          .prepare(
+            "UPDATE groceries SET aisle=? WHERE aisle=? AND NOT EXISTS (SELECT 1 FROM groceries WHERE aisle=?)",
+          )
+          .bind(to, from, to),
+        db
+          .prepare(`UPDATE shopping_order SET aisles=(
+            SELECT json_group_array(aisle) FROM (
+              SELECT CASE WHEN value=? THEN ? ELSE value END AS aisle
+              FROM json_each(shopping_order.aisles)
+              GROUP BY aisle ORDER BY MIN(CAST(key AS INTEGER))
+            )
+          ) WHERE id=1 AND changes()>0`)
+          .bind(from, to),
+      ]),
+    );
+
+    if (!result.meta.changes)
+      return yield* new Conflict({
+        message: "That aisle no longer exists or the new name is already in use.",
+      });
+
+    return { ok: true as const };
+  });
+}
+
 export function deleteGrocery(db: D1Database, id: GroceryId) {
   return Effect.gen(function* () {
-    const result = yield* database(() =>
-      db
-        .prepare(`DELETE FROM groceries WHERE id=? AND NOT EXISTS
+    const [result] = yield* database(() =>
+      db.batch([
+        db
+          .prepare(`DELETE FROM groceries WHERE id=? AND NOT EXISTS
         (SELECT 1 FROM recipes,json_each(recipes.ingredients) AS ingredient WHERE json_extract(ingredient.value,'$.groceryItemId')=?)`)
-        .bind(id, id)
-        .run(),
+          .bind(id, id),
+        db
+          .prepare("DELETE FROM checks WHERE key=? AND NOT EXISTS (SELECT 1 FROM groceries WHERE id=?)")
+          .bind(JSON.stringify(["shopping-list", id]), id),
+      ]),
     );
 
     if (!result.meta.changes)

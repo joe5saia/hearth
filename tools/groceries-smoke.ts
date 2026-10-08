@@ -40,20 +40,10 @@ const recipes: Recipe[] = [
   { id: `${prefix}-lunch`, title: "Rice for lunch", description: "Use the rest of the rice.", servings: 1, minutes: 20, category: "", photo: "", source: "", rating: "neutral", instructions: ["Cook and serve."], ingredients: [{ name: "white rice", quantity: 200, unit: "g" }] },
 ];
 const start = "2099-01-05";
-const end = "2099-01-11";
 const shopping = () => {
   browser("open", `${url}/#shopping`);
-  browser("wait", ".shopping-range");
-  browser("click", ".shopping-range summary");
-  // agent-browser fill treats Chromium date controls as text; use the native input setter and real events.
-  browser("eval", `(() => { for (const [label, value] of [["Shopping end date", "${end}"], ["Shopping start date", "${start}"]]) {
-    const input = document.querySelector('[aria-label="' + label + '"]');
-    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set.call(input, value);
-    input.dispatchEvent(new Event("input", { bubbles: true }));
-    input.dispatchEvent(new Event("change", { bubbles: true }));
-  } })()`);
-  browser("click", ".shopping-range summary");
-  browser("wait", ".purchase-row");
+  browser("reload");
+  browser("wait", ".shopping-summary");
 };
 const screenshot = (name: string) => {
   browser("wait", "--fn", "!document.querySelector('.toast')");
@@ -106,7 +96,7 @@ try {
   browser("set", "viewport", "1280", "1050", "2");
   browser("eval", "scrollTo(0,0)");
   check("[...document.querySelectorAll('.grocery-item')].every(el => el.getBoundingClientRect().height <= 76)", "desktop catalog rows stay compact");
-  check("[...document.querySelectorAll('.grocery-item')].find(el => el.textContent.includes('Long-grain rice')).textContent.includes('Linked: 2 ingredients') && [...document.querySelectorAll('.grocery-item')].find(el => el.textContent.includes('Flat-leaf parsley')).textContent.includes('Missing URL')", "compact metadata retains ingredient counts and setup gaps");
+  check("[...document.querySelectorAll('.grocery-item')].find(el => el.textContent.includes('Long-grain rice')).textContent.includes('Linked: 2 ingredients')", "compact metadata retains ingredient counts");
   screenshot("grocery-catalog");
   const longProduct: GroceryItem = { id: `${prefix}-long`, name: "Organic whole-grain breakfast crackers with rosemary and extra virgin olive oil", aliases: ["compact-fixture"], quantity: 1, unit: "each", aisle: "", url: "" };
   await request("groceries", "PUT", longProduct);
@@ -118,7 +108,7 @@ try {
   browser("eval", "document.querySelector('.grocery-items').scrollIntoView(); scrollBy(0, -document.querySelector('.topbar').getBoundingClientRect().height - 16)");
   screenshot("grocery-catalog-narrow");
   browser("fill", '.grocery-search input', "compact-fixture");
-  check("document.querySelectorAll('.grocery-item').length === 1 && document.querySelector('.grocery-item h2').textContent === 'Organic whole-grain breakfast crackers with rosemary and extra virgin olive oil' && document.querySelector('.grocery-item').textContent.includes('Package: 1 each') && document.querySelectorAll('.grocery-item .grocery-gap').length === 2 && document.querySelector('.grocery-item').textContent.includes('Not linked')", "alias search preserves long names, each units, unlinked state and both gaps");
+  check("document.querySelectorAll('.grocery-item').length === 1 && document.querySelector('.grocery-item h2').textContent === 'Organic whole-grain breakfast crackers with rosemary and extra virgin olive oil' && document.querySelector('.grocery-item').textContent.includes('Package: 1 each') && document.querySelector('.grocery-item .grocery-gap').textContent === 'Missing aisle' && document.querySelector('.grocery-item').textContent.includes('Not linked')", "alias search preserves long names, each units, unlinked state and aisle gap");
   screenshot("grocery-catalog-long-name");
   browser("click", '.grocery-edit');
   browser("wait", ".grocery-form");
@@ -129,9 +119,10 @@ try {
   await request(`groceries/${longProduct.id}`, "DELETE");
   browser("set", "viewport", "1280", "1050", "2");
   shopping();
+  browser("click", '[aria-label="List Builder"]');
   check("[...document.querySelectorAll('.purchase-group h3')].map(el => el.textContent).join('|') === 'Aisle 2|Aisle 10|Aisle Bakery|Aisle Produce'", "numeric then alphabetical aisle order");
-  check("[...document.querySelectorAll('.purchase-row')].find(el => el.textContent.includes('Long-grain rice')).textContent.includes('Buy 1 × 500 g') && [...document.querySelectorAll('.purchase-row')].find(el => el.textContent.includes('Long-grain rice')).textContent.includes('Need 450 g')", "combined recipes round up only after aggregation");
-  check("[...document.querySelectorAll('.purchase-row')].find(el => el.textContent.includes('Fresh limes')).textContent.includes('Cannot convert') && [...document.querySelectorAll('.purchase-row')].find(el => el.textContent.includes('Whole-wheat bread')).textContent.includes('10×')", "incompatible units and excess-purchase warnings visible");
+  check("[...document.querySelectorAll('.purchase-row')].find(el => el.textContent.includes('Long-grain rice')).textContent.includes('500 g') && !document.querySelector('.purchase-need')", "catalog package sizes replace recipe-derived quantities");
+  browser("click", '[aria-label="Exit List Builder"]');
   browser("click", '[aria-label="Page options"]');
   browser("find", "role", "button", "click", "--name", "Arrange route", "--exact");
   browser("click", '[aria-label="Move Aisle Bakery up"]');
@@ -188,8 +179,15 @@ try {
     await cdp("Input.dispatchTouchEvent", { type: "touchCancel", touchPoints: [] });
     check("!document.querySelector('.is-dragging')", "canceling a touch drag clears feedback");
     assert.deepEqual((await household()).shoppingOrder, afterDrag, "Canceled touch must not save.");
+    // Start the independent drop check in a fresh document after Chromium's canceled gesture.
+    browser("reload");
+    browser("wait", ".shopping-summary");
+    browser("click", '[aria-label="Page options"]');
+    browser("find", "role", "button", "click", "--name", "Arrange route", "--exact");
+    point = dragPoints();
     await cdp("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x: point.x, y: point.y }] });
     await cdp("Input.dispatchTouchEvent", { type: "touchMove", touchPoints: [{ x: point.x, y: point.end }] });
+    check("!!document.querySelector('.drop-target')", "second touch drag selects its drop target");
     await cdp("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
     browser("wait", "--fn", "document.querySelector('[aria-label=\"Arrange Aisle 10\"] .route-product > span').textContent.startsWith('Olive oil') && !document.querySelector('[aria-label=\"Drag Olive oil within Aisle 10\"]').disabled");
     assert.deepEqual(aisleOrder(), ["Olive oil", "Long-grain rice", "Rolled oats"]);
@@ -200,43 +198,64 @@ try {
   screenshot("grocery-route");
   browser("reload");
   shopping();
+  check("!document.querySelector('.purchase-row') && !document.querySelector('.shopping-range')", "planned recipes do not dynamically populate the manual list");
+  browser("click", '[aria-label="List Builder"]');
+  check("document.querySelectorAll('.purchase-row').length === 6 && [...document.querySelectorAll('.purchase-row input')].every(box => box.checked)", "List Builder includes all groceries, including unused oats, initially checked and off-list");
   check("document.querySelector('.purchase-group h3').textContent === 'Aisle Bakery' && document.querySelector('[aria-label=\"Aisle 10\"] .item-info strong').textContent === 'Olive oil'", "aisle and within-aisle ordering survive reload");
-  browser("find", "role", "button", "click", "--name", "Shopping mode", "--exact");
-  browser("check", '[aria-label="Picked up Long-grain rice"]');
-  browser("wait", "--fn", "!document.querySelector('[aria-label=\"Picked up Long-grain rice\"]').disabled");
-  browser("find", "role", "button", "click", "--name", "Hide checked items", "--exact");
-  check("!document.querySelector('[aria-label=\"Picked up Long-grain rice\"]') && document.querySelector('.shopping-summary').textContent.includes('4 left')", "checked products hide and remaining count updates");
-  browser("find", "role", "button", "click", "--name", "Show checked items", "--exact");
-  browser("uncheck", '[aria-label="Picked up Long-grain rice"]');
-  browser("wait", "--fn", "!document.querySelector('[aria-label=\"Picked up Long-grain rice\"]').disabled");
-  check("document.documentElement.scrollWidth <= innerWidth", "390px shopping mode has no horizontal overflow");
+  browser("uncheck", '[aria-label="Off list Long-grain rice"]');
+  browser("uncheck", '[aria-label="Off list Rolled oats"]');
+  browser("wait", "--fn", "!document.querySelector('.shopping-save-status')");
+  const riceKey = JSON.stringify(["shopping-list", products[0].id]);
+  assert((await household()).checks.some(entry => entry.key === riceKey && entry.checked === 0));
+  check("document.querySelectorAll('.purchase-row').length === 6 && document.querySelector('.shopping-summary').textContent.includes('2 left')", "unchecking adds items without hiding any catalog rows");
+  for (const width of [320, 390]) {
+    browser("set", "viewport", String(width), "844", "2");
+    check("document.documentElement.scrollWidth <= innerWidth", `${width}px List Builder has no horizontal overflow`);
+  }
+  screenshot("list-builder-narrow");
+  browser("set", "viewport", "1280", "1000", "2");
+  screenshot("list-builder-desktop");
+  browser("click", '[aria-label="Shopping mode"]');
+  check("document.querySelectorAll('.purchase-row').length === 2 && [...document.querySelectorAll('.purchase-row input')].every(box => !box.checked)", "Focus shows only the manually selected groceries");
+  browser("click", '[aria-label="Picked up Long-grain rice"]');
+  browser("wait", "--fn", "!document.querySelector('.shopping-save-status')");
+  check("!document.querySelector('[aria-label=\"Picked up Long-grain rice\"]')", "picking up an item removes it from the active list");
+  browser("click", '[aria-label="List Builder"]');
+  check("document.querySelector('[aria-label=\"Off list Long-grain rice\"]').checked", "removed grocery is checked when revisiting List Builder");
+  browser("uncheck", '[aria-label="Off list Long-grain rice"]');
+  browser("wait", "--fn", "!document.querySelector('.shopping-save-status')");
+  await request("meals", "PUT", { ...(await household()).meals[0], scale: 7, date: "2099-02-01" });
+  browser("reload");
+  browser("wait", ".purchase-row");
+  check("document.querySelectorAll('.purchase-row').length === 2 && document.querySelector('[aria-label=\"Picked up Rolled oats\"]')", "manual selection persists after reload and changing meal date/scale");
+  browser("click", '[aria-label="Shopping mode"]');
   check("[...document.querySelectorAll('.purchase-row')].filter(el => !el.querySelector('.purchase-warning')).every(el => el.getBoundingClientRect().height <= 88) && [...document.querySelectorAll('.purchase-details summary')].every(el => el.getBoundingClientRect().height >= 44)", "compact rows retain 44px disclosure targets");
-  check("[...document.querySelectorAll('.purchase-warning')].every(el => el.getClientRects().length > 0) && !document.querySelector('.purchase-details[open]')", "warnings remain visible with details collapsed");
   browser("click", '[aria-label="Details for Long-grain rice"]');
-  check("[...document.querySelectorAll('.purchase-details[open]')].some(el => el.textContent.includes('Lime rice bowls') && el.textContent.includes('Rice for lunch') && el.querySelector('a').href === 'https://example.com/rice')", "expanded linked row retains recipe sources and product URL");
+  check("[...document.querySelectorAll('.purchase-details[open]')].some(el => el.querySelector('a').href === 'https://example.com/rice') && !document.querySelector('.purchase-need')", "expanded row retains product URL without recipe-derived totals");
   browser("click", '.purchase-details[open] button');
   browser("wait", ".grocery-form");
   check("document.querySelector('.grocery-form input').value === 'Long-grain rice'", "expanded linked row edits the correct product");
   browser("find", "role", "button", "click", "--name", "Cancel", "--exact");
   browser("click", '[aria-label="Details for Long-grain rice"]');
   browser("eval", "scrollTo(0,0)");
+  browser("set", "viewport", "390", "844", "2");
+  check("document.documentElement.scrollWidth <= innerWidth", "390px Focus controls fit without horizontal overflow");
   screenshot("shopping-mode-mobile");
-  browser("eval", "document.querySelector('.purchase-group').scrollIntoView(); scrollBy(0, -285)");
   check("Math.abs(document.querySelector('.shopping-summary').getBoundingClientRect().top) <= 1 && !document.querySelector('.topbar').getClientRects().length", "compact shopping controls stay pinned with app headers hidden");
-  screenshot("shopping-mode-in-store");
   browser("set", "viewport", "1280", "1000", "2");
   browser("eval", "scrollTo(0,0)");
   screenshot("shopping-mode-desktop");
   browser("find", "role", "button", "click", "--name", "Exit shopping mode", "--exact");
-  check("!document.querySelector('.shopping-mode') && document.querySelector('.topbar').getClientRects().length > 0 && document.querySelector('.shopping-range').getClientRects().length > 0 && !document.body.textContent.includes('Export list')", "exit restores normal page headers without removed export control");
+  check("!document.querySelector('.shopping-mode') && document.querySelector('.topbar').getClientRects().length > 0 && !document.querySelector('.shopping-range')", "exit restores normal page headers without recipe date controls");
+  screenshot("shopping-list-default");
   console.log("Grocery browser smoke passed.");
 } catch (error) {
+  console.error(browser("eval", "({order: [...document.querySelectorAll('[aria-label=\"Arrange Aisle 10\"] .route-product > span')].map(el=>el.textContent), drag:document.querySelector('.is-dragging')?.outerHTML, error:document.querySelector('[role=alert]')?.textContent})"));
   console.error(browser("eval", "({form: document.querySelector('.grocery-form')?.innerText, fields: [...document.querySelectorAll('.grocery-form input')].map(input => ({type:input.type,value:input.value,valid:input.validity.valid,message:input.validationMessage}))})"));
   throw error;
 } finally {
   browser("close");
   const current = await household();
-  for (const item of current.checks.filter((item) => item.key.includes(prefix))) await request("checks", "PUT", { key: item.key, checked: 0 });
   for (const item of current.meals.filter((item) => item.id.startsWith(prefix))) await request(`meals/${item.id}`, "DELETE");
   for (const item of current.recipes.filter((item) => item.id.startsWith(prefix))) await request(`recipes/${item.id}`, "DELETE");
   for (const item of (await household()).groceries.filter((item) => item.id.startsWith(prefix) || item.name === "Flat-leaf parsley")) await request(`groceries/${item.id}`, "DELETE");

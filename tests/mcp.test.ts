@@ -874,16 +874,16 @@ it("arranges unused catalog products before planning them through the documented
     note: "",
   });
 
-  const ordered = await success("get_shopping_list", range);
+  expect((await success("get_shopping_list", range)).items).toEqual([]);
+  const ordered = await success("get_shopping_list", { ...range, all: true });
   expect(ordered.items.map((item: any) => item.name)).toEqual(["Z unused product", "A unused product"]);
   expect(ordered.items.map((item: any) => item.key)).toEqual(keys);
   expect(ordered.items.every((item: any) => item.checkKey !== item.key)).toBe(true);
 
   await success("set_shopping_order", { aisles: [], items: [] });
-  expect((await success("get_shopping_list", range)).items.map((item: any) => item.name)).toEqual([
-    "A unused product",
-    "Z unused product",
-  ]);
+  expect(
+    (await success("get_shopping_list", { ...range, all: true })).items.map((item: any) => item.name),
+  ).toEqual(["A unused product", "Z unused product"]);
   await success("delete_meal", { id: meal.id });
   await success("delete_recipe", { id: recipe.id });
 
@@ -980,40 +980,46 @@ it("manages a collection, matched products, inclusive meal plan and shopping lif
   }
 
   expect((await success("list_meals", { start, end })).meals).toEqual(meals.slice(0, 2));
-  const shopping = () => success("get_shopping_list", { start, end });
+  const shopping = () => success("get_shopping_list", { start, end, all: true });
+  expect((await success("get_shopping_list", { start, end })).items).toEqual([]);
   let list = await shopping();
   const riceItem = list.items.find((i: any) => i.grocery?.id === rice.id);
   const milkItem = list.items.find((i: any) => i.grocery?.id === milk.id);
-  expect(list.items).toHaveLength(3);
-  // 250g * 1.5 + 250g * 1 = 625g; ceil(625 / 400) = 2 packs.
+  expect(list.items.filter((i: any) => [rice.id, milk.id].includes(i.grocery?.id))).toHaveLength(2);
   expect(riceItem).toMatchObject({
-    needs: [{ name: "Rice pack", quantity: 625, unit: "g" }],
-    packages: 2,
-    checked: false,
+    needs: [],
+    packages: 1,
+    checked: true,
     warnings: [],
   });
   expect(milkItem).toMatchObject({
-    needs: [{ name: "Workflow milk", quantity: 375, unit: "ml" }],
+    needs: [],
     packages: 1,
   });
-  expect(list.items.find((i: any) => !i.grocery)).toMatchObject({
-    packages: null,
-    needs: [{ name: "workflow rice", quantity: 1.5, unit: "each" }],
-  });
+  expect(list.items.every((i: any) => i.grocery)).toBe(true);
   expect(riceItem.key).not.toBe(riceItem.checkKey);
   await success("set_shopping_checked", { key: riceItem.checkKey, checked: true });
   expect((await shopping()).items.find((i: any) => i.key === riceItem.key).checked).toBe(true);
   await success("set_shopping_checked", { key: riceItem.checkKey, checked: false });
   expect((await shopping()).items.find((i: any) => i.key === riceItem.key).checked).toBe(false);
-  await success("set_shopping_checked", { key: riceItem.checkKey, checked: true });
+  expect((await success("get_shopping_list", { start, end })).items.map((i: any) => i.key)).toEqual([
+    riceItem.key,
+  ]);
   await success("save_meal", { ...meals[0], scale: 2 });
   list = await shopping();
   expect(list.items.find((i: any) => i.key === riceItem.key)).toMatchObject({
     checked: false,
-    packages: 2,
-    needs: [{ name: "Rice pack", quantity: 750, unit: "g" }],
+    packages: 1,
+    needs: [],
   });
-  expect(list.items.find((i: any) => i.key === riceItem.key).checkKey).not.toBe(riceItem.checkKey);
+  expect(list.items.find((i: any) => i.key === riceItem.key).checkKey).toBe(riceItem.checkKey);
+  expect(
+    (await success("get_shopping_list", { start: "2031-01-01", end: "2031-01-01" })).items.map(
+      (i: any) => i.key,
+    ),
+  ).toEqual([riceItem.key]);
+  await success("set_shopping_checked", { key: riceItem.checkKey, checked: true });
+  expect((await success("get_shopping_list", { start, end })).items).toEqual([]);
   const route = { aisles: ["Pantry", "Cold"], items: [riceItem.key, milkItem.key] };
   await success("set_shopping_order", route);
   expect((await shopping()).shoppingOrder).toEqual(route);
@@ -1127,7 +1133,7 @@ it("imports an unsaved NYT draft, refuses unsafe URLs, and saves the reviewed dr
   await success("delete_recipe", { id: saved.id });
 });
 
-it("allows scaled shopping needs above ingredient input limits and seeds only an empty household", async () => {
+it("does not derive shopping needs from scaled meals and seeds only an empty household", async () => {
   const {
     recipes: [large],
   } = await success("create_recipes", {
@@ -1144,9 +1150,7 @@ it("allows scaled shopping needs above ingredient input limits and seeds only an
     note: "",
   });
 
-  expect(
-    (await success("get_shopping_list", { start: meal.date, end: meal.date })).items[0].needs[0].quantity,
-  ).toBe(2_000_000);
+  expect((await success("get_shopping_list", { start: meal.date, end: meal.date })).items).toEqual([]);
   await success("delete_meal", { id: meal.id });
   await success("delete_recipe", { id: large.id });
 

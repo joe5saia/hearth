@@ -464,8 +464,14 @@ export function recipeMcp(db: D1Database, ai?: Ai, observation?: Observation, tr
         "get_shopping_list",
         {
           description:
-            "Compute the app's shopping list for an inclusive date range: scaled recipe totals, unit conversions, rounded package counts, warnings, saved aisle/item order, checked state and all household extras. Extras are global, not date-scoped. Returns items with key (route order) and checkKey (checking this exact range/quantity). Never invent checkKey; catalog route keys can also be constructed as documented by list_groceries. Changed totals become unchecked automatically. packages=null means an amount needs review, not zero. Use these structured results for an export; no browser clipboard access.",
-          inputSchema: mcpSchema(range),
+            "Read the manually built shopping list and household extras. Recipes and meals do not add items. Pass all=true for List Builder's complete grocery catalog: checked means off-list, unchecked means on-list. Default returns only on-list items. start/end are accepted for compatibility but do not affect membership. key is route order; checkKey is persistent grocery membership. Legacy needs/warnings/recipes arrays are empty; packages is 1, not a recipe calculation.",
+          inputSchema: mcpSchema(
+            Schema.Struct({ ...range.fields, all: Schema.optionalKey(Schema.Boolean) }).check(
+              Schema.makeFilter(({ start, end }) => start <= end, {
+                expected: "start must be on or before end",
+              }),
+            ),
+          ),
           outputSchema: mcpSchema(
             Schema.Struct({
               start: date,
@@ -489,31 +495,24 @@ export function recipeMcp(db: D1Database, ai?: Ai, observation?: Observation, tr
           ),
           annotations: readAnnotations,
         },
-        ({ start, end }, context) =>
+        ({ start, end, all }, context) =>
           result(
             "get_shopping_list",
             context,
             getHousehold(db).pipe(
               Effect.map((data) => {
-                const checked = new Set(
-                  data.checks.flatMap((entry) => (entry.checked === 1 ? [entry.key] : [])),
-                );
+                const checks = new Map(data.checks.map((entry) => [entry.key, entry.checked]));
 
                 return {
                   start,
                   end,
-                  items: shoppingList(
-                    data.recipes,
-                    data.meals,
-                    start,
-                    end,
-                    data.groceries,
-                    data.shoppingOrder,
-                  ).map((item) => ({
-                    ...item,
-                    checkKey: checkKey(item, start, end),
-                    checked: checked.has(checkKey(item, start, end)),
-                  })),
+                  items: shoppingList(data.groceries, data.shoppingOrder)
+                    .map((item) => ({
+                      ...item,
+                      checkKey: checkKey(item),
+                      checked: (checks.get(checkKey(item)) ?? 1) === 1,
+                    }))
+                    .filter((item) => all || !item.checked),
                   extras: data.extras,
                   shoppingOrder: data.shoppingOrder,
                 };
@@ -550,7 +549,7 @@ export function recipeMcp(db: D1Database, ai?: Ai, observation?: Observation, tr
         "set_shopping_checked",
         {
           description:
-            "Check or uncheck a computed shopping item. Pass its exact checkKey from get_shopping_list as key, NOT its route-order key. Checking applies only to that date range and quantity; reread after changing the plan. To check a manual extra use save_shopping_extra instead.",
+            "Set persistent grocery list membership. checked=false adds an item; checked=true removes it. New groceries default to checked/off-list. Discover all items with get_shopping_list(all=true), then pass its exact checkKey as key, NOT its route-order key. Meal, recipe, date and package edits do not reset membership. For a manual extra use save_shopping_extra instead.",
           inputSchema: mcpSchema(
             Schema.Struct({
               key: Schema.String.check(Schema.isLengthBetween(1, 1000)),
@@ -573,7 +572,7 @@ export function recipeMcp(db: D1Database, ai?: Ai, observation?: Observation, tr
         "set_shopping_order",
         {
           description:
-            'Replace the saved shopping route. aisles are exact aisle strings; items are item.key strings from get_shopping_list (NOT checkKey), or JSON.stringify(["grocery", id]) using IDs from list_groceries to arrange any catalog products, even before planning meals. Each array must contain unique values. Omitted entries follow the app\'s default order; empty arrays reset it. Both arrays replace the entire previous order and apply to all date ranges. Linked products stay before unlinked items.',
+            'Replace the saved shopping route. aisles are exact aisle strings; items are item.key strings from get_shopping_list (NOT checkKey), or JSON.stringify(["grocery", id]) using IDs from list_groceries to arrange any catalog products, even when off-list. Each array must contain unique values. Omitted entries follow the app\'s default order; empty arrays reset it. Both arrays replace the entire previous order and apply to List Builder and the selected shopping list.',
           inputSchema: mcpSchema(order),
           outputSchema: mcpSchema(ok),
           annotations: {

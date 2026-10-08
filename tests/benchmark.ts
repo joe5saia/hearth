@@ -6,7 +6,7 @@ import { gzipSync } from "node:zlib";
 import { Miniflare, convertV4MiniflareOptions } from "miniflare";
 import { rolldown } from "rolldown";
 import { Schema } from "effect";
-import { shoppingList, displayAmount, RecipeSchema, MealSchema } from "../src/domain.ts";
+import { shoppingList, displayAmount, RecipeSchema, MealSchema, GroceryItemSchema } from "../src/domain.ts";
 
 // Fixed data and serial warm runs: setup, bundling, and seeding are not timed.
 const measurements: { name: string; medianMs: number; p95Ms: number; samples: number }[] = [];
@@ -79,15 +79,22 @@ for (const [name, recipeCount, mealCount, photoBytes] of [
     })),
   );
 
-  const items = shoppingList(recipes, meals, "2026-09-01", "2026-09-28");
-  // Independently computed total: sum of 0.5, 1.5, ..., 11.5 is 72.
-  assert.equal(
-    items.reduce((sum, item) => sum + item.needs[0].quantity, 0),
-    72 * meals.reduce((sum, meal) => sum + meal.scale, 0),
+  const groceries = Schema.decodeUnknownSync(Schema.Array(GroceryItemSchema))(
+    Array.from({ length: recipeCount }, (_, i) => ({
+      id: `grocery-${i}`,
+      name: `Product ${i}`,
+      quantity: 500,
+      unit: "g",
+      aisle: String(i % 20),
+      aliases: [],
+      url: "",
+    })),
   );
-  await measure(`${name}/shopping-week`, () => shoppingList(recipes, meals, "2026-09-21", "2026-09-27"), 10);
-  await measure(`${name}/shopping-month`, () => shoppingList(recipes, meals, "2026-09-01", "2026-09-28"), 10);
-  await measure(`${name}/format-list`, () => items.map((item) => item.needs.map(displayAmount)), 10);
+
+  const items = shoppingList(groceries);
+  assert.equal(items.length, recipeCount);
+  await measure(`${name}/shopping-catalog`, () => shoppingList(groceries), 10);
+  await measure(`${name}/format-list`, () => groceries.map(displayAmount), 10);
 
   const options = (enabled: boolean) =>
     convertV4MiniflareOptions({

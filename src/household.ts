@@ -40,7 +40,7 @@ export const getHousehold = (db: D1Database) =>
         db.prepare("SELECT * FROM recipes ORDER BY title"),
         db.prepare("SELECT * FROM meals ORDER BY date,slot,id"),
         db.prepare("SELECT * FROM extras ORDER BY rowid"),
-        db.prepare("SELECT * FROM checks WHERE checked=1"),
+        db.prepare("SELECT * FROM checks"),
         db.prepare("SELECT * FROM collections ORDER BY name"),
         db.prepare("SELECT * FROM groceries ORDER BY name,id"),
         db.prepare("SELECT aisles,items FROM shopping_order WHERE id=1"),
@@ -175,13 +175,18 @@ export const deleteExtra = (db: D1Database, id: string) =>
 export const setShoppingChecked = (db: D1Database, input: typeof CheckSchema.Type) =>
   Effect.gen(function* () {
     const check = yield* validate(CheckSchema, input, "Invalid shopping item.");
+    // Catalog checks default to 1; retain only the unchecked/on-list exception.
+    // Legacy recipe check identities defaulted to 0 and remain readable without a migration.
+    const defaultChecked = check.key.startsWith('["shopping-list",') ? 1 : 0;
     yield* database(() =>
-      check.checked
-        ? db
-            .prepare("INSERT INTO checks(key,checked) VALUES(?,1) ON CONFLICT(key) DO UPDATE SET checked=1")
-            .bind(check.key)
-            .run()
-        : db.prepare("DELETE FROM checks WHERE key=?").bind(check.key).run(),
+      check.checked === defaultChecked
+        ? db.prepare("DELETE FROM checks WHERE key=?").bind(check.key).run()
+        : db
+            .prepare(
+              "INSERT INTO checks(key,checked) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET checked=excluded.checked",
+            )
+            .bind(check.key, check.checked)
+            .run(),
     );
 
     return ok;

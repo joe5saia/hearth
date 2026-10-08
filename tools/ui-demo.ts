@@ -302,27 +302,26 @@ try {
     await persisted((h) => !h.meals.some((m: any) => m.note === `Leftovers · ${stamp}`));
 
     await chapter(
-      "06 · Shop this week",
-      "Shopping quantities use the saved 1.5× meal, not the cooking preview. Check, hide and show items; inspect warnings and product details; arrange the store route with keyboard-accessible arrows.",
+      "06 · Build a shopping list",
+      "List Builder shows the full grocery catalog. Uncheck a product to add it to the list, use Focus to shop, and arrange the store route with keyboard-accessible arrows. Recipes do not populate the list.",
     );
-    await click(page.getByRole("button", { name: "Shop this week", exact: true }));
+    await click(page.getByRole("button", { name: "Shopping list", exact: true }));
+    await click(page.getByRole("button", { name: "List Builder", exact: true }));
     const purchase = page.locator(".purchase-row").filter({ hasText: productName });
     await purchase.waitFor();
-    assert((await purchase.innerText()).includes("Need 225 g"), "Shopping must use the saved scale");
-    const purchaseKey = JSON.stringify([
-      await page.getByLabel("Shopping start date").inputValue(),
-      await page.getByLabel("Shopping end date").inputValue(),
-      JSON.stringify(["grocery", product.id]),
-      [["g", 225]],
-      [500, "g"],
-    ]);
+    assert(await purchase.locator('input[type="checkbox"]').isChecked(), "New product must start off-list");
+    const purchaseKey = JSON.stringify(["shopping-list", product.id]);
     await click(purchase.locator('input[type="checkbox"]'));
-    await persisted((h) => h.checks.some((entry: any) => entry.key === purchaseKey && entry.checked === 1));
-    await click(page.getByRole("button", { name: "Hide checked items", exact: true }));
+    await persisted((h) => h.checks.some((entry: any) => entry.key === purchaseKey && entry.checked === 0));
+    await click(page.getByRole("button", { name: "Shopping mode", exact: true }));
+    await click(purchase.locator('input[type="checkbox"]'));
+    await persisted((h) => !h.checks.some((entry: any) => entry.key === purchaseKey));
     assert.equal(await purchase.count(), 0);
-    await click(page.getByRole("button", { name: "Show checked items", exact: true }));
+    await click(page.getByRole("button", { name: "List Builder", exact: true }));
     await click(purchase.locator('input[type="checkbox"]'));
-    await persisted((h) => !h.checks.some((entry: any) => entry.key === purchaseKey && entry.checked === 1));
+    await persisted((h) => h.checks.some((entry: any) => entry.key === purchaseKey && entry.checked === 0));
+    await capture("mobile-list-builder");
+    await click(page.getByRole("button", { name: "Exit List Builder", exact: true }));
     await click(purchase.locator("summary"));
     await pause();
     await click(purchase.getByRole("button", { name: "Edit product", exact: true }));
@@ -332,15 +331,6 @@ try {
       "Linked products must not be deletable",
     );
     await click(dialog().getByRole("button", { name: "Cancel", exact: true }));
-    const warning = page
-      .locator(".purchase-row")
-      .filter({ has: page.locator(".purchase-review") })
-      .first();
-    if (await warning.count()) {
-      await click(warning.locator("summary"));
-      await capture("mobile-warning");
-      await pause();
-    }
     await menu("Arrange route");
     const expectedAisles = (await page.locator(".route-aisle > .aisle-heading h3").allTextContents()).map(
       (name: string) => (name === "No aisle assigned" ? "" : name.slice("Aisle ".length)),
@@ -356,15 +346,11 @@ try {
       (h) => JSON.stringify(h.shoppingOrder) === JSON.stringify({ ...beforeOrder, aisles: expectedAisles }),
     );
     await menu("Done arranging");
-    await click(page.locator(".shopping-range > summary"));
-    await page.getByLabel("Shopping end date").fill(date);
-    await page.getByLabel("Shopping start date").fill(date);
-    await click(page.locator(".shopping-range > summary"));
     await pause();
 
     await chapter(
       "07 · Extras and focus mode",
-      "Household extras persist across date ranges. Add and check an extra, use the immersive shopping view, return to navigation, then remove the extra.",
+      "Household extras are independent of meal plans. Add and check an extra, use the immersive shopping view, return to navigation, then remove the extra.",
     );
     await click(page.getByRole("link", { name: "Extras", exact: true }));
     await page.getByLabel("New household item").fill(extraName);
@@ -536,8 +522,9 @@ try {
     if (JSON.stringify(after.shoppingOrder) !== JSON.stringify(original.shoppingOrder))
       await restore("shopping-order", "PUT", original.shoppingOrder);
     for (const key of new Set([...after.checks, ...original.checks].map((check: any) => check.key))) {
-      const wanted = original.checks.some((c: any) => c.key === key && c.checked === 1) ? 1 : 0;
-      const now = after.checks.some((c: any) => c.key === key && c.checked === 1) ? 1 : 0;
+      const fallback = key.startsWith('["shopping-list",') ? 1 : 0;
+      const wanted = original.checks.find((c: any) => c.key === key)?.checked ?? fallback;
+      const now = after.checks.find((c: any) => c.key === key)?.checked ?? fallback;
       if (wanted !== now) await restore("checks", "PUT", { key, checked: wanted });
     }
     assert.deepEqual(await household(), original, "Exact original household must be restored");

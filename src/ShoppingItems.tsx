@@ -1,18 +1,8 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
-import {
-  ArrowDown,
-  ArrowUp,
-  Check,
-  ChevronDown,
-  ExternalLink,
-  GripVertical,
-  Pencil,
-  TriangleAlert,
-} from "lucide-react";
+import { ArrowDown, ArrowUp, Check, ChevronDown, ExternalLink, GripVertical, Pencil } from "lucide-react";
 import {
   compareAisles,
   displayAmount,
-  purchaseAmount,
   savedOrder,
   type GroceryItem,
   type ShoppingItem,
@@ -63,30 +53,34 @@ export function ShoppingItems({
   order,
   busy,
   shoppingMode,
+  listBuilder,
   arranging,
   hideChecked,
   checked,
   toggle,
   saveOrder,
+  renameAisle,
   edit,
-  manage,
 }: {
   items: readonly ShoppingItem[];
   groceries: readonly GroceryItem[];
   order: ShoppingOrder;
   busy: boolean;
   shoppingMode: boolean;
+  listBuilder: boolean;
   arranging: boolean;
   hideChecked: boolean;
   checked: (item: ShoppingItem) => boolean;
   toggle: (item: ShoppingItem) => void;
   saveOrder: (order: ShoppingOrder) => Promise<boolean>;
+  renameAisle: (from: string, to: string) => Promise<boolean>;
   edit: (item: GroceryItem) => void;
-  manage: () => void;
 }) {
+  const [editingAisle, setEditingAisle] = useState<{ aisle: string; name: string } | null>(null);
+
   const [dragging, setDragging] = useState<{
     id: string;
-    aisle: string;
+    aisle: string | null;
     startY: number;
     scrollY: number;
     height: number;
@@ -111,7 +105,7 @@ export function ShoppingItems({
   const capturePositions = () => {
     const top = rootRef.current!.getBoundingClientRect().top;
     positions.current = new Map(
-      [...rootRef.current!.querySelectorAll("[data-reorder-row]")].map((row) => [
+      [...rootRef.current!.querySelectorAll("[data-reorder-row], [data-reorder-aisle]")].map((row) => [
         row,
         row.getBoundingClientRect().top - top,
       ]),
@@ -121,7 +115,7 @@ export function ShoppingItems({
   useLayoutEffect(() => {
     if (isReordering) return;
     const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-    const rows = [...rootRef.current!.querySelectorAll("[data-reorder-row]")];
+    const rows = [...rootRef.current!.querySelectorAll("[data-reorder-row], [data-reorder-aisle]")];
 
     const previous = positions.current.size
       ? positions.current
@@ -129,10 +123,17 @@ export function ShoppingItems({
         ? new Map(
             rows.flatMap((row) => {
               const top = layoutPositions.current.get(row);
+              const parent = row.parentElement?.closest("[data-reorder-aisle]");
+              const parentOffset = parent ? new DOMMatrixReadOnly(getComputedStyle(parent).transform).m42 : 0;
 
               return top === undefined
                 ? []
-                : [[row, top + new DOMMatrixReadOnly(getComputedStyle(row).transform).m42] as const];
+                : [
+                    [
+                      row,
+                      top + parentOffset + new DOMMatrixReadOnly(getComputedStyle(row).transform).m42,
+                    ] as const,
+                  ];
             }),
           )
         : new Map<Element, number>();
@@ -146,7 +147,10 @@ export function ShoppingItems({
     if (reducedMotion) return;
     rows.forEach((row) => {
       const top = previous.get(row);
-      const offset = top === undefined ? 0 : top - layoutPositions.current.get(row)!;
+      const parent = row.parentElement?.closest("[data-reorder-aisle]");
+      const parentTop = parent ? previous.get(parent) : undefined;
+      const parentOffset = parentTop === undefined ? 0 : parentTop - layoutPositions.current.get(parent!)!;
+      const offset = top === undefined ? 0 : top - layoutPositions.current.get(row)! - parentOffset;
 
       if (Math.abs(offset) < 1) return;
       row.animate([{ transform: `translateY(${offset}px)` }, { transform: "translateY(0)" }], {
@@ -165,7 +169,7 @@ export function ShoppingItems({
       if (width === root.offsetWidth && height === root.offsetHeight) return;
       width = root.offsetWidth;
       height = root.offsetHeight;
-      const rows = [...root.querySelectorAll("[data-reorder-row]")];
+      const rows = [...root.querySelectorAll("[data-reorder-row], [data-reorder-aisle]")];
       rows.forEach((row) => row.getAnimations().forEach((animation) => animation.cancel()));
 
       if (dragRef.current) setDrag(null);
@@ -188,10 +192,10 @@ export function ShoppingItems({
   }, []);
 
   useEffect(() => {
-    if (shoppingMode) {
-      if (dragRef.current) setDrag(null);
-    }
-  }, [shoppingMode]);
+    setEditingAisle(null);
+
+    if (dragRef.current) setDrag(null);
+  }, [shoppingMode, arranging]);
 
   const setDrag = (drag: typeof dragging) => {
     if (frame.current !== null) {
@@ -204,7 +208,7 @@ export function ShoppingItems({
     setDragging(drag);
   };
 
-  const rowStyle = (id: string | undefined, aisle: string | undefined, position: number) => {
+  const rowStyle = (id: string | undefined, aisle: string | null | undefined, position: number) => {
     if (!dragging || dragging.aisle !== aisle) return undefined;
 
     if (dragging.id === id) return { transform: `translateY(${dragging.offset}px)` };
@@ -233,15 +237,15 @@ export function ShoppingItems({
       a.id.localeCompare(b.id),
   );
 
-  const groups = [...new Set(items.map((item) => item.grocery?.aisle))];
+  const groups = [...new Set(items.map((item) => item.grocery.aisle))];
 
-  const aisleName = (aisle: string | undefined) =>
-    aisle === undefined ? "Needs linking" : aisle ? `Aisle ${aisle}` : "No aisle assigned";
+  const aisleName = (aisle: string) => (aisle ? `Aisle ${aisle}` : "No aisle assigned");
 
-  const moveAisle = (index: number, direction: -1 | 1) => {
+  const moveAisle = (index: number, target: number) => {
     capturePositions();
     const next = [...aisles];
-    [next[index], next[index + direction]] = [next[index + direction], next[index]];
+    const [aisle] = next.splice(index, 1);
+    next.splice(target, 0, aisle);
     void saveOrder({ ...order, aisles: next });
   };
 
@@ -255,18 +259,24 @@ export function ShoppingItems({
     void saveOrder({ ...order, items: next });
   };
 
-  const dragHandle = (item: GroceryItem, aisleItems: readonly GroceryItem[], position: number) =>
-    aisleItems.length < 2 ? null : (
+  const dragHandle = (id: string, aisle: string | null, ids: readonly string[], position: number) =>
+    ids.length < 2 ? null : (
       <button
         className="route-drag"
-        aria-label={`Drag ${item.name} within ${aisleName(item.aisle)}`}
-        disabled={busy}
+        aria-label={
+          aisle === null
+            ? `Drag ${aisleName(id)}`
+            : `Drag ${groceries.find((item) => item.id === id)!.name} within ${aisleName(aisle)}`
+        }
+        disabled={busy || editingAisle !== null}
         onPointerDown={(event) => {
           if (!event.isPrimary || event.button !== 0) return;
           event.preventDefault();
 
           const rows = [
-            ...event.currentTarget.closest("[data-reorder-group]")!.querySelectorAll("[data-reorder-row]"),
+            ...(aisle === null
+              ? rootRef.current!.querySelectorAll("[data-reorder-aisle]")
+              : event.currentTarget.closest("[data-reorder-group]")!.querySelectorAll("[data-reorder-row]")),
           ];
 
           const visualRects = rows.map((row) => row.getBoundingClientRect());
@@ -276,11 +286,13 @@ export function ShoppingItems({
           const initialOffsets = rects.map((rect, index) => visualRects[index].top - rect.top);
           event.currentTarget.setPointerCapture(event.pointerId);
           setDrag({
-            id: item.id,
-            aisle: item.aisle,
+            id,
+            aisle,
             startY: event.clientY,
             scrollY: window.scrollY,
-            height: rects[position].height,
+            height:
+              rects[position].height +
+              (aisle === null ? parseFloat(getComputedStyle(rows[position]).marginTop) : 0),
             source: position,
             middles: rects.map((rect) => rect.top + rect.height / 2),
             initialOffsets,
@@ -292,7 +304,7 @@ export function ShoppingItems({
         onPointerMove={(event) => {
           const drag = dragRef.current;
 
-          if (drag?.id !== item.id) return;
+          if (drag?.id !== id || drag.aisle !== aisle) return;
 
           let target = position;
           const scrollOffset = window.scrollY - drag.scrollY;
@@ -320,7 +332,14 @@ export function ShoppingItems({
           const drag = dragRef.current;
           setDrag(null);
 
-          if (drag?.id === item.id && drag.target !== position) moveItem(item, aisleItems[drag.target]);
+          if (drag?.id !== id || drag.aisle !== aisle || drag.target === position) return;
+
+          if (aisle === null) moveAisle(position, drag.target);
+          else
+            moveItem(
+              groceries.find((item) => item.id === id)!,
+              groceries.find((item) => item.id === ids[drag.target])!,
+            );
         }}
         onPointerCancel={() => setDrag(null)}
         onLostPointerCapture={() => setDrag(null)}
@@ -334,12 +353,12 @@ export function ShoppingItems({
       {arranging && !shoppingMode ? (
         <div className="route-editor">
           <p className="field-hint">
-            Drag the handles to reorder items within an aisle, or use the arrow buttons. Your whole store is
-            shown, including items not needed this week. Changes save automatically for future trips.
+            Drag the handles to reorder aisles or products, or use the arrow buttons. Click an aisle name to
+            rename it. Your whole store is shown, including items off your list. Changes save automatically.
           </p>
           <button
             className="text-button"
-            disabled={busy || (!order.aisles.length && !order.items.length)}
+            disabled={busy || editingAisle !== null || (!order.aisles.length && !order.items.length)}
             onClick={() => {
               capturePositions();
               void saveOrder({ aisles: [], items: [] });
@@ -353,29 +372,84 @@ export function ShoppingItems({
 
             return (
               <section
-                className="route-aisle"
+                className={`route-aisle${dragging?.aisle === null && dragging.id === aisle ? " is-dragging" : ""}${dragging?.aisle === null && dragging.id !== aisle && aisles[dragging.target] === aisle ? " drop-target" : ""}`}
+                data-reorder-aisle
                 data-reorder-group
                 key={aisle}
+                style={rowStyle(aisle, null, index)}
                 aria-label={`Arrange ${aisleName(aisle)}`}
               >
                 <div className="aisle-heading">
-                  <h3>{aisleName(aisle)}</h3>
+                  {dragHandle(aisle, null, aisles, index)}
+                  {editingAisle?.aisle === aisle ? (
+                    <form
+                      className="aisle-rename"
+                      onSubmit={async (event) => {
+                        event.preventDefault();
+
+                        if (await renameAisle(aisle, editingAisle.name)) setEditingAisle(null);
+                      }}
+                      onKeyDown={(event) => {
+                        if (event.key === "Escape" && !busy) {
+                          event.preventDefault();
+                          setEditingAisle(null);
+                        }
+                      }}
+                    >
+                      <input
+                        aria-label="Aisle name"
+                        value={editingAisle.name}
+                        maxLength={150}
+                        required
+                        autoFocus
+                        disabled={busy}
+                        onChange={(event) => setEditingAisle({ aisle, name: event.target.value })}
+                      />
+                      <button className="primary" disabled={busy || !editingAisle.name.trim()}>
+                        Save
+                      </button>
+                      <button
+                        type="button"
+                        className="secondary"
+                        disabled={busy}
+                        onClick={() => setEditingAisle(null)}
+                      >
+                        Cancel
+                      </button>
+                    </form>
+                  ) : (
+                    <h3 className="aisle-title">
+                      <button
+                        className="aisle-name"
+                        aria-label={`Rename ${aisleName(aisle)}`}
+                        disabled={busy || editingAisle !== null || isReordering}
+                        onClick={() => setEditingAisle({ aisle, name: aisle })}
+                      >
+                        {aisleName(aisle)} <Pencil size={14} />
+                      </button>
+                    </h3>
+                  )}
                   <MoveButtons
                     name={aisleName(aisle)}
                     index={index}
                     length={aisles.length}
-                    busy={busy}
-                    move={(direction) => moveAisle(index, direction)}
+                    busy={busy || editingAisle !== null}
+                    move={(direction) => moveAisle(index, index + direction)}
                   />
                 </div>
                 {aisleItems.map((item, position) => (
                   <div
-                    className={`route-product${dragging?.id === item.id ? " is-dragging" : ""}${dragging?.aisle === aisle && dragging.id !== item.id && aisleItems[dragging.target]?.id === item.id ? " drop-target" : ""}`}
+                    className={`route-product${dragging?.aisle === aisle && dragging.id === item.id ? " is-dragging" : ""}${dragging?.aisle === aisle && dragging.id !== item.id && aisleItems[dragging.target]?.id === item.id ? " drop-target" : ""}`}
                     data-reorder-row
                     key={item.id}
                     style={rowStyle(item.id, aisle, position)}
                   >
-                    {dragHandle(item, aisleItems, position)}
+                    {dragHandle(
+                      item.id,
+                      aisle,
+                      aisleItems.map((entry) => entry.id),
+                      position,
+                    )}
                     <span>
                       {item.name}
                       <small>{displayAmount(item)} per package</small>
@@ -384,7 +458,7 @@ export function ShoppingItems({
                       name={item.name}
                       index={position}
                       length={aisleItems.length}
-                      busy={busy}
+                      busy={busy || editingAisle !== null}
                       move={(direction) => moveItem(item, aisleItems[position + direction])}
                     />
                   </div>
@@ -431,13 +505,19 @@ export function ShoppingItems({
                       key={item.key}
                       style={rowStyle(item.grocery?.id, aisle, position)}
                     >
-                      {item.grocery && dragHandle(item.grocery, aisleItems, position)}
+                      {item.grocery &&
+                        dragHandle(
+                          item.grocery.id,
+                          aisle,
+                          aisleItems.map((entry) => entry.id),
+                          position,
+                        )}
                       <label className="shopping-item">
                         <input
                           type="checkbox"
                           checked={checked(item)}
                           disabled={busy}
-                          aria-label={`Picked up ${item.name}`}
+                          aria-label={listBuilder ? `Off list ${item.name}` : `Picked up ${item.name}`}
                           onChange={() => toggle(item)}
                         />
                         <span className="custom-check">
@@ -446,47 +526,23 @@ export function ShoppingItems({
                         <span className="item-info">
                           <span className="item-heading">
                             <strong>{item.name}</strong>
-                            <span className="purchase-amount">{purchaseAmount(item)}</span>
-                          </span>
-                          <span className="purchase-need">
-                            Need {item.needs.map(displayAmount).join(" + ")}
-                            {item.warnings.length > 0 && (
-                              <span className="purchase-review">
-                                <TriangleAlert size={12} /> Review amount
-                              </span>
-                            )}
+                            <span className="purchase-amount">{displayAmount(item.grocery)}</span>
                           </span>
                         </span>
                       </label>
                       <details className="purchase-details">
-                        <summary
-                          aria-label={`Details for ${item.name}`}
-                          aria-description={item.warnings.join(" ") || undefined}
-                        >
+                        <summary aria-label={`Details for ${item.name}`}>
                           <ChevronDown size={18} />
                         </summary>
-                        {item.warnings.map((warning) => (
-                          <p className="purchase-warning" key={warning}>
-                            <TriangleAlert size={15} />
-                            <span>{warning}</span>
-                          </p>
-                        ))}
-                        <p className="purchase-recipes">{item.recipes.join(" · ")}</p>
                         <div className="purchase-links">
                           {item.grocery?.url && (
                             <a href={item.grocery.url} target="_blank" rel="noreferrer">
                               Store product <ExternalLink size={13} />
                             </a>
                           )}
-                          {item.grocery ? (
-                            <button className="text-button" onClick={() => edit(item.grocery!)}>
-                              <Pencil size={13} /> Edit product
-                            </button>
-                          ) : (
-                            <button className="text-button" onClick={manage}>
-                              Link ingredients <Pencil size={13} />
-                            </button>
-                          )}
+                          <button className="text-button" onClick={() => edit(item.grocery)}>
+                            <Pencil size={13} /> Edit product
+                          </button>
                         </div>
                       </details>
                     </div>

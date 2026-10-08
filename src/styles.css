@@ -415,9 +415,6 @@ main {
 .shop-week {
   min-height: 44px;
 }
-.shopping-range summary {
-  background: #f1f2e9;
-}
 .shopping-summary {
   display: flex;
   justify-content: space-between;
@@ -1016,37 +1013,8 @@ main {
   height: 15px;
   margin: 0;
 }
-.meal-notes-panel {
-  border-top: 1px solid var(--line);
-  padding: 22px;
-}
-.meal-notes-panel h3 {
-  font-family: var(--serif);
-  font-size: 16px;
-}
-.meal-notes-panel > summary {
-  cursor: pointer;
-  min-height: 44px;
-  align-content: center;
-  font-family: var(--serif);
-}
 .extras-panel {
   scroll-margin-top: 120px;
-}
-.meal-notes-panel p {
-  font-size: 10px;
-  color: #929783;
-  line-height: 1.8;
-  margin-top: 7px;
-}
-.meal-notes-panel > div {
-  border-top: 1px solid var(--line);
-  margin-top: 14px;
-  padding-top: 14px;
-}
-.meal-notes-panel small {
-  font-size: 9px;
-  color: #aa9c7d;
 }
 .welcome {
   padding: 24px;
@@ -1742,8 +1710,6 @@ main {
 .item-info small,
 .item-amount,
 .extras-panel > p,
-.meal-notes-panel p,
-.meal-notes-panel small,
 .welcome p,
 .empty-state,
 .empty-state h2,
@@ -2177,9 +2143,6 @@ textarea::placeholder {
     margin-top: 10px;
     padding: 22px;
   }
-  .meal-notes-panel {
-    order: 1;
-  }
   .shopping-item {
     padding: 16px 18px;
   }
@@ -2371,8 +2334,6 @@ textarea::placeholder {
   .range-count,
   .item-info small,
   .extras-panel > p,
-  .meal-notes-panel p,
-  .meal-notes-panel small,
   .selected-recipe small,
   .scale-panel p,
   .field-hint,
@@ -2418,8 +2379,7 @@ textarea::placeholder {
     font-size: 1rem;
   }
   .recipe-row h2,
-  .selected-recipe strong,
-  .meal-notes-panel h3 {
+  .selected-recipe strong {
     font-size: 1.125rem;
   }
   .section-heading h2,

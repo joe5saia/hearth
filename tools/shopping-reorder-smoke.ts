@@ -9,13 +9,17 @@ assert(["localhost", "127.0.0.1"].includes(new URL(url).hostname), "Use local de
 const session = `shopping-${process.pid}`;
 const browser = (...args: string[]) => execFileSync("agent-browser", ["--session", session, ...args], { encoding: "utf8", timeout: 90_000 }).trim();
 const toggleRoute = () => {
+  if (browser("eval", "!!document.querySelector('[aria-label=\"Exit List Builder\"]')") === "true") browser("click", '[aria-label="Exit List Builder"]');
   browser("click", '[aria-label="Page options"]');
   browser("click", '.page-options-menu button[aria-pressed]');
+  if (browser("eval", "!document.querySelector('.route-editor')") === "true") browser("click", '[aria-label="List Builder"]');
 };
 const household = async () => {
   const response = await fetch(`${url}/api/household`);
   assert(response.ok);
-  return response.json();
+  const data = await response.json();
+  data.checks.sort((a: any, b: any) => a.key.localeCompare(b.key));
+  return data;
 };
 const original = await household();
 if (process.argv.includes("--cleanup-check")) {
@@ -29,11 +33,22 @@ if (process.argv.includes("--cleanup-check")) {
 }
 let socket: WebSocket | undefined;
 let recording = false;
+let baselineChecks = original.checks;
 
 try {
+  const aisle = original.groceries.find((item: any) => original.groceries.filter((other: any) => other.aisle === item.aisle).length >= 3)?.aisle;
+  const fixtures = original.groceries.filter((item: any) => item.aisle === aisle).slice(0, 2);
+  assert.equal(fixtures.length, 2, "Load sample groceries with three products in an aisle.");
+  for (const item of fixtures) {
+    const response = await fetch(`${url}/api/checks`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ key: JSON.stringify(["shopping-list", item.id]), checked: 1 }) });
+    assert(response.ok, "Prepare off-list smoke products.");
+  }
+  baselineChecks = (await household()).checks;
   await mkdir(".amp/in/artifacts", { recursive: true });
   browser("open", `${url}/#shopping`);
   browser("set", "viewport", "393", "844", "2");
+  browser("wait", ".shopping-summary");
+  browser("click", '[aria-label="List Builder"]');
   browser("wait", ".purchase-row");
   browser("eval", "document.fonts.ready.then(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))))");
   socket = new WebSocket(browser("get", "cdp-url"));
@@ -109,6 +124,7 @@ try {
       return { x: source.left + source.width / 2, y: source.top + source.height / 2, end: destination.top + destination.height / 2 + (w.dragUp ? -5 : 5) };
     });
     await pause(100);
+    await cdp("Emulation.setTouchEmulationEnabled", { enabled: false });
     await cdp("Emulation.setTouchEmulationEnabled", { enabled: touch, maxTouchPoints: 1 });
     const hit = await cdp("Runtime.evaluate", { expression: `document.elementFromPoint(${point.x}, ${point.y})?.closest('.route-drag') === window.smokeRow.querySelector('.route-drag')`, returnByValue: true });
     assert.equal(hit.result.value, true, "Drag must start on the actual grip after layout settles.");
@@ -154,19 +170,21 @@ try {
   const saved = await household();
   assert.notDeepEqual(saved.shoppingOrder.items, original.shoppingOrder.items);
   assert.deepEqual(saved.shoppingOrder.aisles, original.shoppingOrder.aisles);
-  assert.deepEqual(saved.checks, original.checks);
+  assert.deepEqual(saved.checks, baselineChecks);
   console.log("PASS mouse drag updates immediately, settles without snapback, and persists through a delayed real Worker save");
 
-  browser("click", '[aria-label="Shopping mode"]');
   browser("wait", "--fn", "!document.querySelector('.toast')");
   // H.264 avoids the VP8 encoder falling behind on DPR2 orb captures; motion assertions still sample every animation frame.
-  browser("record", "start", resolve(".amp/in/artifacts/shopping-reorder.mp4"), "--fps", "30", "--cursor");
-  recording = true;
+  if (!process.argv.includes("--no-record")) {
+    browser("record", "start", resolve(".amp/in/artifacts/shopping-reorder.mp4"), "--fps", "10", "--cursor");
+    recording = true;
+  }
   const beforeCancel = await names();
   await drag(true, true);
   await pause(400);
   assert.deepEqual(await names(), beforeCancel);
   assert.deepEqual((await household()).shoppingOrder, saved.shoppingOrder);
+  browser("wait", "--fn", "document.getAnimations().length === 0");
   assert.equal(await evaluate(() => document.getAnimations().length), 0);
   console.log("PASS native touch cancellation smoothly restores rows without saving");
 
@@ -174,9 +192,9 @@ try {
   await drag(true);
   await pause(1500);
   assert.deepEqual(await names(), [...beforeCancel.slice(1), beforeCancel[0]]);
-  assert.deepEqual((await household()).checks, original.checks);
+  assert.deepEqual((await household()).checks, baselineChecks);
+  if (recording) browser("record", "stop");
   recording = false;
-  browser("record", "stop");
   console.log("PASS native touch reorder in shopping mode with fast save acknowledgement");
 
   const beforeFailure = await names();
@@ -238,14 +256,14 @@ try {
   assert.deepEqual(await names(), [...afterRefreshFailure.slice(1), afterRefreshFailure[0]]);
   await pause(1000);
   console.log("PASS reduced motion preserves dragging and immediate ordering without settling animations");
-  assert.deepEqual((await household()).checks, original.checks);
+  assert.deepEqual((await household()).checks, baselineChecks);
   browser("wait", "--fn", "!document.querySelector('.toast')");
   browser("eval", "document.querySelector('[data-reorder-group]').scrollIntoView(); scrollBy(0,-70)");
   browser("screenshot", resolve(".amp/in/artifacts/shopping-reorder.png"));
 
   const groupLabel = await evaluate(() => (window as any).smokeGroup.getAttribute("aria-label"));
   await cdp("Emulation.setEmulatedMedia", { features: [] });
-  browser("click", '[aria-label="Exit shopping mode"]');
+  browser("click", '[aria-label="Exit List Builder"]');
   toggleRoute();
   browser("set", "viewport", "1280", "900", "2");
   await evaluate(() => {
@@ -315,15 +333,15 @@ try {
   assert.equal(await evaluate(() => { const event = new Event("beforeunload", { cancelable: true }); window.dispatchEvent(event); return event.defaultPrevented; }), true, "Pending changes must install an unsaved-exit warning.");
   toggleRoute();
   await cdp("Runtime.evaluate", { expression: `window.smokeGroup = document.querySelector(${JSON.stringify(`[aria-label="${groupLabel}"]`)}); true;`, returnByValue: true });
-  const checkboxLabels = await evaluate(() => [...(window as any).smokeGroup.querySelectorAll('input[type="checkbox"]')].filter((box: any) => !box.checked).slice(0, 2).map((box: any) => box.getAttribute("aria-label")));
-  assert.equal(checkboxLabels.length, 2, "Use two unchecked linked sample products.");
+  const checkboxLabels = await evaluate(() => [...(window as any).smokeGroup.querySelectorAll('input[type="checkbox"]')].filter((box: any) => box.checked).slice(0, 2).map((box: any) => box.getAttribute("aria-label")));
+  assert.equal(checkboxLabels.length, 2, "Use two off-list sample products.");
   assert.equal(await evaluate(() => [...document.querySelectorAll('.purchase-row input, .route-drag')].every((control: any) => !control.disabled)), true, "Pending route saves must not lock checking or dragging.");
   for (const label of [checkboxLabels[0], checkboxLabels[0], checkboxLabels[1]]) browser("click", `[aria-label=${JSON.stringify(label)}]`);
   const immediateCheck = await cdp("Runtime.evaluate", { expression: `document.querySelector(${JSON.stringify(`[aria-label=${JSON.stringify(checkboxLabels[1])}]`)}).checked`, returnByValue: true });
-  assert.equal(immediateCheck.result.value, true, "Checkmarks must update before the queued write is sent.");
+  assert.equal(immediateCheck.result.value, false, "Membership must update before the queued write is sent.");
   await evaluate(() => {
     const w = window as any;
-    const boxes = [...w.smokeGroup.querySelectorAll('input[type="checkbox"]')].filter((box: any) => box.checked);
+    const boxes = [...w.smokeGroup.querySelectorAll('input[type="checkbox"]')].filter((box: any) => !box.checked);
     w.pendingCheckbox = boxes.at(-1);
     w.checkFrames = [];
     const sample = () => {
@@ -338,14 +356,14 @@ try {
   browser("wait", "--fn", "!document.querySelector('.shopping-save-status')");
   const history = await evaluate(() => (window as any).writeHistory);
   assert.deepEqual(history.map((write: any) => write.path.split("/").at(-1)), ["shopping-order", "shopping-order", "checks", "checks", "checks"]);
-  assert.deepEqual(history.slice(2).map((write: any) => write.body.checked), [1, 0, 1]);
-  assert.equal(await evaluate(() => (window as any).checkFrames.every(Boolean)), true, "Older saves/refreshes must not flicker a newer optimistic checkmark.");
+  assert.deepEqual(history.slice(2).map((write: any) => write.body.checked), [0, 1, 0]);
+  assert.equal(await evaluate(() => (window as any).checkFrames.every((value: boolean) => !value)), true, "Older saves/refreshes must not flicker newer optimistic membership.");
   assert.deepEqual((await household()).shoppingOrder, history[1].body);
   const pendingCheck = history.at(-1).body;
-  assert((await household()).checks.some((check: any) => check.key === pendingCheck.key && check.checked === 1));
+  assert((await household()).checks.some((check: any) => check.key === pendingCheck.key && check.checked === 0));
   browser("click", `[aria-label=${JSON.stringify(checkboxLabels[1])}]`);
   browser("wait", "--fn", "!document.querySelector('.shopping-save-status')");
-  assert.deepEqual((await household()).checks, original.checks);
+  assert.deepEqual((await household()).checks, baselineChecks);
   console.log("PASS delayed saves allow consecutive reorders and rapid check/uncheck across products, preserve order, and do not flicker");
 
   toggleRoute();
@@ -363,6 +381,7 @@ try {
   browser("wait", "--fn", "!document.querySelector('.shopping-save-status')");
   assert.deepEqual(await names(), afterKeyboard, "A failed last edit must restore the last acknowledged order.");
   await evaluate(() => { const w = window as any; w.rejectSave = false; w.holdNextRefresh = true; });
+  browser("eval", "scrollTo(0,0)");
   browser("click", ".error button");
   browser("wait", "--fn", "window.heldRefreshReady");
   await keyMove("down");
@@ -382,16 +401,18 @@ try {
   for (const label of checkboxLabels) browser("click", `[aria-label=${JSON.stringify(label)}]`);
   browser("wait", "--fn", "!document.querySelector('.shopping-save-status')");
   const checkedAfterFailure = await evaluate(() => [...(window as any).smokeGroup.querySelectorAll('input[type="checkbox"]')].map((box: any) => ({ label: box.getAttribute("aria-label"), checked: box.checked })));
-  assert.equal(checkedAfterFailure.find((box: any) => box.label === checkboxLabels[0]).checked, false, "Only the failed checkmark should roll back.");
-  assert.equal(checkedAfterFailure.find((box: any) => box.label === checkboxLabels[1]).checked, true, "An independent later checkmark must remain saved.");
+  assert.equal(checkedAfterFailure.find((box: any) => box.label === checkboxLabels[0]).checked, true, "Only the failed membership change should roll back.");
+  assert.equal(checkedAfterFailure.find((box: any) => box.label === checkboxLabels[1]).checked, false, "An independent later membership change must remain saved.");
   assert.equal(await evaluate(() => document.querySelector('.error')?.textContent?.includes("simulated offline save")), true, "Independent failures must not be hidden by a later success.");
   browser("click", `[aria-label=${JSON.stringify(checkboxLabels[1])}]`);
   browser("wait", "--fn", "!document.querySelector('.shopping-save-status')");
-  assert.deepEqual((await household()).checks, original.checks);
+  assert.deepEqual((await household()).checks, baselineChecks);
   assert.equal(await evaluate(() => { const event = new Event("beforeunload", { cancelable: true }); window.dispatchEvent(event); return event.defaultPrevented; }), false, "Exit warning must clear once the queue drains.");
   console.log("PASS an offline check rolls back only that item, independent later checks persist, and pending-exit protection clears");
   const afterRoute = (await household()).shoppingOrder;
   browser("reload");
+  browser("wait", ".shopping-summary");
+  browser("click", '[aria-label="List Builder"]');
   browser("wait", ".purchase-row");
   browser("eval", `(() => { window.smokeGroup = document.querySelector(${JSON.stringify(`[aria-label="${groupLabel}"]`)}); return true; })()`);
   assert.deepEqual(await names(), afterKeyboard.filter(name => before.includes(name)));
@@ -412,8 +433,9 @@ try {
     assert(response.ok, "Restore the original shopping order.");
     const current = await household();
     for (const key of new Set([...current.checks.map((check: any) => check.key), ...original.checks.map((check: any) => check.key)])) {
-      const checked = original.checks.some((check: any) => check.key === key && check.checked === 1) ? 1 : 0;
-      if (current.checks.some((check: any) => check.key === key && check.checked === 1) !== !!checked) {
+      const fallback = key.startsWith('["shopping-list",') ? 1 : 0;
+      const checked = original.checks.find((check: any) => check.key === key)?.checked ?? fallback;
+      if ((current.checks.find((check: any) => check.key === key)?.checked ?? fallback) !== checked) {
         const response = await fetch(`${url}/api/checks`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ key, checked }) });
         assert(response.ok, "Restore the original checkmark.");
       }

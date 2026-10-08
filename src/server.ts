@@ -11,6 +11,7 @@ import {
   CheckSchema,
   CollectionSchema,
   GroceryItemSchema,
+  RenameAisleSchema,
   ShoppingOrderSchema,
   DateSchema,
   RecipeId,
@@ -18,7 +19,7 @@ import {
 } from "./domain";
 import { ValidationError, NotFound } from "./storage";
 import { saveRecipe, deleteRecipe, rateRecipe, importRecipeDraft } from "./recipes";
-import { saveGrocery, deleteGrocery } from "./groceries";
+import { saveGrocery, deleteGrocery, renameAisle } from "./groceries";
 import {
   getHousehold,
   saveCollection,
@@ -82,6 +83,8 @@ function api(request: Request, db: D1Database, ai?: Ai) {
       yield* saveGrocery(db, yield* readJson(request, GroceryItemSchema, "Invalid grocery item."));
     } else if (method === "DELETE" && path.startsWith("/api/groceries/")) {
       yield* deleteGrocery(db, yield* brandedId(path, "/api/groceries/", GroceryId));
+    } else if (method === "PUT" && path === "/api/shopping-aisles") {
+      yield* renameAisle(db, yield* readJson(request, RenameAisleSchema, "Enter a valid aisle name."));
     } else if (method === "PUT" && path === "/api/shopping-order") {
       yield* setShoppingOrder(db, yield* readJson(request, ShoppingOrderSchema, "Invalid shopping order."));
     } else if (method === "POST" && path === "/api/groceries/match") {

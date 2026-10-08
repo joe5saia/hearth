@@ -140,10 +140,9 @@ try {
       if (JSON.stringify(current.shoppingOrder) !== JSON.stringify(original.shoppingOrder))
         await api("shopping-order", "PUT", original.shoppingOrder);
       for (const key of new Set([...current.checks, ...original.checks].map((entry: any) => entry.key))) {
-        const checked = original.checks.some((entry: any) => entry.key === key && entry.checked === 1)
-          ? 1
-          : 0;
-        const now = current.checks.some((entry: any) => entry.key === key && entry.checked === 1) ? 1 : 0;
+        const fallback = key.startsWith('["shopping-list",') ? 1 : 0;
+        const checked = original.checks.find((entry: any) => entry.key === key)?.checked ?? fallback;
+        const now = current.checks.find((entry: any) => entry.key === key)?.checked ?? fallback;
         if (checked !== now) await api("checks", "PUT", { key, checked });
       }
       assert.deepEqual(await household(), original, "Reproduction fallback cleanup failed");

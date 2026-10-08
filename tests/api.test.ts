@@ -234,7 +234,7 @@ describe("real Worker with disposable SQLite D1", () => {
     expect(defect.headers.get("Cache-Control")).toBe("no-store");
     expect(await defect.json()).toEqual({ error: "Something went wrong. Please try again." });
   });
-  it("calculates whole packages from saved links and scaled meals, preserving routes and quantity-sensitive checks", async () => {
+  it("builds a persistent manual grocery list independently of recipes and meal scales", async () => {
     const put = async (path: string, value: typeof Schema.Json.Type) => {
       expect((await send(path, "PUT", JSON.stringify(value))).status).toBe(200);
     };
@@ -311,36 +311,16 @@ describe("real Worker with disposable SQLite D1", () => {
     await put("meals", { ...meal, id: "outside", recipeId: "second", date: "2026-09-28", scale: 100 });
     let household = await state();
 
-    const list = () =>
-      shoppingList(
-        household.recipes,
-        household.meals,
-        "2026-09-21",
-        "2026-09-27",
-        household.groceries,
-        household.shoppingOrder,
-      );
+    const list = () => shoppingList(household.groceries, household.shoppingOrder);
 
     let items = list();
     const byId = (id: string) => items.find((item) => item.grocery?.id === id)!;
-    expect(byId("rice").packages).toBe(1); // Round after combining 300g + 100g, not per recipe.
-    expect(byId("rice").needs).toEqual([{ name: "Rice bag", quantity: 400, unit: "g" }]);
-    expect(byId("beef").packages).toBe(1); // 12oz + 4oz = 1lb, exactly one pack.
-    expect(byId("oil").needs[0].quantity).toBeCloseTo(473.176473, 6); // 2 US cups in ml.
-    expect(byId("oil").packages).toBe(1);
-    expect(byId("bread").packages).toBe(1);
-    expect(byId("bread").warnings.join()).toContain("10×");
-    expect(byId("limes").packages).toBeNull(); // Never show a count for only the convertible subset.
-    expect(byId("limes").needs.map((need) => [need.quantity, need.unit])).toEqual([
-      [3, "each"],
-      [1, "lb"],
-    ]);
-    expect(byId("limes").warnings.join()).toContain("Cannot convert");
-    expect(byId("boundary").packages).toBe(1); // 0.1 * 1.5 + 0.15 floating-point noise.
-    expect(byId("above").packages).toBe(2); // A real amount above the boundary must round up.
-    expect(byId("above").warnings).toEqual([]); // Just below twice the amount required.
-    expect(byId("half").warnings.join()).toContain("2×");
-    expect(items.at(-1)?.warnings.join()).toContain("No grocery item linked");
+    expect(items).toHaveLength(products.length);
+    expect(
+      items.every(
+        (item) => item.needs.length === 0 && item.recipes.length === 0 && item.warnings.length === 0,
+      ),
+    ).toBe(true);
     expect([...new Set(items.filter((item) => item.grocery).map((item) => item.grocery?.aisle))]).toEqual([
       "2",
       "10",
@@ -353,8 +333,9 @@ describe("real Worker with disposable SQLite D1", () => {
       "Rice bag",
     ]);
 
-    const checkedKey = checkKey(byId("rice"), "2026-09-21", "2026-09-27");
-    await put("checks", { key: checkedKey, checked: 1 });
+    const checkedKey = checkKey(byId("rice"));
+    // Unchecking adds a catalog item; checked=0 must survive household refreshes.
+    await put("checks", { key: checkedKey, checked: 0 });
 
     const order = {
       aisles: ["Produce", "Bakery", "10", "2", ""],
@@ -369,15 +350,20 @@ describe("real Worker with disposable SQLite D1", () => {
       "Rice bag",
       "Oil",
     ]);
-    expect(checkKey(byId("rice"), "2026-09-21", "2026-09-27")).toBe(checkedKey);
-    expect(household.checks).toContainEqual({ key: checkedKey, checked: 1 });
-    // A different run has new checks but the same stored walking route.
-    expect(checkKey(byId("rice"), "2026-09-28", "2026-10-04")).not.toBe(checkedKey);
+    expect(checkKey(byId("rice"))).toBe(checkedKey);
+    expect(household.checks).toContainEqual({ key: checkedKey, checked: 0 });
     await put("meals", { ...meal, id: "second-meal", recipeId: "second", date: "2026-09-27", scale: 1.1 });
     household = await state();
     items = list();
-    expect(byId("rice").packages).toBe(1);
-    expect(checkKey(byId("rice"), "2026-09-21", "2026-09-27")).not.toBe(checkedKey);
+    expect(checkKey(byId("rice"))).toBe(checkedKey);
+    expect(household.checks).toContainEqual({ key: checkedKey, checked: 0 });
+    await put("groceries", { ...products[0], quantity: 750, name: "Renamed rice" });
+    household = await state();
+    items = list();
+    expect(checkKey(byId("rice"))).toBe(checkedKey);
+    expect(household.checks).toContainEqual({ key: checkedKey, checked: 0 });
+    await put("checks", { key: checkedKey, checked: 1 });
+    expect((await state()).checks.some((entry) => entry.key === checkedKey)).toBe(false);
     expect(household.shoppingOrder).toEqual(order);
   });
 
@@ -473,6 +459,52 @@ describe("real Worker with disposable SQLite D1", () => {
     expect((await put("shopping-order", { ...order, items: ["rice", "rice"] })).status).toBe(400);
     expect((await send("groceries/other", "DELETE", "")).status).toBe(200);
     expect((await state()).groceries).toHaveLength(1);
+  });
+  it("renames whole aisles atomically while preserving route and list membership", async () => {
+    const put = (path: string, value: typeof Schema.Json.Type) => send(path, "PUT", JSON.stringify(value));
+
+    const state = async () =>
+      Schema.decodeUnknownSync(HouseholdSchema)(
+        await (await worker.dispatchFetch("http://localhost/api/household")).json(),
+      );
+
+    const grocery = {
+      id: "steak",
+      name: "Steak",
+      url: "",
+      aisle: "Meat",
+      quantity: 500,
+      unit: "g",
+      aliases: [],
+    };
+
+    await put("groceries", grocery);
+    await put("groceries", { ...grocery, id: "chicken", name: "Chicken" });
+    await put("groceries", { ...grocery, id: "apples", name: "Apples", aisle: "Produce" });
+
+    const order = {
+      aisles: ["Produce", "Meat", "Butcher", ""],
+      items: ['["grocery","chicken"]', '["grocery","steak"]'],
+    };
+
+    await put("shopping-order", order);
+    await put("checks", { key: '["shopping-list","chicken"]', checked: 0 });
+    const before = await state();
+
+    for (const to of ["   ", "x".repeat(151)])
+      expect((await put("shopping-aisles", { from: "Meat", to })).status).toBe(400);
+    expect((await put("shopping-aisles", { from: "Meat", to: "Produce" })).status).toBe(409);
+    expect((await put("shopping-aisles", { from: "Missing", to: "Butcher" })).status).toBe(409);
+    expect(await state()).toEqual(before);
+    expect((await put("shopping-aisles", { from: "Meat", to: "  Butcher  " })).status).toBe(200);
+    const after = await state();
+    expect(after.groceries).toEqual(
+      before.groceries.map((item) => (item.aisle === "Meat" ? { ...item, aisle: "Butcher" } : item)),
+    );
+    expect(after.shoppingOrder).toEqual({ ...order, aisles: ["Produce", "Butcher", ""] });
+    expect(after.checks).toEqual(before.checks);
+    expect((await put("shopping-aisles", { from: "Butcher", to: "Butcher" })).status).toBe(200);
+    expect(await state()).toEqual(after);
   });
   it("returns one household snapshot when a collection is renamed during a read", async () => {
     const recipe = { ...sampleRecipes[0], category: "Vegetarian" };
@@ -757,9 +789,8 @@ describe("real Worker with disposable SQLite D1", () => {
     expect((await send("recipes", "PUT", JSON.stringify(sampleRecipes[0]))).status).toBe(200);
     expect((await put(meal)).status).toBe(200);
     let state = await household();
-    const ingredients = shoppingList(state.recipes, [meal], meal.date, meal.date);
-    expect(ingredients.length).toBeGreaterThan(0);
-    expect(shoppingList(state.recipes, state.meals, meal.date, meal.date)).toEqual(ingredients);
+    const ingredients = shoppingList(state.groceries);
+    expect(ingredients).toEqual([]);
     const edited = { ...note, date: "2026-09-23", slot: "Lunch" as const, note: "Leftovers" };
     expect((await put(edited)).status).toBe(200);
     expect((await household()).meals).toEqual([meal, edited]);
@@ -768,7 +799,7 @@ describe("real Worker with disposable SQLite D1", () => {
     expect((await household()).meals).toHaveLength(2);
     expect((await put(edited)).status).toBe(200);
     state = await household();
-    expect(shoppingList(state.recipes, state.meals, meal.date, edited.date)).toEqual(ingredients);
+    expect(shoppingList(state.groceries)).toEqual(ingredients);
     expect((await send(`meals/${note.id}`, "DELETE", "{}")).status).toBe(200);
     expect((await household()).meals).toEqual([meal]);
   });
@@ -835,7 +866,7 @@ describe("real Worker with disposable SQLite D1", () => {
     const db = await worker.getD1Database("DB");
     expect(await db.prepare("SELECT count(*) AS count FROM extras").first()).toEqual({ count: 0 });
   });
-  it("removes unchecked identities without changing other checked items", async () => {
+  it("removes legacy unchecked identities without changing other checked items", async () => {
     expect(
       (await send("checks", "PUT", JSON.stringify({ key: "range-ingredient-total", checked: 1 }))).status,
     ).toBe(200);
@@ -914,26 +945,10 @@ describe("real Worker with disposable SQLite D1", () => {
     expect(household.groceries.find((item) => item.id === "demo-link")).toEqual(grocery);
     expect(household.groceries.some((item) => item.id === "sample-chicken")).toBe(false);
 
-    const items = shoppingList(
-      household.recipes,
-      household.meals,
-      "2026-09-21",
-      "2026-09-27",
-      household.groceries,
-    );
-
-    expect(items.find((item) => item.grocery?.id === "sample-pasta")).toMatchObject({
-      packages: 2,
-      needs: [{ quantity: 600, unit: "g" }],
-      warnings: [],
-    });
-    expect(items.find((item) => item.grocery?.id === "sample-avocados")).toMatchObject({
-      packages: 3,
-      needs: [{ quantity: 3, unit: "each" }],
-    });
-    expect(items.find((item) => item.grocery?.id === "sample-oil")?.packages).toBe(1);
-    expect(items.find((item) => item.grocery?.id === "sample-oil")?.warnings[0]).toContain("smaller pack");
-    expect(items.some((item) => !item.grocery)).toBe(true);
+    const items = shoppingList(household.groceries);
+    expect(items).toHaveLength(8);
+    expect(items.every((item) => item.needs.length === 0)).toBe(true);
+    expect(household.checks).toEqual([]);
     expect((await send("demo?today=2026-09-27", "POST", "{}")).status).toBe(409);
     expect(await (await worker.dispatchFetch("http://localhost/api/household")).json()).toEqual(household);
   });

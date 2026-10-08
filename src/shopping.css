@@ -57,20 +57,6 @@
   line-height: 1.4;
   color: var(--olive);
 }
-.purchase-need {
-  font-size: 12px;
-  line-height: 1.4;
-  color: var(--muted);
-}
-.purchase-review {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  margin-left: 6px;
-  color: #795021;
-  font-weight: 500;
-  white-space: nowrap;
-}
 .purchase-details {
   padding: 0;
 }
@@ -98,27 +84,6 @@
 }
 .purchase-details[open] > summary svg {
   transform: rotate(180deg);
-}
-.purchase-warning {
-  display: flex;
-  gap: 6px;
-  align-items: start;
-  background: #f8efdf;
-  color: #795021;
-  border-radius: 4px;
-  padding: 4px 8px;
-  font-size: 12px;
-  line-height: 1.4;
-  margin: 2px 0;
-}
-.purchase-warning svg {
-  flex-shrink: 0;
-  margin-top: 2px;
-}
-.purchase-recipes {
-  color: var(--muted);
-  font-size: 12px;
-  line-height: 1.5;
 }
 .purchase-links {
   display: flex;
@@ -149,6 +114,37 @@
 }
 .route-aisle .aisle-heading {
   padding: 8px 12px;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.aisle-title {
+  flex: 1;
+  min-width: 0;
+}
+.aisle-name {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 44px;
+  text-align: left;
+  font: inherit;
+  color: inherit;
+}
+.aisle-name svg {
+  flex-shrink: 0;
+  color: var(--olive);
+}
+.aisle-rename {
+  display: flex;
+  flex: 1;
+  min-width: 150px;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.aisle-rename input {
+  flex: 1;
+  width: auto;
+  min-width: 120px;
 }
 .route-move {
   display: flex;
@@ -199,10 +195,12 @@
 .route-drag:disabled {
   cursor: default;
 }
-.is-reordering [data-reorder-row]:not(.is-dragging) {
+.is-reordering [data-reorder-row]:not(.is-dragging),
+.is-reordering [data-reorder-aisle]:not(.is-dragging) {
   transition: transform 180ms cubic-bezier(0.2, 0, 0, 1);
 }
 .route-product.is-dragging,
+.route-aisle.is-dragging,
 .purchase-row.is-dragging {
   position: relative;
   z-index: 1;
@@ -214,6 +212,7 @@
   cursor: grabbing;
 }
 .route-product.drop-target,
+.route-aisle.drop-target,
 .purchase-row.drop-target {
   background: #eef0e6;
   outline: 2px solid var(--olive);
@@ -243,18 +242,20 @@
 }
 .shopping-mode .sidebar,
 .shopping-mode .topbar,
-.shopping-mode .shopping-range,
 .shopping-mode .welcome,
 .shopping-mode .shopping-summary [role="status"] > span,
 .shopping-mode .extras-icon,
-.shopping-mode .extras-panel > p,
-.shopping-mode .meal-notes-panel > p {
+.shopping-mode .extras-panel > p {
   display: none;
 }
 .shopping-mode .shopping-side {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: 1fr;
   gap: 20px;
+}
+.builder-hint {
+  max-width: 850px;
+  margin: 8px auto 16px;
 }
 .shopping-mode .shopping-summary {
   position: sticky;
@@ -272,7 +273,8 @@
 }
 .shopping-mode .shopping-controls {
   width: auto;
-  flex-wrap: nowrap;
+  flex-wrap: wrap;
+  justify-content: flex-end;
   margin-left: auto;
 }
 .shopping-mode .shopping-controls button {

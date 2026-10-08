@@ -18,6 +18,7 @@ import {
   ChevronRight,
   Clock3,
   CookingPot,
+  ListChecks,
   Plus,
   Search,
   ShoppingBasket,
@@ -76,7 +77,7 @@ function applyShoppingEdit(state: Pick<Household, "shoppingOrder" | "checks">, e
         shoppingOrder: state.shoppingOrder,
         checks: [
           ...state.checks.filter((entry) => entry.key !== edit.key),
-          ...(edit.checked ? [{ key: edit.key, checked: edit.checked }] : []),
+          ...(!edit.checked ? [{ key: edit.key, checked: edit.checked }] : []),
         ],
       };
 }
@@ -137,6 +138,7 @@ async function api(
     | { url: string }
     | { id: string; name: string; checked: number }
     | { key: string; checked: number }
+    | { from: string; to: string }
     | { rating: Rating },
   operationId = crypto.randomUUID(),
 ) {
@@ -284,11 +286,10 @@ export function App() {
   const [modal, setModal] = useState<Modal | null>(null);
   const [search, setSearch] = useState("");
   const [collectionFilter, setCollectionFilter] = useState("all");
-  const [start, setStart] = useState<string>(weekStart());
-  const [end, setEnd] = useState<string>(addDays(weekStart(), 6));
   const [extra, setExtra] = useState("");
   const [hideChecked, setHideChecked] = useState(false);
   const [shoppingMode, setShoppingMode] = useState(false);
+  const [listBuilder, setListBuilder] = useState(false);
   const [arranging, setArranging] = useState(false);
   const [shoppingPending, setShoppingPending] = useState(0);
   const shoppingEdits = useRef<ShoppingEdit[]>([]);
@@ -449,6 +450,17 @@ export function App() {
     return () => window.removeEventListener("hashchange", sync);
   }, []);
   useEffect(() => {
+    const dismiss = (event: PointerEvent) => {
+      const menu = pageOptions.current?.closest("details");
+
+      if (menu && event.target instanceof Node && !menu.contains(event.target)) menu.removeAttribute("open");
+    };
+
+    document.addEventListener("pointerdown", dismiss);
+
+    return () => document.removeEventListener("pointerdown", dismiss);
+  }, []);
+  useEffect(() => {
     window.scrollTo({ top: 0 });
     setArranging(false);
     pageOptions.current?.closest("details")?.removeAttribute("open");
@@ -587,19 +599,21 @@ export function App() {
         : !selectedCollection || recipe.category === selectedCollection.name),
   );
 
-  const items = useMemo(
-    () => shoppingList(data.recipes, data.meals, start, end, data.groceries, data.shoppingOrder),
-    [data.recipes, data.meals, start, end, data.groceries, data.shoppingOrder],
+  const catalog = useMemo(
+    () => shoppingList(data.groceries, data.shoppingOrder),
+    [data.groceries, data.shoppingOrder],
   );
 
-  const isChecked = (key: string) => data.checks.some((entry) => entry.key === key && entry.checked === 1);
-  const completed = items.filter((item) => isChecked(checkKey(item, start, end))).length;
+  const isChecked = (key: string) => (data.checks.find((entry) => entry.key === key)?.checked ?? 1) === 1;
+  const items = listBuilder ? catalog : catalog.filter((item) => !isChecked(checkKey(item)));
+  const completed = items.filter((item) => isChecked(checkKey(item))).length;
   const totalItems = items.length + data.extras.length;
   const totalCompleted = completed + data.extras.filter((item) => item.checked).length;
-  const rangeMeals = data.meals.filter((meal) => meal.date >= start && meal.date <= end);
 
   return (
-    <div className={`app-shell${page === "shopping" && shoppingMode ? " shopping-mode" : ""}`}>
+    <div
+      className={`app-shell${page === "shopping" && (shoppingMode || listBuilder) ? " shopping-mode" : ""}`}
+    >
       <aside className="sidebar">
         <a className="brand" href="#plan" aria-label="Hearth meal plan">
           <img src="/brand/logo.svg" alt="Hearth" width="184" height="50" />
@@ -680,7 +694,7 @@ export function App() {
               }
             }}
             onBlur={(event) => {
-              if (!event.currentTarget.contains(event.relatedTarget))
+              if (event.relatedTarget && !event.currentTarget.contains(event.relatedTarget))
                 event.currentTarget.removeAttribute("open");
             }}
           >
@@ -694,6 +708,8 @@ export function App() {
                     aria-pressed={arranging}
                     onClick={(event) => {
                       event.currentTarget.closest("details")?.removeAttribute("open");
+                      setShoppingMode(false);
+                      setListBuilder(false);
                       setArranging(!arranging);
                     }}
                   >
@@ -864,16 +880,9 @@ export function App() {
                       <ChevronRight size={17} />
                     </button>
                   </div>
-                  <button
-                    className="text-button shop-week"
-                    onClick={() => {
-                      setStart(week);
-                      setEnd(addDays(week, 6));
-                      navigate("shopping");
-                    }}
-                  >
+                  <button className="text-button shop-week" onClick={() => navigate("shopping")}>
                     <ShoppingBasket size={17} />
-                    <span>Shop this week</span>
+                    <span>Shopping list</span>
                   </button>
                 </div>
                 <div className="calendar">
@@ -1084,64 +1093,6 @@ export function App() {
             )}
             {page === "shopping" && (
               <>
-                <details className="date-disclosure shopping-range">
-                  <summary>
-                    <CalendarDays size={18} />
-                    <span>
-                      {start && end ? (
-                        <>
-                          {readableDate(start, { month: "short", day: "numeric" })}
-                          {start.slice(0, 4) !== end.slice(0, 4) && `, ${start.slice(0, 4)}`}
-                          {" – "}
-                          {readableDate(end, { month: "short", day: "numeric", year: "numeric" })}
-                        </>
-                      ) : (
-                        "Choose a date range"
-                      )}
-                    </span>
-                    <span className="range-edit-label">Change dates</span>
-                    <ChevronDown size={16} />
-                  </summary>
-                  <div className="range-toolbar">
-                    <div className="date-range">
-                      <CalendarDays size={18} />
-                      <label>
-                        From
-                        <input
-                          type="date"
-                          aria-label="Shopping start date"
-                          value={start}
-                          max={end}
-                          onChange={(event) => setStart(event.target.value)}
-                        />
-                      </label>
-                      <span>—</span>
-                      <label>
-                        Through
-                        <input
-                          type="date"
-                          aria-label="Shopping end date"
-                          value={end}
-                          min={start}
-                          onChange={(event) => setEnd(event.target.value)}
-                        />
-                      </label>
-                    </div>
-                    <button
-                      className="today-button"
-                      onClick={() => {
-                        setStart(weekStart());
-                        setEnd(addDays(weekStart(), 6));
-                      }}
-                    >
-                      This week
-                    </button>
-                    <span className="range-count">
-                      {rangeMeals.length} planned meals <span>·</span> {items.length} shopping items
-                    </span>
-                  </div>
-                </details>
-                {start > end && <p className="error">The end date must come after the start date.</p>}
                 <div className="shopping-summary">
                   <div role="status">
                     <strong className={shoppingPending > 0 ? "shopping-save-status" : undefined}>
@@ -1177,6 +1128,7 @@ export function App() {
                       aria-pressed={shoppingMode}
                       onClick={() => {
                         setArranging(false);
+                        setListBuilder(false);
                         setShoppingMode(!shoppingMode);
                       }}
                     >
@@ -1184,28 +1136,48 @@ export function App() {
                       {shoppingMode ? "Exit" : "Focus"}
                     </button>
                     <button
+                      className={listBuilder ? "primary" : "secondary"}
+                      aria-label={listBuilder ? "Exit List Builder" : "List Builder"}
+                      aria-pressed={listBuilder}
+                      onClick={() => {
+                        setArranging(false);
+                        setShoppingMode(false);
+                        setListBuilder(!listBuilder);
+                      }}
+                    >
+                      <ListChecks size={16} />
+                      {listBuilder ? "Exit Builder" : "List Builder"}
+                    </button>
+                    <button
                       className={`secondary ${hideChecked ? "selected" : ""}`}
                       aria-label={hideChecked ? "Show checked items" : "Hide checked items"}
                       aria-pressed={hideChecked}
+                      disabled={listBuilder}
                       onClick={() => setHideChecked(!hideChecked)}
                     >
                       <SlidersHorizontal size={16} /> {hideChecked ? "Show checked" : "Hide checked"}
                     </button>
                   </div>
                 </div>
+                {listBuilder && (
+                  <p className="field-hint builder-hint">
+                    Uncheck an item to add it to your list. Checked items are off the list.
+                  </p>
+                )}
                 <div className="shopping-layout">
-                  <section className="shopping-panel" aria-label="Meal ingredients">
+                  <section className="shopping-panel" aria-label="Grocery shopping list">
                     <ShoppingItems
                       items={items}
                       groceries={data.groceries}
                       order={data.shoppingOrder}
                       busy={busy}
-                      shoppingMode={shoppingMode}
+                      shoppingMode={shoppingMode || listBuilder}
+                      listBuilder={listBuilder}
                       arranging={arranging}
-                      hideChecked={hideChecked}
-                      checked={(item) => isChecked(checkKey(item, start, end))}
+                      hideChecked={listBuilder ? false : hideChecked}
+                      checked={(item) => isChecked(checkKey(item))}
                       toggle={(item) => {
-                        const key = checkKey(item, start, end);
+                        const key = checkKey(item);
 
                         const pending = shoppingEdits.current.findLast(
                           (edit) => edit.kind === "check" && edit.key === key,
@@ -1215,23 +1187,29 @@ export function App() {
                         void saveShoppingEdit({ kind: "check", key, checked: checked ? 0 : 1 });
                       }}
                       saveOrder={(order) => saveShoppingEdit({ kind: "order", order })}
+                      renameAisle={async (from, to) => {
+                        setBusy(true);
+                        await shoppingWrites.current;
+
+                        return mutate("shopping-aisles", "PUT", { from, to }, "Aisle renamed");
+                      }}
                       edit={(item) => setModal({ kind: "grocery", item })}
-                      manage={() => navigate("groceries")}
                     />
-                    {hideChecked && items.length > 0 && completed === items.length && (
-                      <div className="empty-state">
-                        <Check size={28} />
-                        <h2>Meal ingredients are all checked</h2>
-                        <p>Use “Show checked items” to review what’s in your basket.</p>
-                      </div>
-                    )}
                     {items.length === 0 && (
                       <div className="empty-state">
                         <ShoppingBasket size={32} />
                         <h2>Nothing to shop for just yet</h2>
-                        <p>Add a meal to this date range and its ingredients will appear here.</p>
-                        <button className="text-button" onClick={() => navigate("plan")}>
-                          Plan a meal <ArrowRight size={15} />
+                        <p>
+                          {catalog.length
+                            ? "Open List Builder and uncheck the groceries you need."
+                            : "Add grocery items to build your shopping list."}
+                        </p>
+                        <button
+                          className="text-button"
+                          onClick={() => (catalog.length ? setListBuilder(true) : navigate("groceries"))}
+                        >
+                          {catalog.length ? "Open List Builder" : "Add grocery items"}{" "}
+                          <ArrowRight size={15} />
                         </button>
                       </div>
                     )}
@@ -1239,7 +1217,7 @@ export function App() {
                   <aside className="shopping-side">
                     <section className="extras-panel" id="household-extras">
                       <h2>Household extras</h2>
-                      <p>Kept across date ranges.</p>
+                      <p>Added manually, independently of your meal plan.</p>
                       <form
                         className="extra-form"
                         onSubmit={async (event) => {
@@ -1302,26 +1280,6 @@ export function App() {
                         <p className="extras-complete">All household extras are checked.</p>
                       )}
                     </section>
-                    {rangeMeals.some((meal) => meal.note) && (
-                      <details className="meal-notes-panel">
-                        <summary>Notes from your plan</summary>
-                        <p>Reminders only — not added to ingredient totals. Add any extras above.</p>
-                        {rangeMeals.map((meal) =>
-                          meal.note ? (
-                            <div key={meal.id}>
-                              <small>
-                                {readableDate(meal.date, {
-                                  weekday: "short",
-                                  month: "short",
-                                  day: "numeric",
-                                })}
-                              </small>
-                              <p>{meal.note}</p>
-                            </div>
-                          ) : null,
-                        )}
-                      </details>
-                    )}
                   </aside>
                 </div>
               </>
