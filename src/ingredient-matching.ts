@@ -468,6 +468,8 @@ export function matchIngredients(
   groceries: readonly GroceryItem[],
   db?: D1Database,
   suppliedRunId?: string,
+  recipeIds?: readonly string[],
+  deadline?: number,
 ) {
   return Effect.gen(function* () {
     const runId = suppliedRunId ?? crypto.randomUUID();
@@ -517,7 +519,9 @@ export function matchIngredients(
 
     const pending = matched.flatMap((recipe, recipeIndex) =>
       recipe.ingredients.flatMap((ingredient, index) =>
-        ingredient.groceryItemId === undefined && groceries.length
+        ingredient.groceryItemId === undefined &&
+        groceries.length &&
+        (!recipeIds || recipeIds.includes(recipe.id))
           ? [{ recipe, recipeIndex, ingredient, index }]
           : [],
       ),
@@ -537,7 +541,7 @@ export function matchIngredients(
     let lastProgress = started;
 
     // Bound model calls and D1 work together; a failed ingredient must not interrupt its peers.
-    yield* Effect.forEach(
+    const work = Effect.forEach(
       pending,
       ({ recipe, recipeIndex, ingredient, index }) =>
         Effect.gen(function* () {
@@ -690,6 +694,19 @@ export function matchIngredients(
         }),
       { concurrency: 3, discard: true },
     );
+
+    if (deadline === undefined) yield* work;
+    else {
+      // Interrupt outstanding inference, but return completed decisions for guarded persistence.
+      const finished = yield* work.pipe(Effect.timeoutOption(Math.max(0, deadline - performance.now())));
+
+      if (Option.isNone(finished)) {
+        report.attempted = pending.length;
+        report.failed = pending.length - report.matched - report.unmatched;
+        console.warn(JSON.stringify({ event: "ingredient_matching_deadline", runId, failed: report.failed }));
+      }
+    }
+
     report.totalMs = performance.now() - started;
 
     return { recipes: matched, report };

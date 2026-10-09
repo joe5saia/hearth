@@ -12,7 +12,24 @@ import {
 
 export class AiUnavailable extends Data.TaggedError("AiUnavailable")<{ message: string }> {}
 
-export const matchGroceries = (db: D1Database, ai?: Ai, ray?: string | null) =>
+// Keep inference independent of the saving request's cancellation and response time.
+// This is best-effort work within Workers' waitUntil lifetime; the bulk action can retry it.
+export function matchNewRecipes(
+  db: D1Database,
+  ai: Ai | undefined,
+  ctx: ExecutionContext | undefined,
+  recipeIds: readonly string[],
+) {
+  if (!ai || !ctx || !recipeIds.length) return;
+
+  ctx.waitUntil(
+    Effect.runPromise(matchGroceries(db, ai, undefined, recipeIds)).catch(() => {
+      // matchGroceries logs failures; they must never turn a successful save into an error.
+    }),
+  );
+}
+
+export const matchGroceries = (db: D1Database, ai?: Ai, ray?: string | null, recipeIds?: readonly string[]) =>
   Effect.gen(function* () {
     const started = performance.now();
     const runId = crypto.randomUUID();
@@ -65,9 +82,16 @@ export const matchGroceries = (db: D1Database, ai?: Ai, ray?: string | null) =>
       const groceries = yield* stored(() => products.results.map(parseGrocery));
       stage = "matching";
 
-      const result = yield* matchIngredients(ai, originals, groceries, db, runId).pipe(
-        Effect.withSpan("matching.ingredients"),
-      );
+      // Reserve ten seconds of waitUntil's lifetime for cancellation and D1 persistence.
+      const result = yield* matchIngredients(
+        ai,
+        originals,
+        groceries,
+        db,
+        runId,
+        recipeIds,
+        recipeIds ? started + 20_000 : undefined,
+      ).pipe(Effect.withSpan("matching.ingredients"));
 
       stage = "persistence";
 

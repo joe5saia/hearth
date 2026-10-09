@@ -90,7 +90,7 @@ type Modal =
   | { kind: "meal"; meal: MealDraft }
   | { kind: "recipe"; recipe: Recipe; meal?: MealDraft }
   | { kind: "import" }
-  | { kind: "editor"; recipe: RecipeDraft; warnings?: readonly string[] };
+  | { kind: "editor"; recipe: RecipeDraft; isNew?: boolean; warnings?: readonly string[] };
 
 const emptyHousehold: Household = {
   collections: [],
@@ -131,6 +131,7 @@ async function api(
   method: "GET" | "POST" | "PUT" | "DELETE" = "GET",
   body?:
     | RecipeDraft
+    | (RecipeDraft & { expectedIngredients: RecipeDraft["ingredients"] | null })
     | Collection
     | MealDraft
     | GroceryDraft
@@ -180,7 +181,9 @@ async function api(
       await response.json().catch(() => null),
     );
 
-    throw new Error(Option.isSome(failure) ? failure.value.error : "We couldn’t connect. Please try again.");
+    throw new Error(Option.isSome(failure) ? failure.value.error : "We couldn’t connect. Please try again.", {
+      cause: response.status,
+    });
   }
 
   return response;
@@ -513,6 +516,9 @@ export function App() {
       return true;
     } catch (failure) {
       outcome = acknowledged ? "saved_refresh_failed" : "error";
+
+      if (path === "recipes" && failure instanceof Error && failure.cause === 409)
+        await refresh(operationId).catch(() => {});
       setError(failure instanceof Error ? failure.message : "Please try again.");
 
       return false;
@@ -572,6 +578,7 @@ export function App() {
   const newRecipe = () =>
     setModal({
       kind: "editor",
+      isNew: true,
       recipe: {
         id: crypto.randomUUID(),
         title: "",
@@ -1465,6 +1472,7 @@ export function App() {
                 "PUT",
                 {
                   ...recipe,
+                  expectedIngredients: recipe.ingredients,
                   ingredients: recipe.ingredients.map((item, position) =>
                     position === index ? { ...item, groceryItemId: id, grocerySuggestions: undefined } : item,
                   ),
@@ -1497,7 +1505,9 @@ export function App() {
             requestAnimationFrame(() => pageOptions.current?.focus());
           }}
         >
-          <RecipeImport imported={(recipe, warnings) => setModal({ kind: "editor", recipe, warnings })} />
+          <RecipeImport
+            imported={(recipe, warnings) => setModal({ kind: "editor", recipe, warnings, isNew: true })}
+          />
         </Dialog>
       )}
       {modal?.kind === "chatgpt" && (
@@ -1525,13 +1535,25 @@ export function App() {
         >
           <RecipeForm
             recipe={modal.recipe}
+            latestRecipe={data.recipes.find((recipe) => recipe.id === modal.recipe.id)}
+            clearError={() => setError("")}
             collections={data.collections}
             groceries={data.groceries}
             saveGrocery={(item) => mutate("groceries", "PUT", item, "Grocery item saved")}
             warnings={modal.warnings}
             busy={busy}
             error={error}
-            save={(recipe) => mutate("recipes", "PUT", recipe, "Recipe saved to your collection", true)}
+            save={(recipe, expectedIngredients) =>
+              mutate(
+                "recipes",
+                "PUT",
+                { ...recipe, expectedIngredients: modal.isNew ? null : expectedIngredients },
+                modal.isNew
+                  ? "Recipe saved. Automatic grocery matches appear after refresh."
+                  : "Recipe saved to your collection",
+                true,
+              )
+            }
             remove={
               data.recipes.some((recipe) => recipe.id === modal.recipe.id)
                 ? () => mutate(`recipes/${modal.recipe.id}`, "DELETE", undefined, "Recipe deleted", true)
@@ -2106,6 +2128,8 @@ function RecipeImport({ imported }: { imported: (recipe: Recipe, warnings: reado
 
 function RecipeForm({
   recipe,
+  latestRecipe,
+  clearError,
   collections,
   groceries,
   saveGrocery,
@@ -2116,19 +2140,23 @@ function RecipeForm({
   remove,
 }: {
   recipe: RecipeDraft;
+  latestRecipe?: Recipe;
+  clearError: () => void;
   collections: readonly Collection[];
   groceries: readonly GroceryItem[];
   saveGrocery: (item: GroceryDraft) => Promise<boolean>;
   warnings?: readonly string[];
   busy: boolean;
   error: string;
-  save: (recipe: RecipeDraft) => Promise<boolean>;
+  save: (recipe: RecipeDraft, expectedIngredients: RecipeDraft["ingredients"]) => Promise<boolean>;
   remove?: () => Promise<boolean>;
 }) {
   const [draft, setDraft] = useState<RecipeDraft>({
     ...recipe,
     category: collections.some((collection) => collection.name === recipe.category) ? recipe.category : "",
   });
+
+  const [expectedIngredients, setExpectedIngredients] = useState(recipe.ingredients);
 
   const [photoError, setPhotoError] = useState("");
   const [confirmDelete, setConfirmDelete] = useState(false);
@@ -2166,7 +2194,7 @@ function RecipeForm({
         className="modal-form recipe-form"
         onSubmit={(event) => {
           event.preventDefault();
-          save(draft);
+          save(draft, expectedIngredients);
         }}
       >
         {warnings && (
@@ -2473,6 +2501,22 @@ function RecipeForm({
             {error}
           </p>
         )}
+        {error &&
+          latestRecipe &&
+          JSON.stringify(latestRecipe.ingredients) !== JSON.stringify(expectedIngredients) && (
+            <button
+              type="button"
+              className="text-button"
+              disabled={busy}
+              onClick={() => {
+                setDraft({ ...draft, ingredients: latestRecipe.ingredients });
+                setExpectedIngredients(latestRecipe.ingredients);
+                clearError();
+              }}
+            >
+              Use latest ingredients and keep other edits
+            </button>
+          )}
         {confirmDelete && (
           <div className="delete-confirm">
             <p>Delete this recipe permanently? Planned recipes must be removed from the calendar first.</p>

@@ -49,11 +49,11 @@ The reuse marker lives inside `node_modules`, so a clean install also clears it.
 
 When a timer is active, the header has **×**, **+1m**, and **+5m** controls for the timer it displays. Dismiss removes that timer and promotes the next one; adding time updates its deadline without opening the drawer. A finished timer restarts with one or five minutes from now and stops flashing. Extensions preserve the original start time, persist across reloads, and can change which timer is due next. These controls also appear in recipe/dialog headers and have accessible labels and 44-pixel touch targets.
 
-Ingredient names and grocery aliases match after trimming, whitespace normalization, and case folding. Only a single unambiguous catalog match links automatically when saving recipes (including reviewed imports and MCP writes); ambiguous or absent matches remain unlinked. Choosing **Leave unlinked** disables automatic matching for that ingredient until you choose **Auto-match** or a product again. Existing recipes are preserved by the catalog migration; use **Match ingredients** after building the catalog to link them.
+Ingredient names and grocery aliases match after trimming, whitespace normalization, and case folding. A single unambiguous catalog match links immediately when saving recipes (including reviewed imports and MCP writes). Newly created recipes also run the existing AI matcher in the background for remaining automatic ingredients when AI is available; saving does not wait for inference. Existing recipes supply matching context but are not rematched by a new recipe's background run. Choosing **Leave unlinked** disables automatic matching for that ingredient until you choose **Auto-match** or a product again. Use **Match ingredients** to retry unresolved ingredients or match existing recipes after building the catalog.
 
 ### AI ingredient matching
 
-The bulk button follows four stages in `src/ingredient-matching.ts`:
+Background matching and the bulk button share four stages in `src/ingredient-matching.ts`:
 
 1. **Normalize:** Workers AI's `@cf/meta/llama-3.2-3b-instruct` removes amounts and preparation words,
    corrects obvious spelling errors, and retains variety, dietary qualifiers, and essential product form.
@@ -96,11 +96,22 @@ Saving uses an
 atomic recipe/context and catalog-revision check: changes made during inference are preserved, and stale
 links are reported as skipped. A retry processes the latest saved data.
 
-Bulk AI matching requires a Cloudflare deployment with the `AI` binding and sufficient **AI Gateway
+AI matching requires a Cloudflare deployment with the `AI` binding and sufficient **AI Gateway
 credits for Jev**. The production website/MCP configuration and their disposable Previews provide that binding.
 Local development remains network-independent: recipe saves use exact matching, and the AI button
-explains that a Cloudflare deployment is required. Recipe saves, including MCP recipe writes, never
-invoke the models; the explicit `match_groceries` MCP tool does.
+explains that a Cloudflare deployment is required. New browser recipes and MCP `create_recipes` batches
+start best-effort background matching after persistence, using Workers' `waitUntil` lifetime (up to 30 seconds
+after the response). Inference stops after a 20-second budget so completed decisions can be persisted before
+the window closes; unfinished ingredients remain retryable. Edits do not start another run. Model failures,
+concurrent edits, or runtime termination can leave ingredients unresolved without failing the save; retry with **Match ingredients** or
+`match_groceries`. Refresh the household or reread recipes through MCP to see completed links and suggestions.
+
+Browser saves send `expectedIngredients` (the originally loaded ingredient array, or `null` for creation).
+The precondition and creation check run transactionally with the write: stale edits return HTTP 409 rather
+than erasing completed matches or recreating deleted recipes. The editor keeps the draft open and offers
+**Use latest ingredients and keep other edits**; this replaces ingredient edits with the latest saved list
+while preserving other draft fields. Programmatic PUTs without this optional precondition retain unconditional
+replacement semantics; MCP updates continue to change only supplied fields.
 
 An exploratory nine-case live evaluation covered typos, 65 onion candidates, aliases, dietary qualifiers,
 fresh/canned context, and unsuitable substitutions. The final pipeline made **9/9 correct decisions**.

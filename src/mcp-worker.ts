@@ -128,7 +128,7 @@ export default {
 
             if (!auth.scope.includes("recipes")) return insufficientScope(auth, ["recipes"]);
 
-            return recipeMcp(env.DB, env.AI, observation, tracer).fetch(request, {
+            return recipeMcp(env.DB, env.AI, observation, tracer, ctx).fetch(request, {
               authInfo: {
                 token: auth.token,
                 clientId: auth.clientId ?? "",

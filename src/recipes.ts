@@ -26,12 +26,18 @@ export function parseRecipe(row: RecipeRow): Recipe {
   });
 }
 
-export function recipeStatement(db: D1Database, recipe: Recipe) {
+export function recipeStatement(
+  db: D1Database,
+  recipe: Recipe,
+  expectedIngredients?: Recipe["ingredients"] | null,
+) {
   return db
     .prepare(`INSERT INTO recipes (id,title,description,servings,minutes,category,photo,source,ingredients,instructions)
-    VALUES (?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET title=excluded.title,description=excluded.description,
+    SELECT ?,?,?,?,?,?,?,?,?,? WHERE ${expectedIngredients ? "EXISTS (SELECT 1 FROM recipes WHERE id=? AND ingredients=?)" : "1"}
+    ON CONFLICT(id) DO UPDATE SET title=excluded.title,description=excluded.description,
     servings=excluded.servings,minutes=excluded.minutes,category=excluded.category,photo=excluded.photo,
-    source=excluded.source,ingredients=excluded.ingredients,instructions=excluded.instructions`)
+    source=excluded.source,ingredients=excluded.ingredients,instructions=excluded.instructions
+    ${expectedIngredients === null ? "WHERE 0" : ""}`)
     .bind(
       recipe.id,
       recipe.title.trim(),
@@ -43,6 +49,7 @@ export function recipeStatement(db: D1Database, recipe: Recipe) {
       recipe.source,
       JSON.stringify(recipe.ingredients),
       JSON.stringify(recipe.instructions),
+      ...(expectedIngredients ? [recipe.id, JSON.stringify(expectedIngredients)] : []),
     );
 }
 
@@ -234,7 +241,11 @@ export function updateRecipes(
   });
 }
 
-export function saveRecipe(db: D1Database, recipe: Recipe) {
+export function saveRecipe(
+  db: D1Database,
+  recipe: Recipe,
+  expectedIngredients?: Recipe["ingredients"] | null,
+) {
   return Effect.gen(function* () {
     const decoded = yield* decodeRecipe(
       recipe,
@@ -253,9 +264,22 @@ export function saveRecipe(db: D1Database, recipe: Recipe) {
     }
 
     const [linked] = yield* matchRecipeIngredients(db, [decoded]);
-    yield* database(() => recipeStatement(db, linked).run());
 
-    return { ok: true as const };
+    // Both statements run in one transaction: overlapping same-ID saves cannot both be creations.
+    const [existing, saved] = yield* database(() =>
+      db.batch([
+        db.prepare("SELECT id FROM recipes WHERE id=?").bind(linked.id),
+        recipeStatement(db, linked, expectedIngredients),
+      ]),
+    );
+
+    if (!saved.meta.changes)
+      return yield* new Conflict({
+        message:
+          "This recipe changed since you opened it. Your draft has not been saved. Use the latest ingredients before retrying, or close and reopen the recipe.",
+      });
+
+    return { ok: true as const, created: !existing.results.length };
   });
 }
 

@@ -443,6 +443,7 @@ it("publishes all 22 code-mode-friendly schemas with the single recipes scope", 
     expect(tool.outputSchema.type).toBe("object");
   }
 
+  expect(tools.find((tool: any) => tool.name === "create_recipes").annotations.openWorldHint).toBe(true);
   const create = tools.find((tool: any) => tool.name === "create_recipes").inputSchema;
   expect(create.properties.recipes.items.properties.ingredients.items).toMatchObject({
     type: "object",

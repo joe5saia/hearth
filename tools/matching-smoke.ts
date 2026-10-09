@@ -95,6 +95,57 @@ try {
   assert.equal(excluded.ingredients[1].grocerySuggestions, undefined);
   console.log("PASS explicit exclusion clears suggestions");
 
+  // Simulate matching committing after the browser opened an editor; use the real API/SQLite writer.
+  await request("recipes", "PUT", recipe);
+  openRecipe();
+  browser("set", "viewport", "1280", "900", "2");
+  browser("find", "role", "button", "click", "--name", "Edit recipe", "--exact");
+  browser("find", "label", "Time (minutes)", "fill", "47");
+  browser("eval", "document.querySelector('.recipe-form .form-actions').scrollIntoView({block:'center'})");
+  browser("screenshot", resolve(".amp/in/artifacts/matching-editor-draft.png"));
+  await request("recipes", "PUT", {
+    ...recipe,
+    ingredients: [{ ...recipe.ingredients[0], groceryItemId: products[0].id }, recipe.ingredients[1]],
+  });
+  browser("click", ".recipe-form .form-actions .primary");
+  browser("wait", ".recipe-form [role=alert]");
+  check("document.querySelector('.recipe-form [role=alert]').textContent.includes('changed since you opened') && [...document.querySelectorAll('.recipe-form input')].some(el => el.value === '47')", "stale save keeps the editor and metadata draft open");
+  const protectedRecipe = (await household()).recipes[0];
+  assert.equal(protectedRecipe.minutes, 20);
+  assert.equal(protectedRecipe.ingredients[0].groceryItemId, products[0].id);
+  browser("eval", "document.querySelector('.recipe-form [role=alert]').scrollIntoView({block:'center'})");
+  browser("screenshot", resolve(".amp/in/artifacts/matching-editor-conflict.png"));
+  browser("set", "viewport", "390", "844", "2");
+  browser("eval", "document.querySelector('.recipe-form [role=alert]').scrollIntoView({block:'center'})");
+  check("document.querySelector('.recipe-form').scrollWidth <= document.querySelector('.recipe-form').clientWidth", "conflict recovery fits a narrow viewport");
+  browser("screenshot", resolve(".amp/in/artifacts/matching-editor-conflict-narrow.png"));
+  browser("set", "viewport", "1280", "900", "2");
+  browser("find", "role", "button", "click", "--name", "Use latest ingredients and keep other edits", "--exact");
+  check(`!document.querySelector('.recipe-form [role=alert]') && document.querySelector('[aria-label="Grocery item for ingredient 1"]').value === ${JSON.stringify(products[0].id)}`, "recovery replaces stale ingredients and clears the conflict");
+  browser("click", ".recipe-form .form-actions .primary");
+  browser("wait", "--fn", "!document.querySelector('.recipe-form')");
+  const recovered = (await household()).recipes[0];
+  assert.equal(recovered.minutes, 47);
+  assert.equal(recovered.ingredients[0].groceryItemId, products[0].id);
+  console.log("PASS refreshed retry keeps background matches and the user's other edits");
+
+  // Detail selection also submits its loaded ingredient baseline, so unrelated matches survive.
+  await request("recipes", "PUT", recipe);
+  openRecipe();
+  await request("recipes", "PUT", {
+    ...recipe,
+    ingredients: [recipe.ingredients[0], { ...recipe.ingredients[1], groceryItemId: products[2].id }],
+  });
+  browser("click", ".ingredient-list li:first-child .ingredient-suggestions button:first-of-type");
+  browser("wait", ".recipe-detail [role=alert]");
+  assert.equal((await household()).recipes[0].ingredients[0].groceryItemId, undefined);
+  assert.equal((await household()).recipes[0].ingredients[1].groceryItemId, products[2].id);
+  browser("click", ".ingredient-list li:first-child .ingredient-suggestions button:first-of-type");
+  browser("wait", "--fn", "!document.querySelector('.recipe-detail [role=alert]') && !document.querySelector('.ingredient-list li:first-child .ingredient-suggestions')");
+  assert.equal((await household()).recipes[0].ingredients[0].groceryItemId, products[1].id);
+  assert.equal((await household()).recipes[0].ingredients[1].groceryItemId, products[2].id);
+  console.log("PASS stale detail selection refreshes and retries without erasing another match");
+
   await request("recipes", "PUT", recipe);
   openRecipe();
   await request(`groceries/${products[1].id}`, "DELETE");

@@ -30,7 +30,7 @@ export default {
           payload.token_use !== "exchanged" || typeof payload.thread_id !== "string" || !payload.thread_id ||
           typeof payload.sub !== "string" || !payload.sub
         ) throw new Error("Identity denied");
-        return recipeMcp(env.DB, env.AI).fetch(request, {
+        return recipeMcp(env.DB, env.AI, undefined, undefined, ctx).fetch(request, {
           authInfo: { token, clientId: payload.thread_id, scopes: ["recipes"], expiresAt: payload.exp!, resource: new URL(`${env.MCP_ORIGIN}/eval/mcp`) },
         });
       } catch {

@@ -17,6 +17,8 @@ let peakCalls = 0;
 
 let beforeSelect: (() => Promise<void>) | undefined;
 
+let modelGate: Promise<void> | undefined;
+
 const seen = new Set<string>();
 
 const histories: Record<string, readonly { recipeTitle: string; ingredientName: string }[]>[] = [];
@@ -74,16 +76,29 @@ const catalog = [
   product("powder", "Onion powder"),
 ];
 
-const send = (path: string, method = "GET", body?: typeof Schema.Json.Type) =>
-  worker.dispatchFetch(`http://localhost/api/${path}`, {
+function send(
+  path: string,
+  method = "GET",
+  body?: typeof Schema.Json.Type,
+  background = false,
+  cancel = false,
+) {
+  const headers = new Headers({ "Content-Type": "application/json" });
+
+  if (background) headers.set("X-Test-Background", "true");
+
+  if (cancel) headers.set("X-Test-Cancel", "true");
+
+  return worker.dispatchFetch(`http://localhost/api/${path}`, {
     method,
-    headers: { "Content-Type": "application/json" },
+    headers: Object.fromEntries(headers),
     body: method === "GET" ? undefined : JSON.stringify(body ?? {}),
   });
+}
 
 const state = async () => Schema.decodeUnknownSync(HouseholdSchema)(await (await send("household")).json());
 
-function mcpRequest(name: string, args: typeof Schema.Json.Type, cancel = false) {
+function mcpRequest(name: string, args: typeof Schema.Json.Type, cancel = false, background = false) {
   const headers = new Headers({
     "Content-Type": "application/json",
     Accept: "application/json, text/event-stream",
@@ -93,6 +108,8 @@ function mcpRequest(name: string, args: typeof Schema.Json.Type, cancel = false)
   });
 
   if (cancel) headers.set("X-Test-Cancel", "true");
+
+  if (background) headers.set("X-Test-Background", "true");
 
   return worker.dispatchFetch("http://localhost/mcp", {
     method: "POST",
@@ -151,6 +168,10 @@ beforeAll(async () => {
           bindings: { LOCAL_DEV: "true" },
           outboundService: async (request) => {
             calls++;
+            await modelGate;
+
+            if (mode === "deadline" && (await request.clone().text()).includes("Slow onion"))
+              await new Promise((resolve) => setTimeout(resolve, 12_000));
 
             if (mode === "cancel") await new Promise((resolve) => setTimeout(resolve, 200));
 
@@ -299,6 +320,7 @@ beforeEach(async () => {
   activeCalls = 0;
   peakCalls = 0;
   beforeSelect = undefined;
+  modelGate = undefined;
   seen.clear();
   histories.length = 0;
   logs.length = 0;
@@ -316,6 +338,231 @@ beforeEach(async () => {
 afterAll(async () => {
   await worker?.dispose();
 });
+
+it.each([
+  ["http", "history"],
+  ["mcp", "history"],
+  ["http", "outage"],
+  ["mcp", "outage"],
+  ["http", "conflict"],
+  ["mcp", "conflict"],
+  ["http", "cancel"],
+  ["mcp", "cancel"],
+])("saves through %s before background matching finishes (%s)", async (transport, outcome) => {
+  mode = outcome;
+
+  // Updating an existing recipe must not start AI work, even when background execution is available.
+  const updated = await (transport === "http"
+    ? send("recipes", "PUT", recipe, true)
+    : mcpRequest(
+        "update_recipes",
+        { updates: [{ id: recipe.id, changes: { title: recipe.title } }] },
+        false,
+        true,
+      ));
+
+  expect(updated.status).toBe(200);
+  expect(logEvents()).toEqual([]);
+  let release = () => {};
+
+  modelGate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const { id: _id, ...input } = recipe;
+  let responded = false;
+
+  const pending = (
+    transport === "http"
+      ? send("recipes", "PUT", { ...input, id: "new-recipe" }, true, outcome === "cancel")
+      : mcpRequest(
+          "create_recipes",
+          { recipes: [input, { ...input, title: "Second salad" }] },
+          outcome === "cancel",
+          true,
+        )
+  ).then((response) => {
+    responded = true;
+
+    return response;
+  });
+
+  let created: (typeof recipe)[] = [];
+
+  try {
+    // Inference cannot finish until released. A successful response here proves saves do not await it.
+    await expect.poll(() => responded).toBe(true);
+    const response = await pending;
+    expect(response.status).toBe(200);
+
+    if (transport === "mcp") {
+      const output = Schema.decodeUnknownSync(
+        Schema.Struct({
+          result: Schema.Struct({
+            structuredContent: Schema.Struct({ recipes: Schema.Array(RecipeSchema) }),
+          }),
+        }),
+      )(await response.json());
+
+      expect(output.result.structuredContent.recipes).toHaveLength(2);
+    }
+
+    created = (await state()).recipes.filter((saved) => saved.id !== recipe.id);
+    expect(created).toHaveLength(transport === "http" ? 1 : 2);
+
+    for (const saved of created) expect(saved.ingredients).toEqual(recipe.ingredients);
+    await expect.poll(() => calls).toBeGreaterThan(0);
+
+    if (outcome === "cancel")
+      await expect.poll(() => logs.some((entry) => entry.message === "test_request_aborted")).toBe(true);
+
+    if (outcome === "conflict") {
+      for (const saved of created)
+        expect(
+          (
+            await send("recipes", "PUT", {
+              ...saved,
+              ingredients: [{ ...saved.ingredients[0], groceryItemId: null }, ...saved.ingredients.slice(1)],
+            })
+          ).status,
+        ).toBe(200);
+    }
+  } finally {
+    release();
+    await pending;
+    await expect
+      .poll(() => logEvents().some((event) => event.event === "ingredient_matching_completed"))
+      .toBe(true);
+  }
+
+  const saved = await state();
+  // An older unmatched recipe provides history but must not itself be matched.
+  expect(saved.recipes.find((entry) => entry.id === recipe.id)).toEqual(recipe);
+
+  for (const original of created) {
+    const actual = saved.recipes.find((entry) => entry.id === original.id)!;
+    expect(actual).toEqual({
+      ...original,
+      ingredients: [
+        outcome === "history"
+          ? {
+              ...recipe.ingredients[0],
+              groceryItemId: "yellow-0",
+              grocerySuggestions: ["white", "yellow-0", "yellow-1"],
+            }
+          : outcome === "conflict"
+            ? { ...recipe.ingredients[0], groceryItemId: null }
+            : outcome === "cancel"
+              ? { ...recipe.ingredients[0], groceryItemId: "white" }
+              : recipe.ingredients[0],
+        ...recipe.ingredients.slice(1),
+      ],
+    });
+  }
+
+  if (outcome === "history")
+    expect(histories[0].p1).toContainEqual({
+      recipeTitle: recipe.title,
+      ingredientName: recipe.ingredients[2].name,
+    });
+  expect(logEvents().at(-1)).toMatchObject({
+    attempted: created.length,
+    matched: outcome === "history" || outcome === "cancel" ? created.length : 0,
+    failed: outcome === "outage" ? created.length : 0,
+    conflicts: outcome === "conflict" ? created.length : 0,
+  });
+
+  if (outcome === "cancel") expect(logs.some((entry) => entry.message === "test_model_aborted")).toBe(false);
+});
+
+it("rejects stale browser ingredient replacements after matching, then accepts a refreshed edit", async () => {
+  const input = { ...recipe, id: "stale-edit" };
+  expect((await send("recipes", "PUT", { ...input, expectedIngredients: null }, true)).status).toBe(200);
+  await expect
+    .poll(
+      async () =>
+        (await state()).recipes.find((entry) => entry.id === input.id)?.ingredients[0].groceryItemId,
+    )
+    .toBe("white");
+  const current = (await state()).recipes.find((entry) => entry.id === input.id)!;
+  expect(
+    (await send("recipes", "PUT", { ...input, minutes: 45, expectedIngredients: input.ingredients }, true))
+      .status,
+  ).toBe(409);
+  expect((await state()).recipes.find((entry) => entry.id === input.id)).toEqual(current);
+  expect(
+    (
+      await send(
+        "recipes",
+        "PUT",
+        { ...current, minutes: 45, expectedIngredients: current.ingredients },
+        true,
+      )
+    ).status,
+  ).toBe(200);
+  expect((await state()).recipes.find((entry) => entry.id === input.id)).toEqual({ ...current, minutes: 45 });
+  // An explicit Auto-match edit remains possible; omission of the new link is not treated as preservation.
+  expect(
+    (await send("recipes", "PUT", { ...input, expectedIngredients: current.ingredients }, true)).status,
+  ).toBe(200);
+  expect((await state()).recipes.find((entry) => entry.id === input.id)?.ingredients).toEqual(
+    input.ingredients,
+  );
+  expect((await send(`recipes/${input.id}`, "DELETE")).status).toBe(200);
+  expect(
+    (await send("recipes", "PUT", { ...input, expectedIngredients: input.ingredients }, true)).status,
+  ).toBe(409);
+  expect((await state()).recipes.some((entry) => entry.id === input.id)).toBe(false);
+});
+
+it("starts only one background run for overlapping saves of the same new ID", async () => {
+  let release = () => {};
+
+  modelGate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+
+  try {
+    const responses = await Promise.all(
+      Array.from({ length: 8 }, () => send("recipes", "PUT", { ...recipe, id: "overlap" }, true)),
+    );
+
+    expect(responses.map((response) => response.status)).toEqual(Array(8).fill(200));
+    expect(logEvents().filter((event) => event.event === "ingredient_matching_started")).toHaveLength(1);
+  } finally {
+    release();
+    await expect
+      .poll(() => logEvents().filter((event) => event.event === "ingredient_matching_completed").length)
+      .toBe(1);
+  }
+
+  expect((await state()).recipes.find((entry) => entry.id === "overlap")?.ingredients[0].groceryItemId).toBe(
+    "white",
+  );
+});
+
+it("persists completed background decisions when slow inference exceeds the deadline", async () => {
+  mode = "deadline";
+
+  const input = {
+    ...recipe,
+    id: "deadline",
+    ingredients: [recipe.ingredients[0], { ...recipe.ingredients[0], name: "Slow onion" }],
+  };
+
+  expect((await send("recipes", "PUT", input, true)).status).toBe(200);
+  await expect
+    .poll(() => logEvents().some((event) => event.event === "ingredient_matching_completed"), {
+      timeout: 25_000,
+    })
+    .toBe(true);
+  expect(logEvents().some((event) => event.event === "ingredient_matching_deadline")).toBe(true);
+  expect(logEvents().at(-1)).toMatchObject({ matched: 1, failed: 1, outcome: "partial" });
+  const expected = [{ ...input.ingredients[0], groceryItemId: "white" }, input.ingredients[1]];
+  expect((await state()).recipes.find((entry) => entry.id === input.id)?.ingredients).toEqual(expected);
+  // The late upstream response must not write after the partial result has committed.
+  await new Promise((resolve) => setTimeout(resolve, 5000));
+  expect((await state()).recipes.find((entry) => entry.id === input.id)?.ingredients).toEqual(expected);
+}, 30_000);
 
 it.each(["exact", "ai"])(
   "keeps near-limit recipes readable after %s linking grows the stored value",

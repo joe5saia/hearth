@@ -32,7 +32,7 @@ import {
   setShoppingOrder,
   addDemoData,
 } from "./household";
-import { matchGroceries } from "./matching-run";
+import { matchGroceries, matchNewRecipes } from "./matching-run";
 
 const invalid = (message: string) => new ValidationError({ message });
 
@@ -61,7 +61,7 @@ const brandedId = <S extends Schema.Constraint>(path: string, prefix: string, sc
     );
   });
 
-function api(request: Request, db: D1Database, ai?: Ai) {
+function api(request: Request, db: D1Database, ai?: Ai, ctx?: ExecutionContext) {
   return Effect.gen(function* () {
     const url = new URL(request.url);
     const path = url.pathname;
@@ -102,7 +102,18 @@ function api(request: Request, db: D1Database, ai?: Ai) {
 
       return Response.json(yield* importRecipeDraft(input.url));
     } else if (method === "PUT" && path === "/api/recipes") {
-      yield* saveRecipe(db, yield* readJson(request, RecipeSchema, "The recipe is missing required fields."));
+      const { expectedIngredients, ...recipe } = yield* readJson(
+        request,
+        Schema.Struct({
+          ...RecipeSchema.fields,
+          expectedIngredients: Schema.optional(Schema.NullOr(RecipeSchema.fields.ingredients)),
+        }),
+        "The recipe is missing required fields.",
+      );
+
+      const saved = yield* saveRecipe(db, recipe, expectedIngredients);
+
+      if (saved.created) matchNewRecipes(db, ai, ctx, [recipe.id]);
     } else if (method === "PUT" && path.startsWith("/api/recipes/rating/")) {
       const id = yield* brandedId(path, "/api/recipes/rating/", RecipeId);
 
@@ -144,11 +155,12 @@ export function householdApi(
   ai?: Ai,
   observation?: Observation,
   tracer = Tracer.nativeTracer,
+  ctx?: ExecutionContext,
 ): Promise<Response> {
   const failure = (message: string, status: number) =>
     Effect.succeed(Response.json({ error: message }, { status }));
 
-  const program = api(request, db, ai).pipe(
+  const program = api(request, db, ai, ctx).pipe(
     Effect.tapError((error) => record("api_failure", { reason: error._tag, outcome: "error" })),
     Effect.withSpan("api.operation", {}, { captureStackTrace: false }),
     Effect.catchTags({
@@ -347,7 +359,7 @@ export default {
         if (new URL(request.url).pathname === "/api/telemetry")
           return browserTelemetry(request, observation, env.LOCAL_DEV === "true");
 
-        return householdApi(request, env.DB, env.AI, observation, tracer);
+        return householdApi(request, env.DB, env.AI, observation, tracer, ctx);
       },
     );
   },
