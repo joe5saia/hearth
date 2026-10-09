@@ -394,7 +394,8 @@ it.each([
     const response = await pending;
     expect(response.status).toBe(200);
 
-    if (transport === "mcp") {
+    // Cancellation can close MCP's response stream. Assert its saved state below instead of consuming it.
+    if (transport === "mcp" && outcome !== "cancel") {
       const output = Schema.decodeUnknownSync(
         Schema.Struct({
           result: Schema.Struct({
