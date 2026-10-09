@@ -565,6 +565,64 @@ it("persists completed background decisions when slow inference exceeds the dead
   expect((await state()).recipes.find((entry) => entry.id === input.id)?.ingredients).toEqual(expected);
 }, 30_000);
 
+it.each(["success", "history", "outage"])(
+  "syncs only an unsaved recipe draft, preserving manual choices and household data (%s)",
+  async (scenario) => {
+    mode = scenario;
+    const other = { ...recipe, id: "other-recipe", title: "Untouched onion salad" };
+    expect((await send("recipes", "PUT", other)).status).toBe(200);
+    const before = await state();
+
+    const draft = {
+      ...recipe,
+      title: "Unsaved dinner",
+      ingredients: [
+        { ...recipe.ingredients[0], name: "Finely diced white onoin", quantity: 7 },
+        ...recipe.ingredients.slice(1),
+      ],
+    };
+
+    const response = await send("recipes/match", "POST", draft);
+    expect(response.status, await response.clone().text()).toBe(200);
+
+    const result = Schema.decodeUnknownSync(
+      Schema.Struct({ recipe: RecipeSchema, report: MatchReportSchema }),
+    )(await response.json());
+
+    expect(result.report).toMatchObject({
+      attempted: 1,
+      matched: scenario === "outage" ? 0 : 1,
+      failed: scenario === "outage" ? 1 : 0,
+    });
+    expect(result.recipe).toMatchObject({ title: draft.title, instructions: draft.instructions });
+    expect(result.recipe.ingredients[0]).toMatchObject({
+      name: draft.ingredients[0].name,
+      quantity: 7,
+      unit: "each",
+    });
+    expect(result.recipe.ingredients[0].groceryItemId).toBe(
+      scenario === "outage" ? undefined : scenario === "history" ? "yellow-0" : "white",
+    );
+    expect(result.recipe.ingredients.slice(1)).toEqual(draft.ingredients.slice(1));
+    expect(await state()).toEqual(before);
+
+    if (scenario !== "outage") {
+      expect((await send("recipes", "PUT", result.recipe)).status).toBe(200);
+      const after = await state();
+      const saved = after.recipes.find((entry) => entry.id === recipe.id);
+      expect(saved?.title).toBe(draft.title);
+      expect(saved?.ingredients[0]).toEqual({
+        ...draft.ingredients[0],
+        groceryItemId: scenario === "history" ? "yellow-0" : "white",
+      });
+      expect(saved?.ingredients.slice(1)).toEqual(draft.ingredients.slice(1));
+      expect(after.recipes.find((entry) => entry.id === other.id)).toEqual(
+        before.recipes.find((entry) => entry.id === other.id),
+      );
+    }
+  },
+);
+
 it.each(["exact", "ai"])(
   "keeps near-limit recipes readable after %s linking grows the stored value",
   async (kind) => {

@@ -136,15 +136,117 @@ async function cancelDialog(page: any) {
 async function commonNavigation(page: any, touch: boolean, label: string, capture: boolean) {
   await check(label, page.context().browser()?.browserType().name() ?? "webkit", `${page.viewportSize().width}×${page.viewportSize().height}`, "meal plan navigation, date disclosure, and unsaved meal cancellation", async () => {
     await page.goto(`${root}/#plan`); await settle(page);
+    const currentWeek = await page.locator(".week-picker h2").textContent();
     await activate(page.getByRole("button", { name: "Next week" }), touch);
-    await activate(page.getByLabel("Jump to date", { exact: true }), touch);
+    const trigger = page.getByLabel("Jump to date", { exact: true });
+    const date = page.getByLabel("Jump to week containing date");
+    await activate(trigger, touch);
     await auditLayout(page, touch);
+    assert(await page.locator(".week-jump").evaluate((form: HTMLElement) => {
+      const panel = form.getBoundingClientRect();
+      return [...form.children].every(child => {
+        const box = child.getBoundingClientRect();
+        return box.left > panel.left && box.right < panel.right && box.top > panel.top && box.bottom < panel.bottom;
+      });
+    }), "date-picker controls must stay inside their panel, not merely inside the viewport");
+    if (capture) await screenshot(page, `${label}-week-picker`);
+    await date.focus();
+    await page.keyboard.press("Escape");
+    assert.equal(await page.locator(".week-picker[open]").count(), 0);
+    assert(await trigger.evaluate((element: HTMLElement) => element === document.activeElement));
+    await activate(trigger, touch);
+    await date.fill("2030-01-06");
+    await activate(page.getByRole("button", { name: "Go to week", exact: true }), touch);
+    assert.equal(await page.locator(".week-picker[open]").count(), 0);
+    assert.equal(await page.locator(".week-picker h2").textContent(), "Dec 31, 2029 – Jan 6, 2030");
+    await activate(trigger, touch);
+    await activate(page.getByRole("button", { name: "This week", exact: true }), touch);
+    assert.equal(await page.locator(".week-picker h2").textContent(), currentWeek);
+    await activate(trigger, touch);
     await activate(page.getByRole("button", { name: "Add a meal" }).first(), touch);
+    assert.equal(await page.locator(".week-picker[open]").count(), 0, "an outside tap must dismiss the picker");
     const dialog = page.getByRole("dialog", { name: "Add a meal" });
     await dialog.waitFor();
+    assert(await dialog.locator(".selected-recipe").evaluate((card: HTMLElement) => {
+      const bounds = card.getBoundingClientRect();
+      return [...card.children].every(child => {
+        const box = child.getBoundingClientRect();
+        return box.top >= bounds.top && box.bottom <= bounds.bottom && box.left >= bounds.left && box.right <= bounds.right;
+      });
+    }), "recipe preview must grow to contain its photo and wrapped title in the scrollable form");
+    for (const control of [dialog.getByLabel("Date", { exact: true }), dialog.getByRole("combobox", { name: /^Meal/ })]) {
+      assert(await control.evaluate((element: HTMLElement) => {
+        const box = element.getBoundingClientRect();
+        const label = element.closest("label")!.getBoundingClientRect();
+        return box.left >= label.left && box.right <= label.right + 1;
+      }), "date and meal controls must stay inside their own columns");
+    }
+    if (capture) await screenshot(page, `${label}-meal-preview`);
     await dialog.getByLabel(/note for this meal/i).fill("UNSAVED UI smoke draft");
     await auditLayout(page, touch);
     if (capture) await screenshot(page, `${label}-meal-dialog`);
+    await cancelDialog(page);
+  });
+
+  await check(label, page.context().browser()?.browserType().name() ?? "webkit", `${page.viewportSize().width}×${page.viewportSize().height}`, "planned recipe opens shared fullscreen details and preserves nested meal drafts", async () => {
+    const card = page.locator(".meal-card:not(.note-only-card)").first();
+    const title = await card.locator("h3").textContent();
+    await activate(card, touch);
+    const detail = page.getByRole("dialog", { name: "Recipe details" });
+    await detail.waitFor();
+    assert.equal(await detail.locator("h1").textContent(), title);
+    const bounds = await detail.boundingBox();
+    assert.equal(bounds.width, page.viewportSize().width);
+    assert.equal(bounds.height, page.viewportSize().height);
+    assert(await detail.getByRole("button", { name: "Edit recipe", exact: true }).isVisible());
+    await auditLayout(page, touch);
+    if (capture) await screenshot(page, `${label}-planned-recipe-detail`);
+    await page.keyboard.press("Escape");
+    await detail.waitFor({ state: "detached" });
+    assert.equal(await page.getByRole("dialog").count(), 0, "direct recipe close returns to the plan, not the editor");
+    await activate(card, touch);
+    await activate(page.getByRole("button", { name: "Edit meal", exact: true }), touch);
+    const meal = page.getByRole("dialog", { name: "Edit meal" });
+    await meal.waitFor();
+    const viewport = page.viewportSize();
+    const mobileEditor = viewport.width <= 850 || touch && viewport.height <= 500;
+    const editorBounds = await meal.boundingBox();
+    if (mobileEditor) {
+      assert.deepEqual(editorBounds, { x: 0, y: 0, ...viewport }, "mobile meal editor fills the viewport");
+      const heading = await meal.locator(".modal-heading").boundingBox();
+      const footer = await meal.locator(".form-actions").boundingBox();
+      const fields = meal.locator(".meal-form-fields");
+      const fieldBounds = await fields.boundingBox();
+      assert(fieldBounds.y >= heading.y + heading.height, "fields start below the fixed header");
+      assert(fieldBounds.y + fieldBounds.height <= footer.y, "footer must not overlay scrolling fields");
+      await fields.evaluate((element: HTMLElement) => { element.scrollTop = element.scrollHeight; });
+      assert.deepEqual(await meal.locator(".modal-heading").boundingBox(), heading);
+      assert.deepEqual(await meal.locator(".form-actions").boundingBox(), footer);
+      const note = await meal.getByLabel(/note for this meal/i).boundingBox();
+      assert(note.y + note.height <= footer.y, "last field stays fully reachable above the footer");
+      if (capture) await screenshot(page, `${label}-fullscreen-meal-scrolled`);
+      await fields.evaluate((element: HTMLElement) => { element.scrollTop = 0; });
+    } else {
+      assert(editorBounds.width < viewport.width && editorBounds.height < viewport.height, "desktop retains a contained dialog");
+    }
+    if (capture) await screenshot(page, `${label}-edit-meal`);
+    await meal.getByLabel("Date", { exact: true }).fill("2030-01-06");
+    await meal.getByRole("combobox", { name: /^Meal/ }).selectOption("Lunch");
+    await meal.getByLabel("Recipe scale", { exact: true }).selectOption("1.5");
+    await meal.getByLabel(/note for this meal/i).fill("UNSAVED planner recipe draft");
+    for (const exit of ["Back to meal", "Close dialog", "Escape"]) {
+      await activate(meal.locator(".selected-recipe"), touch);
+      await detail.waitFor();
+      assert.equal(await detail.getByLabel("Preview recipe scale").inputValue(), "1.5");
+      await detail.getByLabel("Preview recipe scale").selectOption("3");
+      if (exit === "Escape") await page.keyboard.press("Escape");
+      else await activate(detail.getByRole("button", { name: exit, exact: true }), touch);
+      await meal.waitFor();
+      assert.equal(await meal.getByLabel("Date", { exact: true }).inputValue(), "2030-01-06");
+      assert.equal(await meal.getByRole("combobox", { name: /^Meal/ }).inputValue(), "Lunch");
+      assert.equal(await meal.getByLabel("Recipe scale", { exact: true }).inputValue(), "1.5");
+      assert.equal(await meal.getByLabel(/note for this meal/i).inputValue(), "UNSAVED planner recipe draft");
+    }
     await cancelDialog(page);
   });
 

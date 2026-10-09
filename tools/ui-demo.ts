@@ -136,7 +136,7 @@ try {
     await click(page.getByRole("button", { name: "Next week" }));
     await click(page.getByLabel("Jump to date", { exact: true }));
     await page.getByLabel("Jump to week containing date").fill("2026-10-07");
-    await click(page.getByRole("button", { name: "Go", exact: true }));
+    await click(page.getByRole("button", { name: "Go to week", exact: true }));
     await click(page.getByLabel("Jump to date", { exact: true }));
     await click(page.getByRole("button", { name: "This week", exact: true }));
     await nav("recipes");
@@ -283,8 +283,9 @@ try {
     await nav("plan");
     await click(page.getByLabel("Jump to date", { exact: true }));
     await page.getByLabel("Jump to week containing date").fill(date);
-    await click(page.getByRole("button", { name: "Go", exact: true }));
+    await click(page.getByRole("button", { name: "Go to week", exact: true }));
     await click(page.locator(".meal-card").filter({ hasText: recipeName }));
+    await click(page.getByRole("button", { name: "Edit meal", exact: true }));
     await dialog()
       .getByLabel(/note for this meal/i)
       .fill(`${note} — save leftovers`);
@@ -446,8 +447,9 @@ try {
     await nav("plan");
     await click(page.getByLabel("Jump to date", { exact: true }));
     await page.getByLabel("Jump to week containing date").fill(date);
-    await click(page.getByRole("button", { name: "Go", exact: true }));
+    await click(page.getByRole("button", { name: "Go to week", exact: true }));
     await click(page.locator(".meal-card").filter({ hasText: recipeName }));
+    await click(page.getByRole("button", { name: "Edit meal", exact: true }));
     await click(dialog().getByRole("button", { name: "Remove meal", exact: true }));
     await persisted((h) => !h.meals.some((m: any) => m.id === meal.id));
     await nav("recipes");

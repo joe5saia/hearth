@@ -470,6 +470,7 @@ export function matchIngredients(
   suppliedRunId?: string,
   recipeIds?: readonly string[],
   deadline?: number,
+  historyRecipes: readonly Recipe[] = recipes,
 ) {
   return Effect.gen(function* () {
     const runId = suppliedRunId ?? crypto.randomUUID();
@@ -498,7 +499,7 @@ export function matchIngredients(
     // Freeze history before inference: new automatic matches must not reinforce themselves.
     const history = new Map<string, UsageExample[]>();
 
-    for (const recipe of [...recipes].sort(
+    for (const recipe of [...historyRecipes].sort(
       (a, b) => a.title.localeCompare(b.title) || a.id.localeCompare(b.id),
     )) {
       for (const ingredient of recipe.ingredients) {

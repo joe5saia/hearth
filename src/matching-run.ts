@@ -1,4 +1,5 @@
 import { Data, Effect } from "effect";
+import type { Recipe } from "./domain";
 import { database, stored } from "./storage";
 import { record } from "./observability";
 import { parseRecipe, type RecipeRow } from "./recipes";
@@ -29,14 +30,22 @@ export function matchNewRecipes(
   );
 }
 
-export const matchGroceries = (db: D1Database, ai?: Ai, ray?: string | null, recipeIds?: readonly string[]) =>
+export const matchGroceries = (
+  db: D1Database,
+  ai?: Ai,
+  ray?: string | null,
+  recipeIds?: readonly string[],
+  draft?: Recipe,
+) =>
   Effect.gen(function* () {
     const started = performance.now();
     const runId = crypto.randomUUID();
+    let matchedRecipe: Recipe | undefined;
     console.info(
       JSON.stringify({
         event: "ingredient_matching_started",
         runId,
+        scope: draft ? "recipe_draft" : recipeIds ? "new_recipes" : "household",
         cfRay: ray && /^[a-f0-9]{16}-[A-Z]{3}$/.test(ray) ? ray : null,
         normalizationModel,
         selectionModel,
@@ -85,13 +94,20 @@ export const matchGroceries = (db: D1Database, ai?: Ai, ray?: string | null, rec
       // Reserve ten seconds of waitUntil's lifetime for cancellation and D1 persistence.
       const result = yield* matchIngredients(
         ai,
-        originals,
+        draft ? [draft] : originals,
         groceries,
         db,
         runId,
         recipeIds,
         recipeIds ? started + 20_000 : undefined,
+        originals,
       ).pipe(Effect.withSpan("matching.ingredients"));
+
+      if (draft) {
+        matchedRecipe = result.recipes[0];
+
+        return result.report;
+      }
 
       stage = "persistence";
 
@@ -184,5 +200,7 @@ export const matchGroceries = (db: D1Database, ai?: Ai, ray?: string | null, rec
       }),
     );
 
-    return { ok: true as const, report };
+    return matchedRecipe
+      ? { ok: true as const, report, recipe: matchedRecipe }
+      : { ok: true as const, report };
   }).pipe(Effect.withSpan("matching.run"));

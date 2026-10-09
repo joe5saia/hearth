@@ -101,6 +101,10 @@ function api(request: Request, db: D1Database, ai?: Ai, ctx?: ExecutionContext) 
       );
 
       return Response.json(yield* importRecipeDraft(input.url));
+    } else if (method === "POST" && path === "/api/recipes/match") {
+      const draft = yield* readJson(request, RecipeSchema, "The recipe is missing required fields.");
+
+      return Response.json(yield* matchGroceries(db, ai, request.headers.get("Cf-Ray"), undefined, draft));
     } else if (method === "PUT" && path === "/api/recipes") {
       const { expectedIngredients, ...recipe } = yield* readJson(
         request,

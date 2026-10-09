@@ -68,6 +68,8 @@ import {
 
 type Page = "plan" | "recipes" | "shopping" | "groceries";
 
+const mobileViewport = "(max-width: 850px), (pointer: coarse) and (max-height: 500px)";
+
 type ShoppingEdit = { kind: "order"; order: ShoppingOrder } | { kind: "check"; key: string; checked: 0 | 1 };
 
 function applyShoppingEdit(state: Pick<Household, "shoppingOrder" | "checks">, edit: ShoppingEdit) {
@@ -88,7 +90,7 @@ type Modal =
   | { kind: "grocery"; item: GroceryDraft }
   | { kind: "collection"; collection: Collection }
   | { kind: "meal"; meal: MealDraft }
-  | { kind: "recipe"; recipe: Recipe; meal?: MealDraft }
+  | { kind: "recipe"; recipe: Recipe; meal?: MealDraft; returnToMeal?: boolean }
   | { kind: "import" }
   | { kind: "editor"; recipe: RecipeDraft; isNew?: boolean; warnings?: readonly string[] };
 
@@ -267,7 +269,9 @@ function Dialog({
       }}
     >
       <div className="modal-heading">
-        <h2>{title}</h2>
+        <h2 tabIndex={fullScreen ? -1 : undefined} autoFocus={fullScreen}>
+          {title}
+        </h2>
         {timerHost && <div className="timer-slot" ref={timerHost} />}
         <button className="icon-button" aria-label="Close dialog" onClick={close}>
           <X size={20} />
@@ -280,6 +284,7 @@ function Dialog({
 
 export function App() {
   const [page, setPage] = useState<Page>(pageFromHash);
+  const [mobileLayout, setMobileLayout] = useState(() => window.matchMedia(mobileViewport).matches);
   const [data, setData] = useState<Household>(emptyHousehold);
   const [loaded, setLoaded] = useState(false);
   const [error, setError] = useState("");
@@ -302,6 +307,7 @@ export function App() {
   const [timerHeaderHost, setTimerHeaderHost] = useState<HTMLDivElement | null>(null);
   const [timerDialogHost, setTimerDialogHost] = useState<HTMLDivElement | null>(null);
   const weekInput = useRef<HTMLInputElement>(null);
+  const weekPicker = useRef<HTMLElement>(null);
   const pageOptions = useRef<HTMLElement>(null);
   const initialLoad = useRef(true);
 
@@ -440,6 +446,13 @@ export function App() {
     refresh().catch((failure: Error) => setError(failure.message));
   }, [refresh]);
   useEffect(() => {
+    const viewport = window.matchMedia(mobileViewport);
+    const sync = () => setMobileLayout(viewport.matches);
+    viewport.addEventListener("change", sync);
+
+    return () => viewport.removeEventListener("change", sync);
+  }, []);
+  useEffect(() => {
     if (!shoppingPending) return;
     const warn = (event: BeforeUnloadEvent) => event.preventDefault();
     window.addEventListener("beforeunload", warn);
@@ -454,9 +467,12 @@ export function App() {
   }, []);
   useEffect(() => {
     const dismiss = (event: PointerEvent) => {
-      const menu = pageOptions.current?.closest("details");
+      for (const trigger of [pageOptions.current, weekPicker.current]) {
+        const menu = trigger?.closest("details");
 
-      if (menu && event.target instanceof Node && !menu.contains(event.target)) menu.removeAttribute("open");
+        if (menu && event.target instanceof Node && !menu.contains(event.target))
+          menu.removeAttribute("open");
+      }
     };
 
     document.addEventListener("pointerdown", dismiss);
@@ -831,8 +847,17 @@ export function App() {
                     >
                       <ChevronLeft size={17} />
                     </button>
-                    <details className="date-disclosure week-picker">
-                      <summary aria-label="Jump to date">
+                    <details
+                      className="date-disclosure week-picker"
+                      onKeyDown={(event) => {
+                        if (event.key === "Escape") {
+                          event.currentTarget.removeAttribute("open");
+                          weekPicker.current?.focus();
+                          event.stopPropagation();
+                        }
+                      }}
+                    >
+                      <summary ref={weekPicker} aria-label="Jump to date">
                         <h2>
                           {readableDate(week, { month: "short", day: "numeric" })}
                           {week.slice(0, 4) !== addDays(week, 6).slice(0, 4) && (
@@ -866,10 +891,9 @@ export function App() {
                           aria-label="Jump to week containing date"
                           defaultValue={week}
                         />
-                        <button className="today-button">Go</button>
                         <button
                           type="button"
-                          className="today-button"
+                          className="secondary"
                           onClick={(event) => {
                             setWeek(weekStart());
                             event.currentTarget.closest("details")?.removeAttribute("open");
@@ -877,6 +901,7 @@ export function App() {
                         >
                           This week
                         </button>
+                        <button className="primary">Go to week</button>
                       </form>
                     </details>
                     <button
@@ -934,7 +959,9 @@ export function App() {
                               <button
                                 className={`meal-card${recipe ? "" : " note-only-card"}`}
                                 key={meal.id}
-                                onClick={() => setModal({ kind: "meal", meal })}
+                                onClick={() =>
+                                  setModal(recipe ? { kind: "recipe", recipe, meal } : { kind: "meal", meal })
+                                }
                               >
                                 {recipe && (
                                   <div className="meal-photo">
@@ -1429,6 +1456,7 @@ export function App() {
       {modal?.kind === "meal" && (
         <Dialog
           title={data.meals.some((meal) => meal.id === modal.meal.id) ? "Edit meal" : "Add a meal"}
+          fullScreen={mobileLayout}
           close={() => {
             setModal(null);
             setError("");
@@ -1445,7 +1473,7 @@ export function App() {
                 ? () => mutate(`meals/${modal.meal.id}`, "DELETE", undefined, "Meal removed", true)
                 : undefined
             }
-            viewRecipe={(recipe, meal) => setModal({ kind: "recipe", recipe, meal })}
+            viewRecipe={(recipe, meal) => setModal({ kind: "recipe", recipe, meal, returnToMeal: true })}
           />
         </Dialog>
       )}
@@ -1454,7 +1482,7 @@ export function App() {
           timerHost={setTimerDialogHost}
           title="Recipe details"
           close={() => {
-            setModal(modal.meal ? { kind: "meal", meal: modal.meal } : null);
+            setModal(modal.returnToMeal && modal.meal ? { kind: "meal", meal: modal.meal } : null);
             setError("");
           }}
           fullScreen
@@ -1481,7 +1509,7 @@ export function App() {
               );
             }}
             edit={
-              modal.meal
+              modal.returnToMeal
                 ? undefined
                 : () =>
                     setModal({
@@ -1493,6 +1521,7 @@ export function App() {
               modal.meal ? setModal({ kind: "meal", meal: modal.meal }) : addMeal(undefined, modal.recipe.id)
             }
             meal={modal.meal}
+            returnToMeal={modal.returnToMeal}
           />
         </Dialog>
       )}
@@ -1671,178 +1700,181 @@ function MealForm({
 
   return (
     <form
-      className="modal-form"
+      className="modal-form meal-form"
       onSubmit={(event) => {
         event.preventDefault();
 
         if (noteOnly ? draft.note.trim() : recipe) save(draft);
       }}
     >
-      <label>
-        Plan type
-        <select
-          value={noteOnly ? "note" : "recipe"}
-          onChange={(event) =>
-            setDraft({
-              ...draft,
-              recipeId: event.target.value === "note" ? null : (meal.recipeId ?? recipes[0]?.id ?? ""),
-            })
-          }
-        >
-          <option value="recipe">Recipe</option>
-          <option value="note">Note only</option>
-        </select>
-      </label>
-      {!noteOnly && (
-        <>
-          <label>
-            Recipe
-            <input
-              ref={recipeSearchInput}
-              type="search"
-              placeholder="Search recipes by name or ingredient…"
-              autoComplete="off"
-              value={recipeSearch}
-              onChange={(event) => setRecipeSearch(event.target.value)}
-              onKeyDown={(event) => {
-                if (event.key === "Enter") event.preventDefault();
-              }}
-              aria-describedby={recipeSearch.trim() ? "meal-recipe-search-status" : undefined}
-            />
-          </label>
-          {recipeSearch.trim() && (
-            <div className="meal-recipe-results" aria-busy={searching}>
-              <p id="meal-recipe-search-status" role="status">
-                {searching
-                  ? "Searching…"
-                  : recipeResults.length
-                    ? `${recipeResults.length} matching ${recipeResults.length === 1 ? "recipe" : "recipes"}`
-                    : "No recipes found. Try another name or ingredient."}
-              </p>
-              {!searching && recipeResults.length > 0 && (
-                <ul aria-label="Matching recipes">
-                  {recipeResults.map((entry) => (
-                    <li key={entry.id}>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setDraft({ ...draft, recipeId: entry.id });
-                          setRecipeSearch("");
-                          setDebouncedRecipeSearch("");
-                          recipeSearchInput.current?.focus();
-                        }}
-                      >
-                        <span>{entry.title}</span>
-                        <small>
-                          {entry.minutes} min · {entry.servings} servings
-                        </small>
-                        {entry.id === draft.recipeId && <Check size={16} aria-label="Selected recipe" />}
-                      </button>
-                    </li>
-                  ))}
-                </ul>
-              )}
-            </div>
-          )}
-          {recipe && (
-            <button
-              type="button"
-              className="selected-recipe"
-              onClick={(event) => {
-                if (event.currentTarget.form?.reportValidity()) viewRecipe(recipe, draft);
-              }}
-            >
-              <Photo recipe={recipe} />
-              <span>
-                <strong>{recipe.title}</strong>
-                <small>
-                  {recipe.minutes} minutes · View recipe <ArrowRight size={12} />
-                </small>
-              </span>
-            </button>
-          )}
-        </>
-      )}
-      <div className="form-grid">
+      <div className="meal-form-fields">
         <label>
-          Date
-          <input
-            type="date"
-            value={draft.date}
-            required
-            onChange={(event) => setDraft({ ...draft, date: event.target.value })}
-          />
-        </label>
-        <label>
-          Meal
+          Plan type
           <select
-            value={draft.slot}
-            onChange={(event) => {
-              const slot = event.target.value;
-
-              if (slot === "Breakfast" || slot === "Lunch" || slot === "Dinner") setDraft({ ...draft, slot });
-            }}
+            value={noteOnly ? "note" : "recipe"}
+            onChange={(event) =>
+              setDraft({
+                ...draft,
+                recipeId: event.target.value === "note" ? null : (meal.recipeId ?? recipes[0]?.id ?? ""),
+              })
+            }
           >
-            <option>Breakfast</option>
-            <option>Lunch</option>
-            <option>Dinner</option>
+            <option value="recipe">Recipe</option>
+            <option value="note">Note only</option>
           </select>
         </label>
-      </div>
-      {!noteOnly && (
-        <div className="scale-panel">
-          <div>
-            <label htmlFor="meal-scale">Recipe scale</label>
-            <p>
-              {recipe
-                ? `${quantity(recipe.servings * draft.scale)} servings · original recipe serves ${recipe.servings}`
-                : "Choose a recipe"}
-            </p>
-          </div>
-          <div className="scale-input">
-            <select
-              id="meal-scale"
-              aria-label="Recipe scale"
-              required
-              value={draft.scale}
-              onChange={(event) => setDraft({ ...draft, scale: Number(event.target.value) })}
-            >
-              {[...new Set([meal.scale, ...Array.from({ length: 400 }, (_, index) => (index + 1) / 4)])]
-                .sort((a, b) => a - b)
-                .map((value) => (
-                  <option key={value} value={value}>
-                    {value}×
-                  </option>
-                ))}
-            </select>
-          </div>
-        </div>
-      )}
-      <label>
-        {noteOnly ? (
-          "What’s the plan?"
-        ) : (
+        {!noteOnly && (
           <>
-            A note for this meal <span className="muted">(optional)</span>
+            <label>
+              Recipe
+              <input
+                ref={recipeSearchInput}
+                type="search"
+                placeholder="Name or ingredient…"
+                autoComplete="off"
+                value={recipeSearch}
+                onChange={(event) => setRecipeSearch(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") event.preventDefault();
+                }}
+                aria-describedby={recipeSearch.trim() ? "meal-recipe-search-status" : undefined}
+              />
+            </label>
+            {recipeSearch.trim() && (
+              <div className="meal-recipe-results" aria-busy={searching}>
+                <p id="meal-recipe-search-status" role="status">
+                  {searching
+                    ? "Searching…"
+                    : recipeResults.length
+                      ? `${recipeResults.length} matching ${recipeResults.length === 1 ? "recipe" : "recipes"}`
+                      : "No recipes found. Try another name or ingredient."}
+                </p>
+                {!searching && recipeResults.length > 0 && (
+                  <ul aria-label="Matching recipes">
+                    {recipeResults.map((entry) => (
+                      <li key={entry.id}>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setDraft({ ...draft, recipeId: entry.id });
+                            setRecipeSearch("");
+                            setDebouncedRecipeSearch("");
+                            recipeSearchInput.current?.focus();
+                          }}
+                        >
+                          <span>{entry.title}</span>
+                          <small>
+                            {entry.minutes} min · {entry.servings} servings
+                          </small>
+                          {entry.id === draft.recipeId && <Check size={16} aria-label="Selected recipe" />}
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+            )}
+            {recipe && (
+              <button
+                type="button"
+                className="selected-recipe"
+                onClick={(event) => {
+                  if (event.currentTarget.form?.reportValidity()) viewRecipe(recipe, draft);
+                }}
+              >
+                <Photo recipe={recipe} />
+                <span>
+                  <strong>{recipe.title}</strong>
+                  <small>
+                    {recipe.minutes} minutes · View recipe <ArrowRight size={12} />
+                  </small>
+                </span>
+              </button>
+            )}
           </>
         )}
-        <textarea
-          placeholder={
-            noteOnly
-              ? "Pizza, leftovers, dinner out…"
-              : "Add chicken, save some for lunch, dinner with friends…"
-          }
-          required={noteOnly}
-          maxLength={2000}
-          value={draft.note}
-          onChange={(event) => setDraft({ ...draft, note: event.target.value })}
-        />
-      </label>
-      {error && (
-        <p className="error" role="alert">
-          {error}
-        </p>
-      )}
+        <div className="form-grid">
+          <label>
+            Date
+            <input
+              type="date"
+              value={draft.date}
+              required
+              onChange={(event) => setDraft({ ...draft, date: event.target.value })}
+            />
+          </label>
+          <label>
+            Meal
+            <select
+              value={draft.slot}
+              onChange={(event) => {
+                const slot = event.target.value;
+
+                if (slot === "Breakfast" || slot === "Lunch" || slot === "Dinner")
+                  setDraft({ ...draft, slot });
+              }}
+            >
+              <option>Breakfast</option>
+              <option>Lunch</option>
+              <option>Dinner</option>
+            </select>
+          </label>
+        </div>
+        {!noteOnly && (
+          <div className="scale-panel">
+            <div>
+              <label htmlFor="meal-scale">Recipe scale</label>
+              <p>
+                {recipe
+                  ? `${quantity(recipe.servings * draft.scale)} servings · original recipe serves ${recipe.servings}`
+                  : "Choose a recipe"}
+              </p>
+            </div>
+            <div className="scale-input">
+              <select
+                id="meal-scale"
+                aria-label="Recipe scale"
+                required
+                value={draft.scale}
+                onChange={(event) => setDraft({ ...draft, scale: Number(event.target.value) })}
+              >
+                {[...new Set([meal.scale, ...Array.from({ length: 400 }, (_, index) => (index + 1) / 4)])]
+                  .sort((a, b) => a - b)
+                  .map((value) => (
+                    <option key={value} value={value}>
+                      {value}×
+                    </option>
+                  ))}
+              </select>
+            </div>
+          </div>
+        )}
+        <label>
+          {noteOnly ? (
+            "What’s the plan?"
+          ) : (
+            <>
+              A note for this meal <span className="muted">(optional)</span>
+            </>
+          )}
+          <textarea
+            placeholder={
+              noteOnly
+                ? "Pizza, leftovers, dinner out…"
+                : "Add chicken, save some for lunch, dinner with friends…"
+            }
+            required={noteOnly}
+            maxLength={2000}
+            value={draft.note}
+            onChange={(event) => setDraft({ ...draft, note: event.target.value })}
+          />
+        </label>
+        {error && (
+          <p className="error" role="alert">
+            {error}
+          </p>
+        )}
+      </div>
       <div className="form-actions">
         {remove && (
           <button type="button" className="danger text-button" disabled={busy} onClick={remove}>
@@ -1867,6 +1899,7 @@ function RecipeDetail({
   edit,
   plan,
   meal,
+  returnToMeal = false,
 }: {
   recipe: Recipe;
   groceries: readonly GroceryItem[];
@@ -1876,6 +1909,7 @@ function RecipeDetail({
   edit?: () => void;
   plan: () => void;
   meal?: Pick<MealDraft, "scale">;
+  returnToMeal?: boolean;
 }) {
   const [scale, setScale] = useState(meal?.scale ?? 1);
 
@@ -1923,8 +1957,8 @@ function RecipeDetail({
             Steps
           </a>
           <button className="primary" onClick={plan}>
-            {meal ? <ChevronLeft size={16} /> : <Plus size={16} />}{" "}
-            {meal ? "Back to meal" : "Add to meal plan"}
+            {returnToMeal ? <ChevronLeft size={16} /> : meal ? <Pencil size={16} /> : <Plus size={16} />}{" "}
+            {returnToMeal ? "Back to meal" : meal ? "Edit meal" : "Add to meal plan"}
           </button>
         </div>
       </div>
@@ -2161,6 +2195,35 @@ function RecipeForm({
   const [photoError, setPhotoError] = useState("");
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [groceryEditor, setGroceryEditor] = useState<{ item: GroceryDraft; index: number } | null>(null);
+  const [syncing, setSyncing] = useState(false);
+  const [syncMessage, setSyncMessage] = useState("");
+  const [syncFailed, setSyncFailed] = useState(false);
+
+  const syncIngredients = async () => {
+    if (syncing || busy) return;
+    setSyncing(true);
+    setSyncMessage("");
+    setSyncFailed(false);
+
+    try {
+      const response = await api("recipes/match", "POST", draft);
+
+      const result = Schema.decodeUnknownSync(
+        Schema.Struct({ recipe: RecipeSchema, report: MatchReportSchema }),
+      )(await response.json());
+
+      setDraft((current) => ({ ...current, ingredients: result.recipe.ingredients }));
+      setSyncFailed(result.report.failed > 0);
+      setSyncMessage(
+        `${result.report.matched} linked · ${result.report.unmatched} need review · ${result.report.failed} failed. Existing links and exclusions were kept. Save recipe to keep these changes.`,
+      );
+    } catch (failure) {
+      setSyncFailed(true);
+      setSyncMessage(failure instanceof Error ? failure.message : "Could not sync ingredients. Try again.");
+    } finally {
+      setSyncing(false);
+    }
+  };
 
   const updateIngredient = (index: number, ingredient: IngredientDraft) =>
     setDraft({
@@ -2192,354 +2255,380 @@ function RecipeForm({
     <>
       <form
         className="modal-form recipe-form"
+        aria-busy={syncing}
         onSubmit={(event) => {
           event.preventDefault();
-          save(draft, expectedIngredients);
+
+          if (!syncing) save(draft, expectedIngredients);
         }}
       >
-        {warnings && (
-          <div className="field-hint" role="status">
-            Review the imported recipe, quantities, and collection before saving. Timing follows the source;
-            marinating or resting may be additional.
-            {warnings.map((warning) => (
-              <p key={warning}>{warning}</p>
-            ))}
-          </div>
-        )}
-        <label>
-          Recipe name
-          <input
-            required
-            maxLength={150}
-            placeholder="Grandma’s Sunday pasta"
-            value={draft.title}
-            onChange={(event) => setDraft({ ...draft, title: event.target.value })}
-          />
-        </label>
-        <label>
-          A few words about it
-          <textarea
-            maxLength={2000}
-            placeholder="What makes this one a keeper?"
-            value={draft.description}
-            onChange={(event) => setDraft({ ...draft, description: event.target.value })}
-          />
-        </label>
-        <div className="form-grid three">
-          <label>
-            Servings
-            <input
-              type="number"
-              min="0.5"
-              max="100"
-              step="0.5"
-              required
-              value={draft.servings}
-              onChange={(event) => setDraft({ ...draft, servings: event.target.valueAsNumber })}
-            />
-          </label>
-          <label>
-            Time (minutes)
-            <input
-              type="number"
-              min="1"
-              max="10000"
-              required
-              value={draft.minutes}
-              onChange={(event) => setDraft({ ...draft, minutes: event.target.valueAsNumber })}
-            />
-          </label>
-          <label>
-            Collection
-            <select
-              value={draft.category}
-              onChange={(event) => setDraft({ ...draft, category: event.target.value })}
-            >
-              <option value="">Uncollected</option>
-              {collections.map((collection) => (
-                <option key={collection.id} value={collection.name}>
-                  {collection.name}
-                </option>
+        <fieldset className="recipe-fields" disabled={syncing}>
+          {warnings && (
+            <div className="field-hint" role="status">
+              Review the imported recipe, quantities, and collection before saving. Timing follows the source;
+              marinating or resting may be additional.
+              {warnings.map((warning) => (
+                <p key={warning}>{warning}</p>
               ))}
-            </select>
-          </label>
-        </div>
-        <details className="form-details">
-          <summary>Source & photo (optional)</summary>
+            </div>
+          )}
           <label>
-            Source URL <span className="muted">(optional)</span>
+            Recipe name
             <input
-              type="url"
-              placeholder="https://…"
-              value={draft.source}
-              onChange={(event) => setDraft({ ...draft, source: event.target.value })}
+              required
+              maxLength={150}
+              placeholder="Grandma’s Sunday pasta"
+              value={draft.title}
+              onChange={(event) => setDraft({ ...draft, title: event.target.value })}
             />
           </label>
-          <div className="photo-fields">
+          <label>
+            A few words about it
+            <textarea
+              maxLength={2000}
+              placeholder="What makes this one a keeper?"
+              value={draft.description}
+              onChange={(event) => setDraft({ ...draft, description: event.target.value })}
+            />
+          </label>
+          <div className="form-grid three">
             <label>
-              Photo URL <span className="muted">(or upload below)</span>
+              Servings
               <input
-                placeholder="https://…"
-                value={draft.photo.startsWith("data:") ? "Uploaded photo" : draft.photo}
-                readOnly={draft.photo.startsWith("data:")}
-                onChange={(event) => setDraft({ ...draft, photo: event.target.value })}
+                type="number"
+                min="0.5"
+                max="100"
+                step="0.5"
+                required
+                value={draft.servings}
+                onChange={(event) => setDraft({ ...draft, servings: event.target.valueAsNumber })}
               />
             </label>
-            <label className="file-label">
-              Upload a photo
+            <label>
+              Time (minutes)
               <input
-                type="file"
-                accept="image/jpeg,image/png,image/webp"
-                onChange={(event) => upload(event.target.files?.[0])}
+                type="number"
+                min="1"
+                max="10000"
+                required
+                value={draft.minutes}
+                onChange={(event) => setDraft({ ...draft, minutes: event.target.valueAsNumber })}
               />
             </label>
-            {draft.photo && (
-              <button type="button" className="text-button" onClick={() => setDraft({ ...draft, photo: "" })}>
-                Remove photo
-              </button>
-            )}
-            {photoError && <p className="error">{photoError}</p>}
+            <label>
+              Collection
+              <select
+                value={draft.category}
+                onChange={(event) => setDraft({ ...draft, category: event.target.value })}
+              >
+                <option value="">Uncollected</option>
+                {collections.map((collection) => (
+                  <option key={collection.id} value={collection.name}>
+                    {collection.name}
+                  </option>
+                ))}
+              </select>
+            </label>
           </div>
-        </details>
-        <div className="editor-section">
-          <h2>Ingredients</h2>
-          <p className="field-hint">
-            Link each ingredient to the product you buy. Automatic matching uses exact product or alternate
-            names. Jev’s potential matches appear first in the product list. Recipe quantities stay unchanged.
-          </p>
-          {draft.ingredients.map((item, index) => {
-            const automatic =
-              item.groceryItemId === undefined ? matchGrocery(item.name, groceries) : undefined;
-
-            const linked = groceries.find((entry) => entry.id === (item.groceryItemId ?? automatic?.id));
-
-            const suggestions = (item.grocerySuggestions ?? []).flatMap((id) => {
-              const product = groceries.find((entry) => entry.id === id);
-
-              return product ? [product] : [];
-            });
-
-            return (
-              <div className="ingredient-editor" key={index}>
+          <details className="form-details">
+            <summary>Source & photo (optional)</summary>
+            <label>
+              Source URL <span className="muted">(optional)</span>
+              <input
+                type="url"
+                placeholder="https://…"
+                value={draft.source}
+                onChange={(event) => setDraft({ ...draft, source: event.target.value })}
+              />
+            </label>
+            <div className="photo-fields">
+              <label>
+                Photo URL <span className="muted">(or upload below)</span>
                 <input
-                  aria-label={`Ingredient ${index + 1} name`}
-                  placeholder="Ingredient"
-                  maxLength={150}
-                  required
-                  value={item.name}
-                  onChange={(event) =>
-                    updateIngredient(index, {
-                      ...item,
-                      name: event.target.value,
-                      originalText: undefined,
-                      grocerySuggestions: undefined,
-                    })
-                  }
+                  placeholder="https://…"
+                  value={draft.photo.startsWith("data:") ? "Uploaded photo" : draft.photo}
+                  readOnly={draft.photo.startsWith("data:")}
+                  onChange={(event) => setDraft({ ...draft, photo: event.target.value })}
                 />
+              </label>
+              <label className="file-label">
+                Upload a photo
                 <input
-                  aria-label={`Ingredient ${index + 1} quantity`}
-                  type="number"
-                  min="0.01"
-                  max="1000000"
-                  step="any"
-                  required
-                  value={item.quantity}
-                  onChange={(event) =>
-                    updateIngredient(index, { ...item, quantity: event.target.valueAsNumber })
-                  }
+                  type="file"
+                  accept="image/jpeg,image/png,image/webp"
+                  onChange={(event) => upload(event.target.files?.[0])}
                 />
-                <select
-                  aria-label={`Ingredient ${index + 1} unit`}
-                  value={item.unit}
-                  onChange={(event) =>
-                    updateIngredient(index, {
-                      ...item,
-                      unit: Schema.decodeUnknownSync(UnitSchema)(event.target.value),
-                    })
-                  }
+              </label>
+              {draft.photo && (
+                <button
+                  type="button"
+                  className="text-button"
+                  onClick={() => setDraft({ ...draft, photo: "" })}
                 >
-                  {units.map((unit) => (
-                    <option key={unit}>{unit}</option>
-                  ))}
-                </select>
+                  Remove photo
+                </button>
+              )}
+              {photoError && <p className="error">{photoError}</p>}
+            </div>
+          </details>
+          <div className="editor-section">
+            <div className="ingredients-heading">
+              <h2>Ingredients</h2>
+              <button
+                type="button"
+                className="secondary"
+                disabled={busy || syncing}
+                onClick={(event) => {
+                  if (event.currentTarget.form?.reportValidity()) void syncIngredients();
+                }}
+              >
+                {syncing ? "Syncing ingredients…" : "Sync ingredients"}
+              </button>
+            </div>
+            <p className="field-hint">
+              Link each ingredient to the product you buy. Automatic matching uses exact product or alternate
+              names. Sync uses AI for this recipe’s automatic ingredients only; review the results before
+              saving. Existing links, manual exclusions, and quantities stay unchanged.
+            </p>
+            {syncMessage && (
+              <p className={syncFailed ? "error" : "field-hint"} role={syncFailed ? "alert" : "status"}>
+                {syncMessage}
+              </p>
+            )}
+            {draft.ingredients.map((item, index) => {
+              const automatic =
+                item.groceryItemId === undefined ? matchGrocery(item.name, groceries) : undefined;
+
+              const linked = groceries.find((entry) => entry.id === (item.groceryItemId ?? automatic?.id));
+
+              const suggestions = (item.grocerySuggestions ?? []).flatMap((id) => {
+                const product = groceries.find((entry) => entry.id === id);
+
+                return product ? [product] : [];
+              });
+
+              return (
+                <div className="ingredient-editor" key={index}>
+                  <input
+                    aria-label={`Ingredient ${index + 1} name`}
+                    placeholder="Ingredient"
+                    maxLength={150}
+                    required
+                    value={item.name}
+                    onChange={(event) =>
+                      updateIngredient(index, {
+                        ...item,
+                        name: event.target.value,
+                        originalText: undefined,
+                        grocerySuggestions: undefined,
+                      })
+                    }
+                  />
+                  <input
+                    aria-label={`Ingredient ${index + 1} quantity`}
+                    type="number"
+                    min="0.01"
+                    max="1000000"
+                    step="any"
+                    required
+                    value={item.quantity}
+                    onChange={(event) =>
+                      updateIngredient(index, { ...item, quantity: event.target.valueAsNumber })
+                    }
+                  />
+                  <select
+                    aria-label={`Ingredient ${index + 1} unit`}
+                    value={item.unit}
+                    onChange={(event) =>
+                      updateIngredient(index, {
+                        ...item,
+                        unit: Schema.decodeUnknownSync(UnitSchema)(event.target.value),
+                      })
+                    }
+                  >
+                    {units.map((unit) => (
+                      <option key={unit}>{unit}</option>
+                    ))}
+                  </select>
+                  <button
+                    type="button"
+                    className="icon-button"
+                    aria-label={`Remove ingredient ${index + 1}`}
+                    disabled={draft.ingredients.length === 1}
+                    onClick={() =>
+                      setDraft({
+                        ...draft,
+                        ingredients: draft.ingredients.filter((_, position) => position !== index),
+                      })
+                    }
+                  >
+                    <X size={16} />
+                  </button>
+                  <div className="ingredient-link-editor">
+                    <select
+                      aria-label={`Grocery item for ingredient ${index + 1}`}
+                      value={item.groceryItemId === undefined ? "auto" : (item.groceryItemId ?? "unlinked")}
+                      onChange={(event) =>
+                        updateIngredient(index, {
+                          ...item,
+                          grocerySuggestions:
+                            event.target.value === "auto" ? item.grocerySuggestions : undefined,
+                          groceryItemId:
+                            event.target.value === "auto"
+                              ? undefined
+                              : event.target.value === "unlinked"
+                                ? null
+                                : event.target.value,
+                        })
+                      }
+                    >
+                      <option value="auto">
+                        {automatic ? `Auto-match: ${automatic.name}` : "Auto-match on save · no match yet"}
+                      </option>
+                      <option value="unlinked">Leave unlinked (manual review)</option>
+                      {!!suggestions.length && (
+                        <optgroup label="Potential matches · Jev">
+                          {suggestions.map((grocery) => (
+                            <option key={grocery.id} value={grocery.id}>
+                              {grocery.name} · {displayAmount(grocery)}
+                            </option>
+                          ))}
+                        </optgroup>
+                      )}
+                      <optgroup label="All grocery items">
+                        {groceries
+                          .filter((grocery) => !suggestions.some((item) => item.id === grocery.id))
+                          .map((grocery) => (
+                            <option key={grocery.id} value={grocery.id}>
+                              {grocery.name} · {displayAmount(grocery)}
+                            </option>
+                          ))}
+                      </optgroup>
+                    </select>
+                    {linked && (
+                      <button
+                        type="button"
+                        className="text-button"
+                        disabled={busy}
+                        onClick={() => setGroceryEditor({ item: linked, index })}
+                      >
+                        <Pencil size={13} /> Edit product
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      className="text-button"
+                      disabled={busy || !item.name.trim()}
+                      onClick={() => setGroceryEditor({ item: newGrocery(item.name, item.unit), index })}
+                    >
+                      <Plus size={13} /> New product
+                    </button>
+                  </div>
+                </div>
+              );
+            })}
+            <button
+              type="button"
+              className="text-button"
+              onClick={() =>
+                setDraft({
+                  ...draft,
+                  ingredients: [...draft.ingredients, { name: "", quantity: 1, unit: "each" }],
+                })
+              }
+            >
+              <Plus size={15} /> Add ingredient
+            </button>
+          </div>
+          <div className="editor-section">
+            <h2>Cooking instructions</h2>
+            {draft.instructions.map((step, index) => (
+              <div className="instruction-editor" key={index}>
+                <span>{index + 1}</span>
+                <textarea
+                  required
+                  aria-label={`Step ${index + 1}`}
+                  maxLength={10000}
+                  placeholder="What happens next?"
+                  value={step}
+                  onChange={(event) =>
+                    setDraft({
+                      ...draft,
+                      instructions: draft.instructions.map((value, position) =>
+                        position === index ? event.target.value : value,
+                      ),
+                    })
+                  }
+                />
                 <button
                   type="button"
                   className="icon-button"
-                  aria-label={`Remove ingredient ${index + 1}`}
-                  disabled={draft.ingredients.length === 1}
+                  aria-label={`Remove step ${index + 1}`}
+                  disabled={draft.instructions.length === 1}
                   onClick={() =>
                     setDraft({
                       ...draft,
-                      ingredients: draft.ingredients.filter((_, position) => position !== index),
+                      instructions: draft.instructions.filter((_, position) => position !== index),
                     })
                   }
                 >
                   <X size={16} />
                 </button>
-                <div className="ingredient-link-editor">
-                  <select
-                    aria-label={`Grocery item for ingredient ${index + 1}`}
-                    value={item.groceryItemId === undefined ? "auto" : (item.groceryItemId ?? "unlinked")}
-                    onChange={(event) =>
-                      updateIngredient(index, {
-                        ...item,
-                        grocerySuggestions:
-                          event.target.value === "auto" ? item.grocerySuggestions : undefined,
-                        groceryItemId:
-                          event.target.value === "auto"
-                            ? undefined
-                            : event.target.value === "unlinked"
-                              ? null
-                              : event.target.value,
-                      })
-                    }
-                  >
-                    <option value="auto">
-                      {automatic ? `Auto-match: ${automatic.name}` : "Auto-match on save · no match yet"}
-                    </option>
-                    <option value="unlinked">Leave unlinked (manual review)</option>
-                    {!!suggestions.length && (
-                      <optgroup label="Potential matches · Jev">
-                        {suggestions.map((grocery) => (
-                          <option key={grocery.id} value={grocery.id}>
-                            {grocery.name} · {displayAmount(grocery)}
-                          </option>
-                        ))}
-                      </optgroup>
-                    )}
-                    <optgroup label="All grocery items">
-                      {groceries
-                        .filter((grocery) => !suggestions.some((item) => item.id === grocery.id))
-                        .map((grocery) => (
-                          <option key={grocery.id} value={grocery.id}>
-                            {grocery.name} · {displayAmount(grocery)}
-                          </option>
-                        ))}
-                    </optgroup>
-                  </select>
-                  {linked && (
-                    <button
-                      type="button"
-                      className="text-button"
-                      disabled={busy}
-                      onClick={() => setGroceryEditor({ item: linked, index })}
-                    >
-                      <Pencil size={13} /> Edit product
-                    </button>
-                  )}
-                  <button
-                    type="button"
-                    className="text-button"
-                    disabled={busy || !item.name.trim()}
-                    onClick={() => setGroceryEditor({ item: newGrocery(item.name, item.unit), index })}
-                  >
-                    <Plus size={13} /> New product
-                  </button>
-                </div>
               </div>
-            );
-          })}
-          <button
-            type="button"
-            className="text-button"
-            onClick={() =>
-              setDraft({
-                ...draft,
-                ingredients: [...draft.ingredients, { name: "", quantity: 1, unit: "each" }],
-              })
-            }
-          >
-            <Plus size={15} /> Add ingredient
-          </button>
-        </div>
-        <div className="editor-section">
-          <h2>Cooking instructions</h2>
-          {draft.instructions.map((step, index) => (
-            <div className="instruction-editor" key={index}>
-              <span>{index + 1}</span>
-              <textarea
-                required
-                aria-label={`Step ${index + 1}`}
-                maxLength={10000}
-                placeholder="What happens next?"
-                value={step}
-                onChange={(event) =>
-                  setDraft({
-                    ...draft,
-                    instructions: draft.instructions.map((value, position) =>
-                      position === index ? event.target.value : value,
-                    ),
-                  })
-                }
-              />
-              <button
-                type="button"
-                className="icon-button"
-                aria-label={`Remove step ${index + 1}`}
-                disabled={draft.instructions.length === 1}
-                onClick={() =>
-                  setDraft({
-                    ...draft,
-                    instructions: draft.instructions.filter((_, position) => position !== index),
-                  })
-                }
-              >
-                <X size={16} />
-              </button>
-            </div>
-          ))}
-          <button
-            type="button"
-            className="text-button"
-            onClick={() => setDraft({ ...draft, instructions: [...draft.instructions, ""] })}
-          >
-            <Plus size={15} /> Add step
-          </button>
-        </div>
-        {error && (
-          <p className="error" role="alert">
-            {error}
-          </p>
-        )}
-        {error &&
-          latestRecipe &&
-          JSON.stringify(latestRecipe.ingredients) !== JSON.stringify(expectedIngredients) && (
+            ))}
             <button
               type="button"
               className="text-button"
-              disabled={busy}
-              onClick={() => {
-                setDraft({ ...draft, ingredients: latestRecipe.ingredients });
-                setExpectedIngredients(latestRecipe.ingredients);
-                clearError();
-              }}
+              onClick={() => setDraft({ ...draft, instructions: [...draft.instructions, ""] })}
             >
-              Use latest ingredients and keep other edits
-            </button>
-          )}
-        {confirmDelete && (
-          <div className="delete-confirm">
-            <p>Delete this recipe permanently? Planned recipes must be removed from the calendar first.</p>
-            <button type="button" className="danger text-button" disabled={busy} onClick={remove}>
-              Yes, delete recipe
-            </button>
-            <button type="button" className="text-button" onClick={() => setConfirmDelete(false)}>
-              Keep recipe
+              <Plus size={15} /> Add step
             </button>
           </div>
-        )}
+          {error && (
+            <p className="error" role="alert">
+              {error}
+            </p>
+          )}
+          {error &&
+            latestRecipe &&
+            JSON.stringify(latestRecipe.ingredients) !== JSON.stringify(expectedIngredients) && (
+              <button
+                type="button"
+                className="text-button"
+                disabled={busy}
+                onClick={() => {
+                  setDraft({ ...draft, ingredients: latestRecipe.ingredients });
+                  setExpectedIngredients(latestRecipe.ingredients);
+                  clearError();
+                }}
+              >
+                Use latest ingredients and keep other edits
+              </button>
+            )}
+          {confirmDelete && (
+            <div className="delete-confirm">
+              <p>Delete this recipe permanently? Planned recipes must be removed from the calendar first.</p>
+              <button type="button" className="danger text-button" disabled={busy} onClick={remove}>
+                Yes, delete recipe
+              </button>
+              <button type="button" className="text-button" onClick={() => setConfirmDelete(false)}>
+                Keep recipe
+              </button>
+            </div>
+          )}
+        </fieldset>
         <div className="form-actions">
           {remove && (
             <button
               type="button"
               className="danger text-button"
-              disabled={busy}
+              disabled={busy || syncing}
               onClick={() => setConfirmDelete(true)}
             >
               <Trash2 size={15} /> Delete recipe
             </button>
           )}
-          <button className="primary" disabled={busy}>
+          <button className="primary" disabled={busy || syncing}>
             {busy ? "Saving…" : "Save recipe"}
             <Check size={16} />
           </button>
