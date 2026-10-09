@@ -631,6 +631,7 @@ async function shoppingAndTimers(page: any, touch: boolean, label: string, captu
         const touchTarget = await sections.nth(2).boundingBox();
         await page.evaluate(() => { (window as any).aislePointer = ""; document.addEventListener("pointerdown", event => { (window as any).aislePointer = event.pointerType; }, { once: true }); });
         await cdp.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x: touchBox.x + 22, y: touchBox.y + 22 }] });
+        await page.waitForFunction(() => !!document.querySelector(".route-aisle.is-dragging"));
         await cdp.send("Input.dispatchTouchEvent", { type: "touchMove", touchPoints: [{ x: touchBox.x + 22, y: touchTarget.y + touchTarget.height / 2 + 10 }] });
         await page.waitForFunction(() => !!document.querySelector(".route-aisle.drop-target"));
         assert.equal(await page.evaluate(() => (window as any).aislePointer), "touch");

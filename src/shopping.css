@@ -186,7 +186,8 @@
   color: var(--olive);
   border-radius: 5px;
   cursor: grab;
-  touch-action: none;
+  touch-action: auto;
+  -webkit-touch-callout: none;
   user-select: none;
 }
 .route-drag:hover {

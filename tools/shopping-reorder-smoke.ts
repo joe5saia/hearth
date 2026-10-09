@@ -110,7 +110,7 @@ try {
   const names = () => evaluate(() => [...(window as any).smokeGroup.querySelectorAll(".item-info strong, .route-product > span")].map((el: any) => el.childNodes[0].textContent));
   const before = await names();
   const pause = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
-  const drag = async (touch: boolean, cancel = false) => {
+  const drag = async (touch: boolean, cancel = false, gesture: "hold" | "swipe" | "tap" | "drift" = "hold") => {
     const point = await evaluate(async () => {
       const w = window as any;
       w.smokeGroup.scrollIntoView({ block: "center" });
@@ -131,7 +131,37 @@ try {
     const input = (phase: "start" | "move" | "end" | "cancel", y: number) => touch
       ? cdp("Input.dispatchTouchEvent", { type: { start: "touchStart", move: "touchMove", end: "touchEnd", cancel: "touchCancel" }[phase], touchPoints: phase === "end" || phase === "cancel" ? [] : [{ x: point.x, y }] })
       : cdp("Input.dispatchMouseEvent", { type: { start: "mousePressed", move: "mouseMoved", end: "mouseReleased", cancel: "mouseReleased" }[phase], x: point.x, y, button: "left", buttons: phase === "end" ? 0 : 1, clickCount: 1 });
+    const scrollBefore = await evaluate(() => scrollY);
+    const swipeOffset = scrollBefore > 20 ? 90 : -90;
     await input("start", point.y);
+    if (touch) {
+      assert.equal(await evaluate(() => !!document.querySelector(".is-dragging")), false, "Touch contact must not immediately start dragging.");
+      if (gesture === "tap") {
+        await pause(60);
+        await input("end", point.y);
+      } else if (gesture === "swipe") {
+        for (let step = 1; step <= 6; step++) {
+          await input("move", point.y + swipeOffset * step / 6);
+          await pause(16);
+        }
+      } else if (gesture === "drift") {
+        await input("move", point.y - 10);
+      } else {
+        // A little finger jitter is tolerated, but the first 100ms must still be scrollable.
+        await input("move", point.y - 3);
+        await pause(100);
+        assert.equal(await evaluate(() => !!document.querySelector(".is-dragging")), false);
+      }
+      await pause(300);
+      if (gesture !== "hold") {
+        assert.equal(await evaluate(() => !!document.querySelector(".is-dragging")), false, "Released or moving touches must cancel the hold timer.");
+        if (gesture !== "tap") await input("end", point.y + (gesture === "swipe" ? swipeOffset : -10));
+        await pause(400);
+        if (gesture === "swipe") assert(Math.abs(await evaluate(() => scrollY) - scrollBefore) > 20, "Swiping from the handle must actually scroll the page.");
+        return;
+      }
+      assert.equal(await evaluate(() => !!document.querySelector(".is-dragging")), true, "A held touch must activate dragging.");
+    }
     for (let step = 1; step <= 20; step++) {
       await input("move", point.y + (point.end - point.y) * step / 20);
       await pause(16);
@@ -140,6 +170,7 @@ try {
     assert.equal(await evaluate(() => (window as any).pointerType), touch ? "touch" : "mouse");
     assert.equal(await evaluate(() => !!document.querySelector(".drop-target")), true);
     assert.equal(await evaluate(() => getSelection()!.toString()), "");
+    assert.equal(await evaluate(() => scrollY), scrollBefore, "An activated drag must not scroll the page.");
     await evaluate(() => {
       const w = window as any;
       w.dropTop = w.smokeRow.getBoundingClientRect().top;
@@ -153,6 +184,13 @@ try {
     });
     await input(cancel ? "cancel" : "end", point.end);
   };
+  for (const gesture of ["tap", "drift", "swipe"] as const) {
+    await drag(true, false, gesture);
+    assert.deepEqual(await names(), before);
+    assert.deepEqual((await household()).shoppingOrder, original.shoppingOrder);
+    assert.equal(await evaluate(() => (window as any).writeHistory.length), 0, "Scrolling and short touches must not issue order writes.");
+  }
+  console.log("PASS native handle swipe scrolls; short tap and pre-hold movement cancel activation without saving");
   await drag(false);
   if (process.argv.includes("--fail-during-save")) throw new Error("Intentional cleanup regression: delayed save is pending");
   await pause(100);

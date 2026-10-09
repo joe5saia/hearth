@@ -174,6 +174,7 @@ try {
     browser("eval", "window.lastDragPointer = ''; document.addEventListener('pointerdown', event => {window.lastDragPointer = event.pointerType;}, {once:true})");
     point = dragPoints();
     await cdp("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x: point.x, y: point.y }] });
+    browser("wait", "--fn", "!!document.querySelector('.is-dragging')");
     await cdp("Input.dispatchTouchEvent", { type: "touchMove", touchPoints: [{ x: point.x, y: point.end }] });
     check("window.lastDragPointer === 'touch' && !!document.querySelector('.drop-target')", "native touch activates the vertical drag handle");
     await cdp("Input.dispatchTouchEvent", { type: "touchCancel", touchPoints: [] });
@@ -186,6 +187,7 @@ try {
     browser("find", "role", "button", "click", "--name", "Arrange route", "--exact");
     point = dragPoints();
     await cdp("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x: point.x, y: point.y }] });
+    browser("wait", "--fn", "!!document.querySelector('.is-dragging')");
     await cdp("Input.dispatchTouchEvent", { type: "touchMove", touchPoints: [{ x: point.x, y: point.end }] });
     check("!!document.querySelector('.drop-target')", "second touch drag selects its drop target");
     await cdp("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });

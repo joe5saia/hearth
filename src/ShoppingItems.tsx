@@ -93,6 +93,8 @@ export function ShoppingItems({
   } | null>(null);
 
   const dragRef = useRef(dragging);
+  const pendingTouch = useRef<{ timer: number; x: number; y: number } | null>(null);
+  const touchDragging = useRef(false);
   const rootRef = useRef<HTMLDivElement>(null);
   // Explicit gestures capture visual positions; rollback uses separate untransformed layout positions.
   const positions = useRef(new Map<Element, number>());
@@ -165,6 +167,13 @@ export function ShoppingItems({
     let width = root.offsetWidth;
     let height = root.offsetHeight;
 
+    // Allow native scrolling until the hold activates; only an active touch drag owns movement.
+    const touchMove = (event: TouchEvent) => {
+      if (touchDragging.current && dragRef.current) event.preventDefault();
+    };
+
+    root.addEventListener("touchmove", touchMove, { passive: false });
+
     const observer = new ResizeObserver(() => {
       if (width === root.offsetWidth && height === root.offsetHeight) return;
       width = root.offsetWidth;
@@ -172,7 +181,7 @@ export function ShoppingItems({
       const rows = [...root.querySelectorAll("[data-reorder-row], [data-reorder-aisle]")];
       rows.forEach((row) => row.getAnimations().forEach((animation) => animation.cancel()));
 
-      if (dragRef.current) setDrag(null);
+      setDrag(null);
       const top = root.getBoundingClientRect().top;
       layoutPositions.current = new Map(
         rows.map((row) => [
@@ -186,6 +195,9 @@ export function ShoppingItems({
 
     return () => {
       observer.disconnect();
+      root.removeEventListener("touchmove", touchMove);
+
+      if (pendingTouch.current) window.clearTimeout(pendingTouch.current.timer);
 
       if (frame.current !== null) cancelAnimationFrame(frame.current);
     };
@@ -194,10 +206,17 @@ export function ShoppingItems({
   useEffect(() => {
     setEditingAisle(null);
 
-    if (dragRef.current) setDrag(null);
+    setDrag(null);
   }, [shoppingMode, arranging]);
 
   const setDrag = (drag: typeof dragging) => {
+    if (pendingTouch.current) {
+      window.clearTimeout(pendingTouch.current.timer);
+      pendingTouch.current = null;
+    }
+
+    if (drag === null) touchDragging.current = false;
+
     if (frame.current !== null) {
       cancelAnimationFrame(frame.current);
       frame.current = null;
@@ -271,37 +290,57 @@ export function ShoppingItems({
         disabled={busy || editingAisle !== null}
         onPointerDown={(event) => {
           if (!event.isPrimary || event.button !== 0) return;
-          event.preventDefault();
+          const handle = event.currentTarget;
+          const { pointerId, pointerType, clientX, clientY } = event;
 
-          const rows = [
-            ...(aisle === null
-              ? rootRef.current!.querySelectorAll("[data-reorder-aisle]")
-              : event.currentTarget.closest("[data-reorder-group]")!.querySelectorAll("[data-reorder-row]")),
-          ];
+          const start = () => {
+            touchDragging.current = pointerType === "touch";
 
-          const visualRects = rows.map((row) => row.getBoundingClientRect());
-          // Hand an in-flight settling animation to the pointer without jumping or competing transforms.
-          rows.forEach((row) => row.getAnimations().forEach((animation) => animation.cancel()));
-          const rects = rows.map((row) => row.getBoundingClientRect());
-          const initialOffsets = rects.map((rect, index) => visualRects[index].top - rect.top);
-          event.currentTarget.setPointerCapture(event.pointerId);
-          setDrag({
-            id,
-            aisle,
-            startY: event.clientY,
-            scrollY: window.scrollY,
-            height:
-              rects[position].height +
-              (aisle === null ? parseFloat(getComputedStyle(rows[position]).marginTop) : 0),
-            source: position,
-            middles: rects.map((rect) => rect.top + rect.height / 2),
-            initialOffsets,
-            moved: false,
-            offset: initialOffsets[position],
-            target: position,
-          });
+            const rows = [
+              ...(aisle === null
+                ? rootRef.current!.querySelectorAll("[data-reorder-aisle]")
+                : handle.closest("[data-reorder-group]")!.querySelectorAll("[data-reorder-row]")),
+            ];
+
+            const visualRects = rows.map((row) => row.getBoundingClientRect());
+            // Hand an in-flight settling animation to the pointer without jumping or competing transforms.
+            rows.forEach((row) => row.getAnimations().forEach((animation) => animation.cancel()));
+            const rects = rows.map((row) => row.getBoundingClientRect());
+            const initialOffsets = rects.map((rect, index) => visualRects[index].top - rect.top);
+            handle.setPointerCapture(pointerId);
+            setDrag({
+              id,
+              aisle,
+              startY: clientY,
+              scrollY: window.scrollY,
+              height:
+                rects[position].height +
+                (aisle === null ? parseFloat(getComputedStyle(rows[position]).marginTop) : 0),
+              source: position,
+              middles: rects.map((rect) => rect.top + rect.height / 2),
+              initialOffsets,
+              moved: false,
+              offset: initialOffsets[position],
+              target: position,
+            });
+          };
+
+          if (pointerType === "touch") {
+            pendingTouch.current = { timer: window.setTimeout(start, 250), x: clientX, y: clientY };
+          } else {
+            event.preventDefault();
+            start();
+          }
         }}
         onPointerMove={(event) => {
+          const pending = pendingTouch.current;
+
+          if (pending) {
+            if (Math.hypot(event.clientX - pending.x, event.clientY - pending.y) > 8) setDrag(null);
+
+            return;
+          }
+
           const drag = dragRef.current;
 
           if (drag?.id !== id || drag.aisle !== aisle) return;
@@ -342,7 +381,10 @@ export function ShoppingItems({
             );
         }}
         onPointerCancel={() => setDrag(null)}
-        onLostPointerCapture={() => setDrag(null)}
+        onLostPointerCapture={(event) => {
+          // Touch initially captures the grip's SVG; transferring capture to its button is not cancellation.
+          if (event.target === event.currentTarget) setDrag(null);
+        }}
       >
         <GripVertical size={18} />
       </button>
