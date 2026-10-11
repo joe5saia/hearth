@@ -1477,13 +1477,15 @@ main {
   flex-wrap: wrap;
   gap: 8px;
 }
-.modal.fullscreen > .meal-form {
+.modal.fullscreen > .meal-form,
+.modal.fullscreen > .recipe-form {
   flex: 1;
   overflow: hidden;
   padding: 0;
   gap: 0;
 }
-.fullscreen .meal-form-fields {
+.fullscreen .meal-form-fields,
+.fullscreen .recipe-fields {
   display: flex;
   flex-direction: column;
   flex: 1;
@@ -1513,13 +1515,18 @@ main {
 .fullscreen .meal-form textarea {
   min-height: 6rem;
 }
-.modal.fullscreen > .meal-form > .form-actions {
+.modal.fullscreen > .meal-form > .form-actions,
+.modal.fullscreen > .recipe-form > .form-actions {
   position: static;
   margin: 0;
   padding: 12px 16px max(12px, env(safe-area-inset-bottom));
 }
 .fullscreen .meal-form .form-actions > .primary {
   flex: 1;
+}
+.fullscreen .recipe-fields {
+  margin: 0;
+  border: 0;
 }
 .danger {
   color: #ac7057;

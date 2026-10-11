@@ -235,25 +235,25 @@ function Dialog({
   const ref = useRef<HTMLDialogElement>(null);
   useEffect(() => {
     const dialog = ref.current;
+    dialog?.showModal();
+
+    return () => dialog?.close();
+  }, []);
+
+  useEffect(() => {
+    if (!fullScreen) return;
+
     const scrollY = window.scrollY;
     const bodyStyle = document.body.style.cssText;
 
-    if (fullScreen) {
-      document.body.style.position = "fixed";
-      document.body.style.top = `-${scrollY}px`;
-      document.body.style.width = "100%";
-      document.body.style.overflow = "hidden";
-    }
-
-    dialog?.showModal();
+    document.body.style.position = "fixed";
+    document.body.style.top = `-${scrollY}px`;
+    document.body.style.width = "100%";
+    document.body.style.overflow = "hidden";
 
     return () => {
-      dialog?.close();
-
-      if (fullScreen) {
-        document.body.style.cssText = bodyStyle;
-        window.scrollTo({ top: scrollY, behavior: "instant" });
-      }
+      document.body.style.cssText = bodyStyle;
+      window.scrollTo({ top: scrollY, behavior: "instant" });
     };
   }, [fullScreen]);
 
@@ -1608,6 +1608,7 @@ export function App() {
             setError("");
           }}
           wide
+          fullScreen={mobileLayout}
         >
           <RecipeForm
             recipe={modal.recipe}
@@ -2207,6 +2208,114 @@ function RecipeImport({ imported }: { imported: (recipe: Recipe, warnings: reado
   );
 }
 
+function IngredientMatch({
+  item,
+  groceries,
+  index,
+  change,
+}: {
+  item: IngredientDraft;
+  groceries: readonly GroceryItem[];
+  index: number;
+  change: (item: IngredientDraft) => void;
+}) {
+  const [query, setQuery] = useState("");
+  const [open, setOpen] = useState(false);
+  const automatic = item.groceryItemId === undefined ? matchGrocery(item.name, groceries) : undefined;
+  const linked = groceries.find((grocery) => grocery.id === (item.groceryItemId ?? automatic?.id));
+
+  const suggestions = (item.grocerySuggestions ?? []).flatMap((id) => {
+    const grocery = groceries.find((entry) => entry.id === id);
+
+    return grocery ? [grocery] : [];
+  });
+
+  const search = query.trim().toLowerCase();
+
+  const results = [
+    ...suggestions,
+    ...groceries.filter((grocery) => !suggestions.some((suggestion) => suggestion.id === grocery.id)),
+  ].filter((grocery) =>
+    [grocery.name, ...grocery.aliases].some((name) => name.toLowerCase().includes(search)),
+  );
+
+  const select = (id: IngredientDraft["groceryItemId"]) => {
+    change({
+      ...item,
+      groceryItemId: id,
+      grocerySuggestions: id === undefined ? item.grocerySuggestions : undefined,
+    });
+    setQuery("");
+    setOpen(false);
+  };
+
+  return (
+    <div className="ingredient-match">
+      <p className="ingredient-match-status">
+        {item.groceryItemId === undefined
+          ? automatic
+            ? `Auto-match: ${automatic.name}`
+            : "Auto-match on save · no match yet"
+          : linked
+            ? `Linked: ${linked.name}`
+            : "Leave unlinked (manual review)"}
+      </p>
+      <label className="ingredient-match-search">
+        <Search size={18} aria-hidden="true" />
+        <input
+          type="search"
+          aria-label={`Grocery item for ingredient ${index + 1}`}
+          placeholder="Search grocery items"
+          value={query}
+          spellCheck={false}
+          onFocus={() => setOpen(true)}
+          onChange={(event) => {
+            setQuery(event.target.value);
+            setOpen(true);
+          }}
+          onKeyDown={(event) => {
+            if (event.key === "Enter") event.preventDefault();
+
+            if (event.key === "Escape" && open) {
+              event.preventDefault();
+              event.stopPropagation();
+              setOpen(false);
+            }
+          }}
+        />
+      </label>
+      {open && (
+        <div
+          className="ingredient-match-results"
+          role="region"
+          aria-label={`Matches for ingredient ${index + 1}`}
+        >
+          {results.map((grocery) => (
+            <button type="button" key={grocery.id} onClick={() => select(grocery.id)}>
+              <strong>{grocery.name}</strong>
+              <span>
+                {displayAmount(grocery)}
+                {suggestions.some((item) => item.id === grocery.id) ? " · Potential match · Jev" : ""}
+              </span>
+            </button>
+          ))}
+          {!results.length && (
+            <p role="status">
+              No grocery items match “{query}”. Try another search or create a new product below.
+            </p>
+          )}
+          <button type="button" onClick={() => select(undefined)}>
+            Auto-match on save
+          </button>
+          <button type="button" onClick={() => select(null)}>
+            Leave unlinked (manual review)
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function RecipeForm({
   recipe,
   latestRecipe,
@@ -2448,12 +2557,6 @@ function RecipeForm({
 
               const linked = groceries.find((entry) => entry.id === (item.groceryItemId ?? automatic?.id));
 
-              const suggestions = (item.grocerySuggestions ?? []).flatMap((id) => {
-                const product = groceries.find((entry) => entry.id === id);
-
-                return product ? [product] : [];
-              });
-
               return (
                 <div className="ingredient-editor" key={index}>
                   <input
@@ -2512,46 +2615,12 @@ function RecipeForm({
                     <X size={16} />
                   </button>
                   <div className="ingredient-link-editor">
-                    <select
-                      aria-label={`Grocery item for ingredient ${index + 1}`}
-                      value={item.groceryItemId === undefined ? "auto" : (item.groceryItemId ?? "unlinked")}
-                      onChange={(event) =>
-                        updateIngredient(index, {
-                          ...item,
-                          grocerySuggestions:
-                            event.target.value === "auto" ? item.grocerySuggestions : undefined,
-                          groceryItemId:
-                            event.target.value === "auto"
-                              ? undefined
-                              : event.target.value === "unlinked"
-                                ? null
-                                : event.target.value,
-                        })
-                      }
-                    >
-                      <option value="auto">
-                        {automatic ? `Auto-match: ${automatic.name}` : "Auto-match on save · no match yet"}
-                      </option>
-                      <option value="unlinked">Leave unlinked (manual review)</option>
-                      {!!suggestions.length && (
-                        <optgroup label="Potential matches · Jev">
-                          {suggestions.map((grocery) => (
-                            <option key={grocery.id} value={grocery.id}>
-                              {grocery.name} · {displayAmount(grocery)}
-                            </option>
-                          ))}
-                        </optgroup>
-                      )}
-                      <optgroup label="All grocery items">
-                        {groceries
-                          .filter((grocery) => !suggestions.some((item) => item.id === grocery.id))
-                          .map((grocery) => (
-                            <option key={grocery.id} value={grocery.id}>
-                              {grocery.name} · {displayAmount(grocery)}
-                            </option>
-                          ))}
-                      </optgroup>
-                    </select>
+                    <IngredientMatch
+                      item={item}
+                      groceries={groceries}
+                      index={index}
+                      change={(ingredient) => updateIngredient(index, ingredient)}
+                    />
                     {linked && (
                       <button
                         type="button"

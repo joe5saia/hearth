@@ -347,9 +347,65 @@
   gap: 8px;
   padding-bottom: 8px;
 }
-.ingredient-link-editor select {
+.ingredient-match {
   flex: 1 1 200px;
+  min-width: 0;
   width: 100%;
+}
+.ingredient-match-status {
+  font-size: 12px;
+  color: var(--olive);
+  margin-bottom: 6px;
+  overflow-wrap: anywhere;
+}
+.modal-form .ingredient-match-search {
+  position: relative;
+}
+.ingredient-match-search > svg {
+  position: absolute;
+  left: 12px;
+  top: 50%;
+  transform: translateY(-50%);
+  color: var(--muted);
+  pointer-events: none;
+}
+.modal-form .ingredient-match-search > input {
+  padding-left: 38px;
+}
+.ingredient-match-results {
+  max-height: 260px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  margin-top: 6px;
+  background: #fffefa;
+}
+.ingredient-match-results > button {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: center;
+  width: 100%;
+  padding: 10px 12px;
+  text-align: left;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  border-radius: 0;
+  border-bottom: 1px solid var(--line);
+  gap: 4px;
+}
+.ingredient-match-results > button:hover,
+.ingredient-match-results > button:focus-visible {
+  background: #f0f1e7;
+}
+.ingredient-match-results > button > span {
+  color: var(--muted);
+  font-size: 12px;
+}
+.ingredient-match-results > p {
+  padding: 12px;
+  font-size: 14px;
 }
 .ingredient-link-editor button {
   min-height: 44px;
@@ -466,7 +522,7 @@
   .ingredient-editor > .ingredient-link-editor {
     grid-row: 3;
   }
-  .ingredient-link-editor select {
+  .ingredient-match {
     flex-basis: 100%;
   }
 }

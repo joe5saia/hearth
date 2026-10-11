@@ -121,7 +121,7 @@ try {
   submit('[aria-label="Edit recipe Lime rice bowls"]');
   browser("wait", '[aria-label="Ingredient 1 quantity"]');
   browser("fill", '[aria-label="Ingredient 1 quantity"]', "250");
-  browser("click", '.ingredient-editor:nth-of-type(5) .ingredient-link-editor button');
+  browser("click", '.ingredient-editor:has([aria-label="Ingredient 5 name"]) .ingredient-link-editor > button');
   browser("wait", ".grocery-form");
   formFill("Store product name", "Flat-leaf parsley");
   formFill("Aisle (optional)", "2");
@@ -134,7 +134,7 @@ try {
   formFill("Package quantity", "1");
   submit('.grocery-form button[type="submit"]');
   finishSave();
-  check("document.querySelector('[aria-label=\"Ingredient 1 quantity\"]').value === '250' && document.querySelector('[aria-label=\"Grocery item for ingredient 5\"]').selectedOptions[0].textContent.includes('Flat-leaf parsley')", "nested product creation preserves unsaved recipe edits and selects link");
+  check("document.querySelector('[aria-label=\"Ingredient 1 quantity\"]').value === '250' && [...document.querySelectorAll('.ingredient-match-status')][4].textContent.includes('Linked: Flat-leaf parsley')", "nested product creation preserves unsaved recipe edits and selects link");
   browser("eval", "document.querySelector('.ingredient-editor').scrollIntoView()");
   check("document.querySelector('.recipe-form').scrollWidth <= document.querySelector('.recipe-form').clientWidth", "narrow ingredient-link editor has no horizontal overflow");
   screenshot("recipe-grocery-links");

@@ -27,6 +27,8 @@ const products: GroceryItem[] = [
   { id: `${prefix}-fresh`, name: "BelGioioso Vegetarian Parmesan Cheese", aliases: [], quantity: 8, unit: "oz", aisle: "Dairy", url: "" },
   { id: `${prefix}-kraft`, name: "Kraft Finely Shredded Parmesan Cheese", aliases: [], quantity: 6, unit: "oz", aisle: "Dairy", url: "" },
   { id: `${prefix}-carrot`, name: "Fresh Shredded Carrots", aliases: [], quantity: 10, unit: "oz", aisle: "Produce", url: "" },
+  { id: `${prefix}-chicken`, name: "Organic Chicken Breast", aliases: [], quantity: 1, unit: "lb", aisle: "Meat", url: "" },
+  { id: `${prefix}-poultry`, name: "Boneless poultry portions", aliases: ["Chicken cutlets"], quantity: 2, unit: "lb", aisle: "Meat", url: "" },
 ];
 const recipe: Recipe = {
   id: prefix, title: "Broccoli cheese bites", description: "A simple lunch with a choice of Parmesan.",
@@ -74,8 +76,33 @@ try {
   openRecipe();
   browser("find", "role", "button", "click", "--name", "Edit recipe", "--exact");
   browser("wait", ".recipe-form");
-  check("(() => { const select = document.querySelector('[aria-label=\"Grocery item for ingredient 1\"]'); return select.querySelector('optgroup').label === 'Potential matches · Jev' && select.querySelector('optgroup option').textContent.includes('Kraft') && new Set([...select.options].map(o=>o.value)).size === select.options.length; })()", "editor suggestions lead the catalog in Jev order with no duplicate options");
-  browser("select", '[aria-label="Grocery item for ingredient 1"]', products[0].id);
+  check("(() => { const dialog = document.querySelector('dialog[open]'); const rect = dialog.getBoundingClientRect(); const footer = dialog.querySelector('.form-actions').getBoundingClientRect(); return dialog.classList.contains('fullscreen') && rect.x === 0 && rect.y === 0 && rect.width === innerWidth && rect.height === innerHeight && footer.bottom <= innerHeight; })()", "mobile recipe editor fills viewport with visible save actions");
+  browser("screenshot", resolve(".amp/in/artifacts/recipe-editor-mobile.png"));
+  browser("fill", '[aria-label="Grocery item for ingredient 1"]', "");
+  check("(() => { const results = [...document.querySelectorAll('.ingredient-match-results strong')]; return results[0].textContent.includes('Kraft') && results[1].textContent.includes('BelGioioso') && new Set(results.map(o=>o.textContent)).size === results.length; })()", "editor suggestions lead search results in Jev order without duplicates");
+  browser("fill", '[aria-label="Grocery item for ingredient 1"]', "  cHiCkEn  ");
+  check("(() => { const names = [...document.querySelectorAll('.ingredient-match-results strong')].map(el => el.textContent); return names.length === 2 && names.includes('Organic Chicken Breast') && names.includes('Boneless poultry portions'); })()", "contains search is case-insensitive, trims spaces and includes aliases but excludes unrelated products");
+  browser("press", "Enter");
+  check("!!document.querySelector('.recipe-form') && !!document.querySelector('.ingredient-match-results')", "Enter in search does not accidentally save the recipe");
+  browser("eval", "document.querySelector('.ingredient-editor').scrollIntoView({block:'start'})");
+  check("document.querySelector('.recipe-fields').scrollWidth <= document.querySelector('.recipe-fields').clientWidth && [...document.querySelectorAll('.ingredient-match-results button')].every(el => el.getBoundingClientRect().height >= 44)", "mobile search results fit and have 44px targets");
+  browser("screenshot", resolve(".amp/in/artifacts/ingredient-search-mobile.png"));
+  browser("fill", '[aria-label="Grocery item for ingredient 1"]', "no-such-product");
+  check("document.querySelector('.ingredient-match-results [role=status]').textContent.includes('No grocery items match') && !document.querySelector('.ingredient-match-results strong')", "search explains empty results");
+  browser("screenshot", resolve(".amp/in/artifacts/ingredient-search-empty-mobile.png"));
+  browser("fill", '[aria-label="Grocery item for ingredient 1"]', "poultry");
+  browser("click", ".ingredient-match-results button:has(strong)");
+  check("document.querySelector('.ingredient-match-status').textContent.includes('Linked: Boneless poultry portions') && !document.querySelector('.ingredient-match-results')", "choosing a result updates the draft and closes the results");
+  browser("screenshot", resolve(".amp/in/artifacts/ingredient-search-selected-mobile.png"));
+  browser("click", ".recipe-form .form-actions .primary");
+  browser("wait", "--fn", "!document.querySelector('.recipe-form')");
+  assert.equal((await household()).recipes[0].ingredients[0].groceryItemId, products[4].id);
+  console.log("PASS search result persists through Worker/SQLite");
+  await request("recipes", "PUT", recipe);
+  openRecipe();
+  browser("find", "role", "button", "click", "--name", "Edit recipe", "--exact");
+  browser("fill", '[aria-label="Grocery item for ingredient 1"]', "BelGioioso");
+  browser("click", ".ingredient-match-results button:has(strong)");
   browser("click", ".recipe-form .form-actions .primary");
   browser("wait", "--fn", "!document.querySelector('.recipe-form')");
   assert.equal((await household()).recipes[0].ingredients[0].groceryItemId, products[0].id);
@@ -85,8 +112,13 @@ try {
   openRecipe();
   browser("find", "role", "button", "click", "--name", "Edit recipe", "--exact");
   browser("fill", '[aria-label="Ingredient 1 name"]', "Different ingredient");
-  check("!document.querySelector('[aria-label=\"Grocery item for ingredient 1\"] optgroup[label^=\"Potential\"]')", "renaming an ingredient clears stale suggestions");
-  browser("select", '[aria-label="Grocery item for ingredient 2"]', "unlinked");
+  browser("fill", '[aria-label="Grocery item for ingredient 1"]', "");
+  check("!document.querySelector('.ingredient-match-results').textContent.includes('Potential match')", "renaming an ingredient clears stale suggestions");
+  browser("press", "Escape");
+  check("!!document.querySelector('.recipe-form') && !document.querySelector('.ingredient-match-results')", "Escape dismisses search without closing recipe editor");
+  browser("fill", '[aria-label="Grocery item for ingredient 2"]', "");
+  browser("eval", "document.querySelector('.ingredient-match-results > button:last-of-type').scrollIntoView({block:'center'})");
+  browser("find", "role", "button", "click", "--name", "Leave unlinked (manual review)", "--exact");
   browser("click", ".recipe-form .form-actions .primary");
   browser("wait", "--fn", "!document.querySelector('.recipe-form')");
   const excluded = (await household()).recipes[0];
@@ -100,7 +132,12 @@ try {
   openRecipe();
   browser("set", "viewport", "1280", "900", "2");
   browser("find", "role", "button", "click", "--name", "Edit recipe", "--exact");
+  check("!document.querySelector('dialog[open]').classList.contains('fullscreen')", "desktop recipe editor retains centered dialog");
   browser("find", "label", "Time (minutes)", "fill", "47");
+  browser("fill", '[aria-label="Grocery item for ingredient 1"]', "chicken");
+  browser("eval", "document.querySelector('.ingredient-match').scrollIntoView({block:'center'})");
+  browser("screenshot", resolve(".amp/in/artifacts/ingredient-search-desktop.png"));
+  browser("press", "Escape");
   browser("eval", "document.querySelector('.recipe-form .form-actions').scrollIntoView({block:'center'})");
   browser("screenshot", resolve(".amp/in/artifacts/matching-editor-draft.png"));
   await request("recipes", "PUT", {
@@ -121,7 +158,7 @@ try {
   browser("screenshot", resolve(".amp/in/artifacts/matching-editor-conflict-narrow.png"));
   browser("set", "viewport", "1280", "900", "2");
   browser("find", "role", "button", "click", "--name", "Use latest ingredients and keep other edits", "--exact");
-  check(`!document.querySelector('.recipe-form [role=alert]') && document.querySelector('[aria-label="Grocery item for ingredient 1"]').value === ${JSON.stringify(products[0].id)}`, "recovery replaces stale ingredients and clears the conflict");
+  check("!document.querySelector('.recipe-form [role=alert]') && document.querySelector('.ingredient-match-status').textContent.includes('Linked: BelGioioso')", "recovery replaces stale ingredients and clears the conflict");
   browser("click", ".recipe-form .form-actions .primary");
   browser("wait", "--fn", "!document.querySelector('.recipe-form')");
   const recovered = (await household()).recipes[0];
