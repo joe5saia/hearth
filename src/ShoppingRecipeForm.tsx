@@ -1,0 +1,123 @@
+import { useState } from "react";
+import { matchesRecipeSearch, type GroceryId, type Household } from "./domain";
+
+export function ShoppingRecipeForm({
+  recipes,
+  groceries,
+  checks,
+  busy,
+  error,
+  cancel,
+  save,
+}: Pick<Household, "recipes" | "groceries" | "checks"> & {
+  busy: boolean;
+  error: string;
+  cancel: () => void;
+  save: (ids: GroceryId[]) => Promise<void>;
+}) {
+  const [search, setSearch] = useState("");
+  const [selected, setSelected] = useState<string[]>([]);
+
+  const ingredients = recipes
+    .filter((recipe) => selected.includes(recipe.id))
+    .flatMap((recipe) => recipe.ingredients);
+
+  const linkedIds = new Set(
+    ingredients.flatMap((ingredient) => (ingredient.groceryItemId ? [ingredient.groceryItemId] : [])),
+  );
+
+  const linked = groceries.filter((item) => linkedIds.has(item.id));
+  const onList = new Set(checks.filter((entry) => entry.checked === 0).map((entry) => entry.key));
+  const missing = linked.filter((item) => !onList.has(JSON.stringify(["shopping-list", item.id])));
+  const unlinked = ingredients.filter((ingredient) => !ingredient.groceryItemId).length;
+  const visible = recipes.filter((recipe) => matchesRecipeSearch(recipe, search));
+
+  return (
+    <form
+      className="modal-form shopping-recipe-form"
+      onSubmit={async (event) => {
+        event.preventDefault();
+
+        if (!busy && missing.length) await save(missing.map((item) => item.id));
+      }}
+    >
+      <p className="muted">
+        Choose recipes to add their linked grocery items. Items already on your list stay unchanged.
+      </p>
+      <label>
+        Search recipes
+        <input
+          type="search"
+          value={search}
+          onChange={(event) => setSearch(event.target.value)}
+          disabled={busy}
+        />
+      </label>
+      <div className="shopping-recipe-options" role="group" aria-label="Recipes to shop for">
+        {visible.map((recipe) => (
+          <label className="shopping-recipe-option" key={recipe.id}>
+            <input
+              type="checkbox"
+              checked={selected.includes(recipe.id)}
+              disabled={busy}
+              onChange={(event) =>
+                setSelected((current) =>
+                  event.target.checked ? [...current, recipe.id] : current.filter((id) => id !== recipe.id),
+                )
+              }
+            />
+            <span>
+              <strong>{recipe.title}</strong>
+              <span className="muted small">
+                {recipe.ingredients.filter((ingredient) => ingredient.groceryItemId).length} of{" "}
+                {recipe.ingredients.length} ingredients linked
+              </span>
+            </span>
+          </label>
+        ))}
+        {!visible.length && (
+          <p className="muted">
+            {recipes.length
+              ? "No recipes match your search."
+              : "No recipes yet. Add recipes and link their ingredients to grocery items first."}
+          </p>
+        )}
+      </div>
+      <div className="shopping-recipe-preview" aria-live="polite">
+        <strong>
+          {selected.length} selected · {missing.length} {missing.length === 1 ? "item" : "items"} to add
+        </strong>
+        {missing.length > 0 && <p>{missing.map((item) => item.name).join(", ")}</p>}
+        {linked.length > missing.length && (
+          <p className="muted">{linked.length - missing.length} already on your list.</p>
+        )}
+        {unlinked > 0 && (
+          <p className="muted">
+            {unlinked} unlinked {unlinked === 1 ? "ingredient will" : "ingredients will"} be skipped. Link
+            them in the recipe editor to include them.
+          </p>
+        )}
+        {selected.length > 0 && !missing.length && (
+          <p className="muted">
+            {linked.length
+              ? "All linked items are already on your list."
+              : "These recipes have no linked grocery items."}
+          </p>
+        )}
+      </div>
+      {error && (
+        <p role="alert" className="form-error">
+          {error}
+        </p>
+      )}
+      <div className="form-actions">
+        <button type="button" className="secondary" disabled={busy} onClick={cancel}>
+          Cancel
+        </button>
+        <button className="primary" disabled={busy || !missing.length}>
+          {busy ? "Adding…" : `Add ${missing.length} ${missing.length === 1 ? "item" : "items"}`}
+        </button>
+      </div>
+    </form>
+  );
+}

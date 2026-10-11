@@ -231,6 +231,44 @@
   padding: 8px;
   font-size: 0.875rem;
 }
+.shopping-recipe-options {
+  display: grid;
+  gap: 8px;
+}
+.modal-form .shopping-recipe-option {
+  flex-direction: row;
+  align-items: center;
+  gap: 12px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  cursor: pointer;
+}
+.shopping-recipe-option:has(:checked) {
+  background: #eef0e6;
+  border-color: var(--olive);
+}
+.modal-form .shopping-recipe-option input {
+  width: 20px;
+  height: 20px;
+  flex-shrink: 0;
+  accent-color: var(--olive);
+}
+.shopping-recipe-option > span {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.shopping-recipe-preview {
+  padding: 12px;
+  background: #eef0e6;
+  border-radius: 8px;
+  overflow-wrap: anywhere;
+}
+.shopping-recipe-preview p {
+  margin-top: 8px;
+}
 .shopping-mode .shopping-layout {
   grid-template-columns: minmax(0, 1fr);
   max-width: 850px;

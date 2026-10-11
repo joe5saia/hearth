@@ -3,6 +3,7 @@ import { Option, Schema } from "effect";
 import { KitchenTimers } from "./KitchenTimers";
 import { GroceryForm, GroceryManager } from "./GroceryManager";
 import { ShoppingItems } from "./ShoppingItems";
+import { ShoppingRecipeForm } from "./ShoppingRecipeForm";
 import { ChatGPTSetup } from "./ChatGPTSetup";
 import { browserEvent, browserOperation, browserResponse } from "./browser-observability";
 import { matchGrocery } from "./groceries";
@@ -86,6 +87,7 @@ function applyShoppingEdit(state: Pick<Household, "shoppingOrder" | "checks">, e
 
 type Modal =
   | { kind: "collections" }
+  | { kind: "shopping-recipes" }
   | { kind: "chatgpt" }
   | { kind: "grocery"; item: GroceryDraft }
   | { kind: "collection"; collection: Collection }
@@ -1143,6 +1145,16 @@ export function App() {
                     </span>
                   </div>
                   <div className="shopping-controls">
+                    <button
+                      className="secondary"
+                      disabled={busy || shoppingPending > 0}
+                      onClick={() => {
+                        setError("");
+                        setModal({ kind: "shopping-recipes" });
+                      }}
+                    >
+                      <BookOpen size={16} /> Add from recipes
+                    </button>
                     <a
                       className="text-button"
                       href="#household-extras"
@@ -1331,6 +1343,41 @@ export function App() {
           <Check size={17} />
           {toast}
         </div>
+      )}
+      {modal?.kind === "shopping-recipes" && (
+        <Dialog
+          title="Add from recipes"
+          close={() => {
+            if (busy) return;
+            setModal(null);
+            setError("");
+          }}
+        >
+          <ShoppingRecipeForm
+            recipes={data.recipes}
+            groceries={data.groceries}
+            checks={data.checks}
+            busy={busy}
+            error={error}
+            cancel={() => setModal(null)}
+            save={async (ids) => {
+              setBusy(true);
+
+              const results = await Promise.all(
+                ids.map((id) =>
+                  saveShoppingEdit({ kind: "check", key: JSON.stringify(["shopping-list", id]), checked: 0 }),
+                ),
+              );
+
+              setBusy(false);
+
+              if (results.every(Boolean)) {
+                setModal(null);
+                setToast(`${ids.length} ${ids.length === 1 ? "item" : "items"} added to shopping list`);
+              }
+            }}
+          />
+        </Dialog>
       )}
       {modal?.kind === "grocery" && (
         <Dialog
