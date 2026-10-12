@@ -4,6 +4,7 @@ import { KitchenTimers } from "./KitchenTimers";
 import { GroceryForm, GroceryManager } from "./GroceryManager";
 import { ShoppingItems } from "./ShoppingItems";
 import { ShoppingRecipeForm } from "./ShoppingRecipeForm";
+import { RecipeChecklist } from "./RecipeChecklist";
 import { ChatGPTSetup } from "./ChatGPTSetup";
 import { browserEvent, browserOperation, browserResponse } from "./browser-observability";
 import { matchGrocery } from "./groceries";
@@ -67,7 +68,7 @@ import {
   type ShoppingOrder,
 } from "./domain";
 
-type Page = "plan" | "recipes" | "shopping" | "groceries";
+type Page = "plan" | "recipes" | "shopping" | "groceries" | "recipe-checklist";
 
 const mobileViewport = "(max-width: 850px), (pointer: coarse) and (max-height: 500px)";
 
@@ -122,13 +123,15 @@ const readableDate = (
 ) => new Date(`${date}T12:00:00`).toLocaleDateString("en-US", options);
 
 const pageFromHash = (): Page =>
-  location.hash === "#recipes"
-    ? "recipes"
-    : location.hash === "#shopping"
-      ? "shopping"
-      : location.hash === "#groceries"
-        ? "groceries"
-        : "plan";
+  location.hash === "#recipe-checklist"
+    ? "recipe-checklist"
+    : location.hash === "#recipes"
+      ? "recipes"
+      : location.hash === "#shopping"
+        ? "shopping"
+        : location.hash === "#groceries"
+          ? "groceries"
+          : "plan";
 
 async function api(
   path: string,
@@ -634,6 +637,11 @@ export function App() {
   const completed = items.filter((item) => isChecked(checkKey(item))).length;
   const totalItems = items.length + data.extras.length;
   const totalCompleted = completed + data.extras.filter((item) => item.checked).length;
+
+  if (page === "recipe-checklist")
+    return (
+      <RecipeChecklist recipes={data.recipes} groceries={data.groceries} loaded={loaded} error={error} />
+    );
 
   return (
     <div
@@ -1155,6 +1163,14 @@ export function App() {
                     >
                       <BookOpen size={16} /> Add from recipes
                     </button>
+                    <a
+                      className="secondary"
+                      href="#recipe-checklist"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                    >
+                      <ListChecks size={16} /> Recipe checklist <ExternalLink size={14} />
+                    </a>
                     <a
                       className="text-button"
                       href="#household-extras"

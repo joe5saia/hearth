@@ -76,6 +76,9 @@ tasks:
   groceries:smoke:
     desc: Grocery browser E2E (requires agent-browser and an empty disposable local household; optional -- local URL)
     cmds: ["node tools/groceries-smoke.ts {{.CLI_ARGS}}"]
+  checklist:smoke:
+    desc: Recipe checklist browser E2E (requires local dev, agent-browser and an empty disposable local household; optional -- local URL)
+    cmds: ["node tools/recipe-checklist-smoke.ts {{.CLI_ARGS}}"]
   shopping:smoke:
     desc: Reorder-animation browser E2E (requires local sample meals and agent-browser; restores existing order; optional -- local URL)
     cmds: ["node tools/shopping-reorder-smoke.ts {{.CLI_ARGS}}"]

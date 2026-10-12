@@ -1,0 +1,46 @@
+.recipe-checklist {
+  width: 100%;
+  max-width: 720px;
+  margin: 0 auto;
+  padding: 24px 16px;
+  display: grid;
+  gap: 16px;
+  overflow-wrap: anywhere;
+}
+.recipe-checklist header,
+.recipe-checklist form,
+.recipe-checklist-search {
+  display: grid;
+  gap: 12px;
+}
+.recipe-checklist h1 {
+  font-size: 28px;
+}
+.recipe-checklist button {
+  justify-self: start;
+}
+.recipe-checklist-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 56px;
+  padding: 12px 0;
+  border-bottom: 1px solid var(--line);
+  cursor: pointer;
+}
+.recipe-checklist-row > span {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+.recipe-checklist-row input {
+  margin: 0;
+  width: 20px;
+  height: 20px;
+}
+.recipe-checklist-row:has(:checked) > span {
+  opacity: 0.65;
+}
+.recipe-checklist [aria-label="Ingredients needed"] .recipe-checklist-row:has(:checked) strong {
+  text-decoration: line-through;
+}
