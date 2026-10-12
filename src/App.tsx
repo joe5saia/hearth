@@ -1371,6 +1371,7 @@ export function App() {
         >
           <ShoppingRecipeForm
             recipes={data.recipes}
+            meals={data.meals}
             groceries={data.groceries}
             checks={data.checks}
             busy={busy}

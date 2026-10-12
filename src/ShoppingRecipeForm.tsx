@@ -3,13 +3,14 @@ import { matchesRecipeSearch, type GroceryId, type Household } from "./domain";
 
 export function ShoppingRecipeForm({
   recipes,
+  meals,
   groceries,
   checks,
   busy,
   error,
   cancel,
   save,
-}: Pick<Household, "recipes" | "groceries" | "checks"> & {
+}: Pick<Household, "recipes" | "meals" | "groceries" | "checks"> & {
   busy: boolean;
   error: string;
   cancel: () => void;
@@ -17,6 +18,18 @@ export function ShoppingRecipeForm({
 }) {
   const [search, setSearch] = useState("");
   const [selected, setSelected] = useState<string[]>([]);
+
+  const plannedDates = new Map<string, string>();
+
+  for (const meal of meals) {
+    if (meal.recipeId && meal.date > (plannedDates.get(meal.recipeId) ?? "")) {
+      plannedDates.set(meal.recipeId, meal.date);
+    }
+  }
+
+  const plannedRecipes = recipes
+    .filter((recipe) => plannedDates.has(recipe.id))
+    .sort((a, b) => plannedDates.get(b.id)!.localeCompare(plannedDates.get(a.id)!));
 
   const ingredients = recipes
     .filter((recipe) => selected.includes(recipe.id))
@@ -30,7 +43,7 @@ export function ShoppingRecipeForm({
   const onList = new Set(checks.filter((entry) => entry.checked === 0).map((entry) => entry.key));
   const missing = linked.filter((item) => !onList.has(JSON.stringify(["shopping-list", item.id])));
   const unlinked = ingredients.filter((ingredient) => !ingredient.groceryItemId).length;
-  const visible = recipes.filter((recipe) => matchesRecipeSearch(recipe, search));
+  const visible = plannedRecipes.filter((recipe) => matchesRecipeSearch(recipe, search));
 
   return (
     <form
@@ -42,7 +55,8 @@ export function ShoppingRecipeForm({
       }}
     >
       <p className="muted">
-        Choose recipes to add their linked grocery items. Items already on your list stay unchanged.
+        Choose meal-plan recipes, latest planned date first, to add their linked grocery items. Items already
+        on your list stay unchanged.
       </p>
       <label>
         Search recipes
@@ -77,9 +91,9 @@ export function ShoppingRecipeForm({
         ))}
         {!visible.length && (
           <p className="muted">
-            {recipes.length
+            {plannedRecipes.length
               ? "No recipes match your search."
-              : "No recipes yet. Add recipes and link their ingredients to grocery items first."}
+              : "No recipes in your meal plan yet. Plan a recipe to add its linked grocery items here."}
           </p>
         )}
       </div>
