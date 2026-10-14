@@ -1,4 +1,4 @@
-import { useId, useState } from "react";
+import { useId, useRef, useState } from "react";
 import { Schema } from "effect";
 import { Link2, Pencil, RefreshCw, Search } from "lucide-react";
 import { displayAmount, units, UnitSchema, type GroceryDraft, type GroceryItem, type Recipe } from "./domain";
@@ -7,6 +7,7 @@ import "./grocery-manager.css";
 
 export type GroceryFormProps = {
   item: GroceryDraft;
+  aisles: readonly string[];
   busy: boolean;
   error: string;
   save: (item: GroceryDraft) => Promise<boolean>;
@@ -15,7 +16,7 @@ export type GroceryFormProps = {
   remove?: () => Promise<boolean>;
 };
 
-export function GroceryForm({ item, busy, error, save, cancel, remove }: GroceryFormProps) {
+export function GroceryForm({ item, aisles, busy, error, save, cancel, remove }: GroceryFormProps) {
   const [draft, setDraft] = useState<GroceryDraft>(item);
   const [aliases, setAliases] = useState(item.aliases.join("\n"));
   const [amount, setAmount] = useState(String(item.quantity));
@@ -24,6 +25,28 @@ export function GroceryForm({ item, busy, error, save, cancel, remove }: Grocery
   const [confirmDelete, setConfirmDelete] = useState(false);
   const locked = busy || pending;
   const hintId = useId();
+  const aisleId = useId();
+  const aisleInput = useRef<HTMLInputElement>(null);
+  const [aislesOpen, setAislesOpen] = useState(true);
+  const [activeAisle, setActiveAisle] = useState<string | null>(null);
+  const [aisleMessage, setAisleMessage] = useState("");
+  const aisleQuery = draft.aisle.trim().toLowerCase();
+  const matchingAisles = aisles.filter((aisle) => aisle.toLowerCase().includes(aisleQuery));
+  const activeAisleIndex = activeAisle === null ? -1 : matchingAisles.indexOf(activeAisle);
+  const canCreateAisle = !!aisleQuery && !aisles.some((aisle) => aisle.toLowerCase() === aisleQuery);
+  const showAisles = aislesOpen && !locked;
+
+  function selectAisle(aisle: string, create = false) {
+    setDraft({ ...draft, aisle });
+    setAisleMessage(
+      create
+        ? `New aisle “${aisle}” will be assigned when you save this grocery item.`
+        : `Selected aisle ${aisle}.`,
+    );
+    aisleInput.current?.focus();
+    setAislesOpen(false);
+    setActiveAisle(null);
+  }
 
   async function write(operation: () => Promise<boolean>, message: string) {
     setPending(true);
@@ -109,17 +132,112 @@ export function GroceryForm({ item, busy, error, save, cancel, remove }: Grocery
           onChange={(event) => setDraft({ ...draft, url: event.target.value })}
         />
       </label>
-      <label>
-        Aisle (optional)
+      <div
+        className="aisle-picker"
+        onKeyDown={(event) => {
+          if (event.key === "Escape" && showAisles && !event.nativeEvent.isComposing) {
+            event.preventDefault();
+            event.stopPropagation();
+            aisleInput.current?.focus();
+            setAislesOpen(false);
+            setActiveAisle(null);
+          }
+        }}
+        onBlur={(event) => {
+          if (!event.currentTarget.contains(event.relatedTarget)) {
+            setAislesOpen(false);
+            setActiveAisle(null);
+          }
+        }}
+      >
+        <label htmlFor={aisleId}>Aisle (optional)</label>
         <input
+          id={aisleId}
+          ref={aisleInput}
+          role="combobox"
+          aria-autocomplete="list"
+          aria-expanded={showAisles}
+          aria-controls={showAisles ? `${aisleId}-list` : undefined}
+          aria-activedescendant={
+            showAisles && activeAisleIndex >= 0 ? `${aisleId}-option-${activeAisleIndex}` : undefined
+          }
           maxLength={150}
+          autoComplete="off"
           value={draft.aisle}
           disabled={locked}
-          placeholder="e.g. 5 or Bakery"
-          aria-describedby={hintId}
-          onChange={(event) => setDraft({ ...draft, aisle: event.target.value })}
+          placeholder="Search aisles or enter a new name"
+          aria-describedby={`${hintId} ${aisleId}-hint`}
+          onFocus={() => setAislesOpen(true)}
+          onClick={() => setAislesOpen(true)}
+          onChange={(event) => {
+            setDraft({ ...draft, aisle: event.target.value });
+            setActiveAisle(null);
+            setAisleMessage("");
+            setAislesOpen(true);
+          }}
+          onKeyDown={(event) => {
+            if (event.nativeEvent.isComposing) return;
+
+            if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+              event.preventDefault();
+              setAislesOpen(true);
+
+              const next = matchingAisles.length
+                ? event.key === "ArrowDown"
+                  ? (activeAisleIndex + 1) % matchingAisles.length
+                  : (activeAisleIndex <= 0 ? matchingAisles.length : activeAisleIndex) - 1
+                : -1;
+
+              setActiveAisle(matchingAisles[next] ?? null);
+              requestAnimationFrame(() =>
+                document.getElementById(`${aisleId}-option-${next}`)?.scrollIntoView({ block: "nearest" }),
+              );
+            } else if (event.key === "Enter" && showAisles && activeAisle !== null) {
+              event.preventDefault();
+
+              if (activeAisleIndex >= 0) selectAisle(activeAisle);
+              else setActiveAisle(null);
+            }
+          }}
         />
-      </label>
+        {showAisles && (
+          <div className="aisle-choices">
+            <div id={`${aisleId}-list`} role="listbox" aria-label="Existing aisles" className="aisle-list">
+              {matchingAisles.map((aisle, index) => (
+                <button
+                  key={aisle}
+                  id={`${aisleId}-option-${index}`}
+                  type="button"
+                  role="option"
+                  aria-selected={draft.aisle === aisle}
+                  className={activeAisleIndex === index ? "is-active" : ""}
+                  tabIndex={-1}
+                  onPointerDown={(event) => event.preventDefault()}
+                  onClick={() => selectAisle(aisle)}
+                >
+                  {aisle}
+                </button>
+              ))}
+            </div>
+            {!matchingAisles.length && (
+              <p className="field-hint">
+                {aisles.length ? "No matching aisles." : "No aisles assigned yet."}
+              </p>
+            )}
+            <button
+              type="button"
+              className="secondary aisle-create"
+              disabled={!canCreateAisle}
+              onClick={() => selectAisle(draft.aisle.trim(), true)}
+            >
+              Create new aisle
+            </button>
+          </div>
+        )}
+        <p id={`${aisleId}-hint`} className="field-hint" role="status">
+          {aisleMessage || "Choose an existing aisle, or type a new name and choose Create new aisle."}
+        </p>
+      </div>
       <p className="field-hint" id={hintId}>
         You can save without a URL or aisle. Missing details will be marked as setup gaps. Product URLs are
         not fetched.

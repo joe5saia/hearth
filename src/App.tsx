@@ -291,6 +291,15 @@ export function App() {
   const [page, setPage] = useState<Page>(pageFromHash);
   const [mobileLayout, setMobileLayout] = useState(() => window.matchMedia(mobileViewport).matches);
   const [data, setData] = useState<Household>(emptyHousehold);
+
+  const aisles = useMemo(
+    () =>
+      [...new Set(data.groceries.map((item) => item.aisle.trim()).filter(Boolean))].sort((a, b) =>
+        a.localeCompare(b, undefined, { numeric: true }),
+      ),
+    [data.groceries],
+  );
+
   const [loaded, setLoaded] = useState(false);
   const [error, setError] = useState("");
   const [toast, setToast] = useState("");
@@ -1407,6 +1416,7 @@ export function App() {
           <GroceryForm
             key={modal.item.id}
             item={modal.item}
+            aisles={aisles}
             busy={busy}
             error={error}
             cancel={() => {
@@ -1633,6 +1643,7 @@ export function App() {
             clearError={() => setError("")}
             collections={data.collections}
             groceries={data.groceries}
+            aisles={aisles}
             saveGrocery={(item) => mutate("groceries", "PUT", item, "Grocery item saved")}
             warnings={modal.warnings}
             busy={busy}
@@ -2339,6 +2350,7 @@ function RecipeForm({
   clearError,
   collections,
   groceries,
+  aisles,
   saveGrocery,
   warnings,
   busy,
@@ -2351,6 +2363,7 @@ function RecipeForm({
   clearError: () => void;
   collections: readonly Collection[];
   groceries: readonly GroceryItem[];
+  aisles: readonly string[];
   saveGrocery: (item: GroceryDraft) => Promise<boolean>;
   warnings?: readonly string[];
   busy: boolean;
@@ -2772,6 +2785,7 @@ function RecipeForm({
           <GroceryForm
             key={groceryEditor.item.id}
             item={groceryEditor.item}
+            aisles={aisles}
             busy={busy}
             error={error}
             cancel={() => setGroceryEditor(null)}
