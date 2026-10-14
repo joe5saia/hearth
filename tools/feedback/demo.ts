@@ -1,10 +1,13 @@
 import assert from "node:assert/strict";
-import { readFile, readdir } from "node:fs/promises";
+import { readFile, readdir, writeFile } from "node:fs/promises";
+import { execFileSync } from "node:child_process";
 import { createServer } from "node:http";
 import { resolve, extname } from "node:path";
 import { Miniflare, convertV4MiniflareOptions } from "miniflare";
 import { rolldown } from "rolldown";
 import { dateKey } from "../../src/domain.ts";
+import { Schema } from "effect";
+import { FeedbackSchema } from "../../src/feedback-contract.ts";
 
 // Local-only built SPA + real Worker + ephemeral D1. No production resources or household.
 const live = process.argv.includes("--live-intake");
@@ -24,7 +27,18 @@ assert(entry?.type === "chunk");
 const worker = new Miniflare(convertV4MiniflareOptions({ workers: [{
   name: "hearth-feedback-demo", modules: true, script: entry.code,
   compatibilityDate: "2026-09-08", d1Databases: ["DB"],
-  bindings: { LOCAL_DEV: "true", ...secrets },
+  bindings: { LOCAL_DEV: "true", TELEMETRY_ENVIRONMENT: "feedback-demo", TELEMETRY_VERSION: process.env.GITHUB_SHA ?? process.env.TELEMETRY_VERSION ?? execFileSync("git", ["describe", "--always", "--dirty"], { encoding: "utf8" }).trim(), ...secrets },
+  ...(live ? { outboundService: async (request: Request) => {
+    try {
+      const body = await request.text();
+      const ticket = Schema.decodeUnknownSync(FeedbackSchema, { onExcessProperty: "error" })(JSON.parse(body));
+      if (ticket.request.startsWith("Isolated intake validation:")) await writeFile(".amp/feedback-state/validation-envelope-v2.json", body, { mode: 0o600 });
+      return await fetch(request.url, { method: request.method, headers: request.headers, body, redirect: "manual", signal: AbortSignal.timeout(8000) });
+    } catch {
+      // Do not let transport exceptions disclose the capability in runtime diagnostics.
+      return new Response(null, { status: 503 });
+    }
+  } } : {}),
 }] }));
 const db = await worker.getD1Database("DB");
 for (const file of (await readdir("migrations")).filter(file => file.endsWith(".sql")).sort()) {
@@ -41,7 +55,7 @@ const server = createServer(async (request, response) => {
       let size = 0;
       for await (const chunk of request) {
         size += chunk.length;
-        if (size > 20000) { response.writeHead(413); response.end(); return; }
+        if (size > 32000) { response.writeHead(413); response.end(); return; }
         chunks.push(chunk);
       }
       const headers = new Headers();

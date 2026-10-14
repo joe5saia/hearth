@@ -1,5 +1,5 @@
 import { Schema } from "effect";
-import { FeedbackSchema } from "./feedback-contract";
+import { FeedbackInputSchema, FeedbackSchema, feedbackURL, type Feedback } from "./feedback-contract";
 
 export type FeedbackEnv = {
   DB: D1Database;
@@ -8,7 +8,11 @@ export type FeedbackEnv = {
 };
 
 // This transport runs only behind the website's household authentication and write guards.
-export async function submitFeedback(request: Request, env: FeedbackEnv): Promise<Response> {
+export async function submitFeedback(
+  request: Request,
+  env: FeedbackEnv,
+  delivery: Feedback["delivery"],
+): Promise<Response> {
   const reply = (error: string, status: number) =>
     Response.json({ error }, { status, headers: { "Cache-Control": "no-store" } });
 
@@ -27,7 +31,7 @@ export async function submitFeedback(request: Request, env: FeedbackEnv): Promis
       if (chunk.done) break;
       bytes += chunk.value.byteLength;
 
-      if (bytes > 20000) {
+      if (bytes > 32000) {
         await reader.cancel();
 
         return reply("Please keep your request under 4,000 characters.", 413);
@@ -50,9 +54,16 @@ export async function submitFeedback(request: Request, env: FeedbackEnv): Promis
       offset += chunk.byteLength;
     }
 
-    ticket = Schema.decodeUnknownSync(FeedbackSchema, { onExcessProperty: "error" })(
+    ticket = Schema.decodeUnknownSync(FeedbackInputSchema, { onExcessProperty: "error" })(
       JSON.parse(new TextDecoder().decode(body)),
     );
+    ticket = {
+      ...ticket,
+      context: {
+        ...ticket.context,
+        page: { ...ticket.context.page, url: feedbackURL(ticket.context.page.url) },
+      },
+    };
   } catch {
     return reply("Enter a request of up to 4,000 characters with valid page context.", 400);
   }
@@ -63,15 +74,18 @@ export async function submitFeedback(request: Request, env: FeedbackEnv): Promis
   const body = JSON.stringify(ticket);
 
   try {
+    // Server identity and receipt/correlation data never come from browser fields.
+    // Persist once: retries retain the original receipt, identity and exact signed bytes.
+    const envelope = JSON.stringify(Schema.decodeUnknownSync(FeedbackSchema)({ ...ticket, delivery }));
     // Atomic quota plus insert. Reusing an ID must never replace the original ask.
-    await env.DB.prepare(`INSERT OR IGNORE INTO feedback(id,body,createdAt)
-      SELECT ?,?,? WHERE (SELECT COUNT(*) FROM feedback WHERE createdAt > ?) < 10`)
-      .bind(ticket.id, body, Date.now(), Date.now() - 600000)
+    await env.DB.prepare(`INSERT OR IGNORE INTO feedback(id,body,envelope,createdAt)
+      SELECT ?,?,?,? WHERE (SELECT COUNT(*) FROM feedback WHERE createdAt > ?) < 10`)
+      .bind(ticket.id, body, envelope, Date.now(), Date.now() - 600000)
       .run();
 
-    const saved = await env.DB.prepare("SELECT body,queued FROM feedback WHERE id=?")
+    const saved = await env.DB.prepare("SELECT body,envelope,queued FROM feedback WHERE id=?")
       .bind(ticket.id)
-      .first<{ body: string; queued: number }>();
+      .first<{ body: string; envelope: string; queued: number }>();
 
     if (!saved) return reply("A few tickets just came in. Please try again in ten minutes.", 429);
 
@@ -88,7 +102,7 @@ export async function submitFeedback(request: Request, env: FeedbackEnv): Promis
       );
 
       const signature = Array.from(
-        new Uint8Array(await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(body))),
+        new Uint8Array(await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(saved.envelope))),
         (value) => value.toString(16).padStart(2, "0"),
       ).join("");
 
@@ -100,7 +114,7 @@ export async function submitFeedback(request: Request, env: FeedbackEnv): Promis
           "Idempotency-Key": ticket.id,
           "X-Hearth-Signature": signature,
         },
-        body,
+        body: saved.envelope,
         signal: AbortSignal.timeout(8000),
       });
 

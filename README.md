@@ -166,11 +166,56 @@ ticket, plus rejection/reload recovery. Run `npx task ui:setup` first.
 `npx task feedback:probe` sends duplicate, invalid-signature and invalid-schema
 controls; verify the owner's ledger afterwards, since queue HTTP 200 is not a
 handler-result acknowledgement. Local smoke coverage uses signed Access assertions
-and disposable D1 through `npx task test`. No command here deploys production.
+and disposable D1 through `npx task test`; browser live validation uses the real Amp
+intake. No command here deploys production.
+
+### Feedback payload v2
+
+[`feedback-contract.ts`](src/feedback-contract.ts) owns the strict, versioned
+browser input and signed webhook envelope. Unknown fields and unsupported versions
+are rejected, including browser attempts to provide `delivery` or user identity.
+
+| Field                                    | Source and meaning                                                                                                                                                                                                                                                                                                 |
+| ---------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `schemaVersion`, `id`, `request`         | Version **2**, stable UUIDv4 ticket/idempotency key, and the user's request (1–4,000 characters).                                                                                                                                                                                                                  |
+| `clientSubmittedAt`                      | Browser clock at the **first Send/Enter attempt**, UTC ISO timestamp; not authoritative server time. Absent only from an unsent local draft.                                                                                                                                                                       |
+| `context.app`                            | Hearth name and client build revision; CI SHA or explicit telemetry version, otherwise Git revision with a dirty marker.                                                                                                                                                                                           |
+| `context.page`                           | Page name, short human-readable label, and full originating HTTP(S) URL including outer query and navigation hash/query. URL is payload-only, **never shown in the submission screen**. Structured `view` records week, mode, hidden checks, collection/search, selected checklist recipe IDs and checklist state. |
+| `context.browser`                        | User agent, language, IANA time zone, browser/standalone display, viewport CSS pixels and pixel ratio, touch-point count, pointer class and online state. These are browser observations, not trusted identity or proof of physical device/installation.                                                           |
+| `delivery.receivedAt`                    | Worker clock when the **first accepted request reached the server**, before authentication; persisted with the envelope. A client clock may differ.                                                                                                                                                                |
+| `delivery.environment`, `delivery.build` | Server environment and configured Worker build revision; explicitly `unversioned` when unavailable.                                                                                                                                                                                                                |
+| `delivery.identity`                      | Only verified household Cloudflare Access claims: subject, plus email/name **if actually present and valid**. `null` for local development or Preview service identities; browser headers/fields are not trusted. No identity is invented or exposed back to the browser.                                          |
+| `delivery.correlation`                   | Original operation, server request and trace IDs; the browser uses its ticket ID as operation ID.                                                                                                                                                                                                                  |
+| `intake.eventId`                         | Added by the Amp consumer to the child launch context from Amp's event, never supplied by the browser; retries still deduplicate by ticket ID.                                                                                                                                                                     |
+
+URL userinfo is removed. Credential-bearing query/fragment parameters (tokens,
+passwords, OAuth codes/state, API keys, assertions, signatures, etc.), recognizable
+bearer/JWT values and credential-bearing nested URL values become `[redacted]`.
+Navigation parameters remain intact. The browser redacts before draft persistence;
+structured navigation fields are derived from that redacted URL, and recognizable
+credential values in other context text are rejected. The Worker redacts independently
+before D1/signing. Cookies, authorization headers,
+JWT assertions, webhook capabilities, keys and unrelated private drafts are never
+copied into the payload. The typed request itself should not contain secrets.
+
+URL length is capped at 4,096 characters; detail/search at 300, user agent at 1,000,
+language at 50, time zone at 100, IDs at 200 and selected recipes at 100. Numeric
+device fields are bounded; timestamps must be valid UTC ISO values. Browser input
+is limited to 32 KB and signed intake envelopes to 36 KB. Context is captured when
+the dialog opens; the first submission freezes request/context/time. D1 separately
+persists the original browser input and server-enriched envelope before delivery,
+so retries preserve **all** fields and exact signed bytes, even after navigation,
+reload or a later authenticated identity/build change. Pre-release legacy claims
+remain held/recorded in the intake ledger, never automatically recreated.
+
+Live smoke exports only its disposable sample envelope to
+`.amp/in/artifacts/feedback-payload-v2.json` for review; private validation records
+remain owner-only in `.amp/feedback-state/`. It checks URL redaction/UI omission and
+immutable retry context on desktop and emulated installed iPhone/iPad.
 
 ## Daily use
 
-- **Feedback:** choose **Page options → File a ticket**, type one request, then press Enter or tap **Send ticket** (Shift + Enter adds a line). Hearth includes the page, selected week/collection/search or shopping mode and installed/browser display mode, without cookies, identity claims or URL query strings. Drafts and the retry identity survive dialog dismissal and reload in this tab. A queued acknowledgement means Amp stored the event, not that implementation has finished. After an uncertain delivery, Retry sends the same immutable ticket; starting a new ticket is explicitly separate work.
+- **Feedback:** choose **Page options → File a ticket**, type one request, then press Enter or tap **Send ticket** (Shift + Enter adds a line). Hearth includes structured page/view, redacted full URL, build and browser/PWA context, separate client/server timestamps and verified household identity when available; URLs stay out of the form. Drafts and the retry identity survive dialog dismissal and reload in this tab. A queued acknowledgement means Amp stored the event, not that implementation has finished. After an uncertain delivery, Retry sends the same immutable ticket; starting a new ticket is explicitly separate work.
 - **Aisle layout:** exit Focus/List Builder and choose **Page options → Arrange route**. Drag an aisle heading's handle to move the entire aisle, or use its arrow buttons. Click the aisle name/pencil to rename it, then Save; Cancel or Escape discards the draft. Renaming updates every product in that aisle and retains the saved route position and list membership. Names already used by another aisle are rejected rather than merging products.
 - **Import:** the **Import recipe** button is available on every page. Paste an HTTPS NYT Cooking recipe URL (including unlocked share links), review the filled-out draft, then save. Imports retain the original URL, description, photo, servings, timing, ingredients, and instructions. Fractions and common units become editable shopping quantities; ambiguous ingredient wording is preserved with a review warning. Choose a collection before saving. Timing follows NYT's structured data, so marinating/resting may be additional. Blocked pages or missing recipe data show an error rather than saving a partial recipe. Other recipe sites are not yet supported.
 - **Recipes:** create, edit, search by title or ingredient, filter collections, and delete unplanned recipes. Store a source URL, instructions, servings, cooking time, and a photo URL or upload. Uploaded JPG, PNG, and WebP photos up to 1.2 MB are stored in SQLite; no external object storage is needed. Bundled photos and fonts also work offline. External photo URLs naturally require a network connection.

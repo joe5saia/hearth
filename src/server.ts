@@ -1,4 +1,4 @@
-import { Effect, Schema, Tracer } from "effect";
+import { Effect, Option, Schema, Tracer } from "effect";
 import { createRemoteJWKSet, errors, jwtVerify } from "jose";
 import type { WebsiteEnv } from "../alchemy.run";
 import { publicInstallPaths } from "./install-assets";
@@ -34,6 +34,7 @@ import {
 } from "./household";
 import { matchGroceries, matchNewRecipes } from "./matching-run";
 import { submitFeedback, type FeedbackEnv } from "./feedback";
+import { FeedbackIdentitySchema, type Feedback } from "./feedback-contract";
 
 const invalid = (message: string) => new ValidationError({ message });
 
@@ -281,6 +282,8 @@ export default {
     env: WebsiteEnv & TelemetryEnv & FeedbackEnv & { PREVIEW_CLIENT_ID?: string },
     ctx?: ExecutionContext,
   ): Promise<Response> {
+    const receivedAt = new Date().toISOString();
+
     return observedFetch(
       request,
       env,
@@ -289,6 +292,8 @@ export default {
       apiOperation(new URL(request.url).pathname),
       /** Dispatch within the current request's observation and binding lifetime. */
       async (observation, tracer) => {
+        let identity: Feedback["delivery"]["identity"] = null;
+
         // Home-screen installers may fetch these without the browser's Access session.
         // Access path rules also match descendants; only exact read-only files bypass JWT verification here.
         if (
@@ -333,6 +338,24 @@ export default {
               } else if (!env.PREVIEW_CLIENT_ID || payload.common_name !== env.PREVIEW_CLIENT_ID) {
                 reason = "unrecognized_service_identity";
                 throw new Error("Unrecognized service identity.");
+              }
+            } else {
+              // Only signed household claims; never browser identity headers or service identities.
+              const subject = Option.getOrUndefined(
+                Schema.decodeUnknownOption(FeedbackIdentitySchema.fields.subject)(payload.sub),
+              );
+
+              if (subject !== undefined) {
+                identity = {
+                  source: "cloudflare-access",
+                  subject,
+                  email: Option.getOrUndefined(
+                    Schema.decodeUnknownOption(FeedbackIdentitySchema.fields.email)(payload.email),
+                  ),
+                  name: Option.getOrUndefined(
+                    Schema.decodeUnknownOption(FeedbackIdentitySchema.fields.name)(payload.name),
+                  ),
+                };
               }
             }
           } catch (error) {
@@ -383,7 +406,18 @@ export default {
         if (new URL(request.url).pathname === "/api/telemetry")
           return browserTelemetry(request, observation, env.LOCAL_DEV === "true");
 
-        if (new URL(request.url).pathname === "/api/feedback") return submitFeedback(request, env);
+        if (new URL(request.url).pathname === "/api/feedback")
+          return submitFeedback(request, env, {
+            receivedAt,
+            identity,
+            environment: env.TELEMETRY_ENVIRONMENT ?? (env.LOCAL_DEV === "true" ? "local" : "production"),
+            build: env.TELEMETRY_VERSION ?? "unversioned",
+            correlation: {
+              operationId: observation.operationId,
+              requestId: observation.requestId,
+              traceId: observation.traceId,
+            },
+          });
 
         return householdApi(request, env.DB, env.AI, observation, tracer, ctx);
       },

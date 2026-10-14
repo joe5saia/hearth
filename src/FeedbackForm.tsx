@@ -1,23 +1,23 @@
 import { useRef, useState } from "react";
 import { Schema } from "effect";
 import { ArrowRight, Check, MapPin } from "lucide-react";
-import { FeedbackSchema, type Feedback } from "./feedback-contract";
+import { FeedbackDraftSchema, type FeedbackDraft } from "./feedback-contract";
 
 const draftKey = "hearth-feedback-draft";
 
 const attemptKey = "hearth-feedback-attempt";
 
-export function FeedbackForm({ context, close }: { context: Feedback["context"]; close: () => void }) {
-  const [ticket, setTicket] = useState<Feedback>(() => {
+export function FeedbackForm({ context, close }: { context: FeedbackDraft["context"]; close: () => void }) {
+  const [ticket, setTicket] = useState<FeedbackDraft>(() => {
     try {
       const saved = sessionStorage.getItem(draftKey);
 
-      if (saved) return Schema.decodeUnknownSync(FeedbackSchema)(JSON.parse(saved));
+      if (saved) return Schema.decodeUnknownSync(FeedbackDraftSchema)(JSON.parse(saved));
     } catch {
       /* Draft storage is optional in private browsing. */
     }
 
-    return { id: crypto.randomUUID(), request: "", context };
+    return { schemaVersion: 2, id: crypto.randomUUID(), request: "", context };
   });
 
   const [busy, setBusy] = useState(false);
@@ -33,7 +33,7 @@ export function FeedbackForm({ context, close }: { context: Feedback["context"];
     }
   });
 
-  const persist = (next: Feedback) => {
+  const persist = (next: FeedbackDraft) => {
     setTicket(next);
 
     try {
@@ -49,7 +49,8 @@ export function FeedbackForm({ context, close }: { context: Feedback["context"];
     setBusy(true);
     setError("");
     setAttempted(true);
-    persist(ticket);
+    const submission = { ...ticket, clientSubmittedAt: ticket.clientSubmittedAt ?? new Date().toISOString() };
+    persist(submission);
 
     try {
       sessionStorage.setItem(attemptKey, ticket.id);
@@ -60,8 +61,8 @@ export function FeedbackForm({ context, close }: { context: Feedback["context"];
     try {
       const response = await fetch("/api/feedback", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(ticket),
+        headers: { "Content-Type": "application/json", "X-Hearth-Operation-Id": ticket.id },
+        body: JSON.stringify(submission),
         signal: AbortSignal.timeout(15000),
       });
 
@@ -154,7 +155,7 @@ export function FeedbackForm({ context, close }: { context: Feedback["context"];
       />
       <p className="feedback-context" id="feedback-context">
         <MapPin size={15} aria-hidden="true" />
-        {ticket.context.detail || ticket.context.page} · page context included
+        {ticket.context.page.detail || ticket.context.page.name} · page context included
       </p>
       {error && (
         <p className="error" role="alert">
@@ -181,7 +182,7 @@ export function FeedbackForm({ context, close }: { context: Feedback["context"];
             type="button"
             className="feedback-new"
             onClick={() => {
-              persist({ id: crypto.randomUUID(), request: "", context });
+              persist({ schemaVersion: 2, id: crypto.randomUUID(), request: "", context });
               setAttempted(false);
               setError("");
 

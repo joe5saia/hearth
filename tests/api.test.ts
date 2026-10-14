@@ -35,6 +35,34 @@ const feedbackDeliveries: { body: string; id: string | null; signature: string |
 
 let feedbackStatus = 200;
 
+const feedbackContext = {
+  app: { name: "Hearth", build: "client-build-42" },
+  page: {
+    name: "shopping",
+    detail: "Shopping list · Build list",
+    url: "https://user:disposable-password@hearth.example.test/?source=text&access_token=disposable-query-secret&return_to=https%3A%2F%2Fidentity.example.test%2Fcallback%3Fstate%3Ddisposable-oauth-state#shopping?mode=builder&search=rice&api_key=disposable-fragment-secret",
+    view: {
+      week: "2026-10-12",
+      mode: "builder",
+      hideChecked: true,
+      collection: "all",
+      search: "rice",
+      selected: [],
+      checklist: false,
+    },
+  },
+  browser: {
+    userAgent: "Disposable browser",
+    language: "en-US",
+    timeZone: "America/New_York",
+    display: "standalone",
+    viewport: { width: 390, height: 664, pixelRatio: 3 },
+    touchPoints: 5,
+    pointer: "coarse",
+    online: true,
+  },
+};
+
 const defaultCollections = [
   { id: "comfort", name: "Comfort food" },
   { id: "special", name: "Something special" },
@@ -80,6 +108,8 @@ function options(
           PREVIEW_CLIENT_ID: previewClientId,
           FEEDBACK_WEBHOOK_URL: feedbackConnected ? "https://intake.example.test/tickets" : "",
           FEEDBACK_SIGNING_KEY: "disposable-feedback-signing-key-for-smoke",
+          TELEMETRY_ENVIRONMENT: "integration",
+          TELEMETRY_VERSION: "server-build-43",
         },
         outboundService: async (request) => {
           const url = new URL(request.url);
@@ -215,14 +245,11 @@ const send = (path: string, method: string, body: string) =>
 describe("real Worker with disposable SQLite D1", () => {
   it("authenticates feedback, signs its preserved context and deduplicates safe retries without household writes", async () => {
     const ticket = {
+      schemaVersion: 2,
       id: crypto.randomUUID(),
+      clientSubmittedAt: "2026-10-01T12:34:56.789Z",
       request: "Add a clearer shopping empty state",
-      context: {
-        page: "shopping",
-        location: "/#shopping",
-        detail: "Shopping list · My list",
-        display: "standalone",
-      },
+      context: feedbackContext,
     };
 
     const body = JSON.stringify(ticket);
@@ -232,6 +259,8 @@ describe("real Worker with disposable SQLite D1", () => {
         iss: "https://saiaai.cloudflareaccess.com",
         aud: ["test-hearth"],
         sub: common_name ? "" : "household-user",
+        email: "disposable.user@example.test",
+        name: "Disposable User",
         common_name,
         exp: Math.floor(Date.now() / 1000) + 300,
       })
@@ -251,7 +280,16 @@ describe("real Worker with disposable SQLite D1", () => {
     });
 
     expect(smoke.status).toBe(403);
-    const headers = { "Content-Type": "application/json", "Cf-Access-Jwt-Assertion": await sign() };
+
+    const headers = {
+      "Content-Type": "application/json",
+      "Cf-Access-Jwt-Assertion": await sign(),
+      "Cf-Access-Authenticated-User-Email": "spoofed@example.test",
+      Cookie: "disposable-cookie",
+      Authorization: "Bearer disposable-bearer",
+      "X-Hearth-Operation-Id": ticket.id,
+    };
+
     expect(
       (
         await worker.dispatchFetch("http://localhost/api/feedback", {
@@ -267,12 +305,15 @@ describe("real Worker with disposable SQLite D1", () => {
     const submit = () =>
       worker.dispatchFetch("http://localhost/api/feedback", { method: "POST", headers, body });
 
+    const beforeReceipt = Date.now();
     expect((await submit()).status).toBe(503);
-    const db = await worker.getD1Database("DB");
+    let db = await worker.getD1Database("DB");
     expect(await db.prepare("SELECT queued FROM feedback WHERE id=?").bind(ticket.id).first()).toEqual({
       queued: 0,
     });
     feedbackStatus = 200;
+    await worker.setOptions(options("false"));
+    db = await worker.getD1Database("DB");
     const result = await submit();
     expect(result.status).toBe(202);
     expect(result.headers.get("Cache-Control")).toBe("no-store");
@@ -283,9 +324,48 @@ describe("real Worker with disposable SQLite D1", () => {
       queued: 1,
     });
     expect(feedbackDeliveries).toHaveLength(2);
+    expect(feedbackDeliveries[0].body).toBe(feedbackDeliveries[1].body);
 
     for (const delivery of feedbackDeliveries) {
-      expect(JSON.parse(delivery.body)).toEqual(ticket);
+      const envelope = JSON.parse(delivery.body);
+      expect(envelope).toMatchObject({
+        ...ticket,
+        context: {
+          ...ticket.context,
+          page: {
+            ...ticket.context.page,
+            url: "https://hearth.example.test/?source=text&access_token=%5Bredacted%5D&return_to=%5Bredacted%5D#shopping?mode=builder&search=rice&api_key=%5Bredacted%5D",
+          },
+        },
+      });
+      expect(envelope.delivery).toMatchObject({
+        environment: "integration",
+        build: "server-build-43",
+        identity: {
+          source: "cloudflare-access",
+          subject: "household-user",
+          email: "disposable.user@example.test",
+          name: "Disposable User",
+        },
+        correlation: { operationId: ticket.id },
+      });
+      expect(Date.parse(envelope.delivery.receivedAt)).toBeGreaterThanOrEqual(beforeReceipt);
+      expect(Date.parse(envelope.delivery.receivedAt)).toBeLessThanOrEqual(Date.now());
+      expect(envelope.delivery.receivedAt).not.toBe(ticket.clientSubmittedAt);
+      expect(envelope.delivery.correlation.requestId).toMatch(/^[a-f0-9-]{36}$/);
+      expect(envelope.delivery.correlation.traceId).toMatch(/^[a-f0-9]{32}$/);
+
+      for (const privateValue of [
+        "disposable-password",
+        "disposable-query-secret",
+        "disposable-fragment-secret",
+        "disposable-oauth-state",
+        "disposable-cookie",
+        "disposable-bearer",
+        "spoofed@example.test",
+        headers["Cf-Access-Jwt-Assertion"],
+      ])
+        expect(delivery.body).not.toContain(privateValue);
       expect(delivery.id).toBe(ticket.id);
       expect(delivery.signature).toBe(
         createHmac("sha256", "disposable-feedback-signing-key-for-smoke").update(delivery.body).digest("hex"),
@@ -303,28 +383,57 @@ describe("real Worker with disposable SQLite D1", () => {
     ).toBe(409);
     const household = await worker.dispatchFetch("http://localhost/api/household", { headers });
     expect(await household.json()).toMatchObject({ recipes: [], meals: [], groceries: [], extras: [] });
+    await worker.setOptions(options("false", "test-hearth", "smoke-test.access", "preview-test.access"));
+
+    const preview = await worker.dispatchFetch("http://localhost/api/feedback", {
+      method: "POST",
+      headers: { ...headers, "Cf-Access-Jwt-Assertion": await sign("preview-test.access") },
+      body: JSON.stringify({ ...ticket, id: crypto.randomUUID() }),
+    });
+
+    expect(preview.status).toBe(202);
+    expect(JSON.parse(feedbackDeliveries.at(-1)!.body).delivery.identity).toBeNull();
   });
 
   it("bounds feedback input and quota, rejects extra authority fields, and fails honestly when disconnected", async () => {
     const ticket = {
+      schemaVersion: 2,
       id: crypto.randomUUID(),
+      clientSubmittedAt: "2026-10-01T12:34:56.789Z",
       request: "Keep context",
-      context: {
-        page: "recipes",
-        location: "/#recipes",
-        detail: "Recipes · Weeknight favorites",
-        display: "browser",
-      },
+      context: feedbackContext,
     };
 
     for (const invalid of [
       { ...ticket, request: " " },
       { ...ticket, request: "x".repeat(4001) },
       { ...ticket, project: "another/repo" },
-      { ...ticket, context: { ...ticket.context, location: "https://evil.test/?secret=token" } },
+      { ...ticket, schemaVersion: 1 },
+      { ...ticket, clientSubmittedAt: "2026-02-31T12:34:56.789Z" },
+      { ...ticket, clientSubmittedAt: undefined },
+      { ...ticket, delivery: { identity: { email: "spoof@example.test" } } },
+      { ...ticket, context: { ...ticket.context, browser: { ...ticket.context.browser, user: "spoof" } } },
+      {
+        ...ticket,
+        context: {
+          ...ticket.context,
+          page: {
+            ...ticket.context.page,
+            view: { ...ticket.context.page.view, search: "Bearer disposable-search-credential" },
+          },
+        },
+      },
+      {
+        ...ticket,
+        context: { ...ticket.context, browser: { ...ticket.context.browser, userAgent: "x".repeat(1001) } },
+      },
+      {
+        ...ticket,
+        context: { ...ticket.context, page: { ...ticket.context.page, url: "javascript:alert(1)" } },
+      },
     ])
       expect((await send("feedback", "POST", JSON.stringify(invalid))).status).toBe(400);
-    expect((await send("feedback", "POST", "x".repeat(20001))).status).toBe(413);
+    expect((await send("feedback", "POST", "x".repeat(32001))).status).toBe(413);
     expect((await send("feedback", "PUT", JSON.stringify(ticket))).status).toBe(405);
     expect(feedbackDeliveries).toHaveLength(0);
 
@@ -333,6 +442,7 @@ describe("real Worker with disposable SQLite D1", () => {
         (await send("feedback", "POST", JSON.stringify({ ...ticket, id: crypto.randomUUID() }))).status,
       ).toBe(202);
     expect((await send("feedback", "POST", JSON.stringify(ticket))).status).toBe(429);
+    expect(JSON.parse(feedbackDeliveries[0].body).delivery.identity).toBeNull();
     const db = await worker.getD1Database("DB");
     expect(await db.prepare("SELECT COUNT(*) AS count FROM feedback").first()).toEqual({ count: 10 });
 

@@ -1,9 +1,17 @@
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import { cloudflare } from "@cloudflare/vite-plugin";
+import { execFileSync } from "node:child_process";
 
 /** Uses Cloudflare only for isolated Preview builds; MCP builds exclude website assets. */
 export default defineConfig(({ mode }) => ({
+  define: {
+    "import.meta.env.HEARTH_BUILD_VERSION": JSON.stringify(
+      process.env.GITHUB_SHA ??
+        process.env.TELEMETRY_VERSION ??
+        execFileSync("git", ["describe", "--always", "--dirty"], { encoding: "utf8" }).trim(),
+    ),
+  },
   plugins: [
     react(),
     ...(["cf-preview", "cf-mcp-preview"].includes(mode) ? [cloudflare({ types: { generate: false } })] : []),

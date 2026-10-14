@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { Schema } from "effect";
-import { FeedbackSchema } from "../../src/feedback-contract.ts";
+import { FeedbackDraftSchema, FeedbackInputSchema, FeedbackSchema } from "../../src/feedback-contract.ts";
 
 // Supplied by task ui:setup, not a production dependency.
 // @ts-expect-error External UI runtime.
@@ -17,7 +17,7 @@ const initial = await (await fetch(`${url}/api/household`)).text();
 const browsers = [];
 let savedTicket;
 if (live) {
-  try { savedTicket = Schema.decodeUnknownSync(FeedbackSchema)(JSON.parse(await readFile(".amp/feedback-state/validation-ticket.json", "utf8"))); }
+  try { savedTicket = Schema.decodeUnknownSync(FeedbackInputSchema)(JSON.parse(await readFile(".amp/feedback-state/validation-ticket-v2.json", "utf8"))); }
   catch (error) { if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) throw error; }
 }
 try {
@@ -36,13 +36,21 @@ try {
     });
     const page = await context.newPage();
     const errors: string[] = [];
+    const submissions: unknown[] = [];
     page.on("pageerror", (error: Error) => errors.push(error.message));
-    await page.goto(`${url}/#shopping`);
+    page.on("request", request => { if (new URL(request.url()).pathname === "/api/feedback") submissions.push(request.postDataJSON()); });
+    await page.goto(`${url}/?source=feedback-smoke&access_token=disposable-query-credential#shopping?mode=arrange&hideChecked=1`);
     await page.getByRole("heading", { name: "Shopping list", exact: true }).waitFor();
+    await page.getByLabel("Page options", { exact: true }).waitFor();
+    await page.evaluate(() => history.replaceState(history.state, "", `${location.href}&api_key=disposable-fragment-credential`));
     const open = async () => {
+      const before = page.url();
       await page.getByLabel("Page options", { exact: true }).click();
       await page.getByRole("button", { name: "File a ticket", exact: true }).click();
       await page.getByRole("dialog", { name: "File a ticket" }).waitFor();
+      assert.equal(page.url(), before, "Feedback does not change routing/history");
+      assert(!(await page.getByRole("dialog").innerText()).includes("http"), "Payload URL is not displayed in submission UI");
+      assert.equal(await page.getByRole("dialog").getByRole("button", { name: "Share link" }).count(), 0, "Transient feedback cannot expose a URL-copy prompt");
     };
     await open();
     const field = page.getByLabel("Your request", { exact: true });
@@ -54,9 +62,25 @@ try {
     assert((await field.inputValue()).endsWith("\n"), `${name} Shift+Enter keeps a new line`);
     await field.dispatchEvent("keydown", { key: "Enter", isComposing: true });
     assert.equal(await page.evaluate(() => sessionStorage.getItem("hearth-feedback-attempt")), null, `${name} IME Enter does not submit`);
-    if (name !== "desktop") assert.equal(JSON.parse(await page.evaluate(() => sessionStorage.getItem("hearth-feedback-draft"))).context.display, "standalone");
+    const deviceDraft = JSON.parse(await page.evaluate(() => sessionStorage.getItem("hearth-feedback-draft")));
+    assert.equal(deviceDraft.context.browser.viewport.width, await page.evaluate(() => innerWidth));
+    assert.equal(deviceDraft.context.browser.userAgent, await page.evaluate(() => navigator.userAgent));
+    if (name !== "desktop") assert.equal(deviceDraft.context.browser.display, "standalone");
+    assert(!JSON.stringify(deviceDraft).includes("disposable-query-credential") && !JSON.stringify(deviceDraft).includes("disposable-fragment-credential"), "URL credential parameters redacted before draft persistence");
+    assert.equal(new URL(deviceDraft.context.page.url).searchParams.get("source"), "feedback-smoke");
+    assert.equal(new URL(deviceDraft.context.page.url).searchParams.get("access_token"), "[redacted]");
+    assert(new URL(deviceDraft.context.page.url).hash.includes("mode=arrange") && new URL(deviceDraft.context.page.url).hash.includes("hideChecked=1"), "Full navigation query/hash preserved");
     await field.press("Escape");
     await page.waitForFunction(() => !document.querySelector("dialog"));
+    await page.evaluate(() => sessionStorage.removeItem("hearth-feedback-draft"));
+    await page.goto(`${url}/#groceries?search=Bearer+disposable-search-credential`);
+    await open();
+    await field.fill("Privacy check, not submitted");
+    const privateSearchDraft = JSON.parse(await page.evaluate(() => sessionStorage.getItem("hearth-feedback-draft")));
+    assert.equal(privateSearchDraft.context.page.view.search, "[redacted]");
+    assert(!JSON.stringify(privateSearchDraft).includes("disposable-search-credential"), "Structured search cannot reintroduce a redacted credential");
+    await field.press("Escape");
+    await page.goto(`${url}/?source=feedback-smoke#shopping?mode=arrange&hideChecked=1`);
     await page.evaluate(ticket => {
       if (ticket) sessionStorage.setItem("hearth-feedback-draft", JSON.stringify(ticket));
       else sessionStorage.removeItem("hearth-feedback-draft");
@@ -71,10 +95,10 @@ try {
       assert((await field.inputValue()).includes("\n"), "Shift+Enter adds a line without submitting");
     }
     await page.screenshot({ path: `${artifacts}/feedback-${name}.png` });
-    const draft = Schema.decodeUnknownSync(FeedbackSchema)(JSON.parse(await page.evaluate(() => sessionStorage.getItem("hearth-feedback-draft"))));
+    let draft = Schema.decodeUnknownSync(FeedbackDraftSchema)(JSON.parse(await page.evaluate(() => sessionStorage.getItem("hearth-feedback-draft"))));
     {
-      assert.equal(draft.context.page, "shopping");
-      assert.equal(draft.context.location, "/#shopping");
+      assert.equal(draft.context.page.name, "shopping");
+      assert.equal(draft.context.page.view.mode, "arrange");
       // Real HTTP-boundary failure: no mocked component/dependency, no external event yet.
       let releaseFault: () => void = () => {};
       const gate = new Promise<void>(resolve => { releaseFault = resolve; });
@@ -82,8 +106,11 @@ try {
         await gate;
         await route.fulfill({ status: 503, contentType: "application/json", body: JSON.stringify({ error: "Temporary validation outage. Retry safely with this draft." }) });
       });
+      const beforeSubmission = Date.now();
       await field.press("Enter");
       await page.getByRole("button", { name: "Sending…" }).waitFor();
+      draft = Schema.decodeUnknownSync(FeedbackInputSchema)(JSON.parse(await page.evaluate(() => sessionStorage.getItem("hearth-feedback-draft"))));
+      if (!savedTicket) assert(Date.parse(draft.clientSubmittedAt) >= beforeSubmission && Date.parse(draft.clientSubmittedAt) <= Date.now(), "Client timestamp captures first submission, not dialog opening");
       assert(await page.getByRole("button", { name: "Sending…" }).isDisabled());
       await page.screenshot({ path: `${artifacts}/feedback-${name}-sending.png` });
       releaseFault();
@@ -96,6 +123,7 @@ try {
       assert(actionBounds.height >= 44);
       assert(actionBounds.y >= dialogBounds.y && actionBounds.y + actionBounds.height <= dialogBounds.y + dialogBounds.height, "New-ticket action is reachable inside the scrollable dialog");
       await page.screenshot({ path: `${artifacts}/feedback-${name}-error.png` });
+      await page.goto(`${url}/#shopping`);
       await page.reload();
       await open();
       assert.equal(await field.inputValue(), draft.request);
@@ -104,14 +132,23 @@ try {
       await page.unroute("**/api/feedback");
     }
     if (live) {
+      // Persist validation identity before the external effect, including uncertain HTTP outcomes.
+      await writeFile(".amp/feedback-state/validation-ticket-v2.json", JSON.stringify(draft), { mode: 0o600 });
       await field.press("Enter");
       await page.getByRole("heading", { name: "On its way to Amp" }).waitFor();
+      assert.deepEqual(submissions[0], submissions[1], "Retry keeps exact request, timestamp and originating page/device context after navigation/reload");
       await page.screenshot({ path: `${artifacts}/feedback-${name}-success.png` });
       assert.equal(await page.evaluate(() => sessionStorage.getItem("hearth-feedback-draft")), null);
       await page.getByRole("button", { name: "Done", exact: true }).click();
       assert(await page.getByLabel("Page options", { exact: true }).evaluate(element => element === document.activeElement), "Focus returns to entry point");
       savedTicket = draft;
-      await writeFile(".amp/feedback-state/validation-ticket.json", JSON.stringify(savedTicket), { mode: 0o600 });
+      const envelope = Schema.decodeUnknownSync(FeedbackSchema)(JSON.parse(await readFile(".amp/feedback-state/validation-envelope-v2.json", "utf8")));
+      assert.deepEqual(envelope.context, draft.context);
+      assert.equal(envelope.clientSubmittedAt, draft.clientSubmittedAt);
+      assert.equal(envelope.delivery.identity, null, "Local demo does not invent an authenticated user");
+      assert.equal(envelope.delivery.correlation.operationId, draft.id);
+      assert(envelope.delivery.build !== "unversioned");
+      await writeFile(`${artifacts}/feedback-payload-v2.json`, JSON.stringify(envelope, null, 2));
     } else {
       await field.press("Enter");
       await page.getByRole("alert").filter({ hasText: "isn’t connected" }).waitFor();

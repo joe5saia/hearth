@@ -9,7 +9,7 @@ import { ChatGPTSetup } from "./ChatGPTSetup";
 import { readRoute, routeHash, type Page, type Route } from "./navigation";
 import { ShareLink } from "./ShareLink";
 import { FeedbackForm } from "./FeedbackForm";
-import type { Feedback } from "./feedback-contract";
+import { feedbackURL, type FeedbackInput } from "./feedback-contract";
 import { browserEvent, browserOperation, browserResponse } from "./browser-observability";
 import { matchGrocery } from "./groceries";
 import { MatchReportSchema } from "./domain";
@@ -92,7 +92,7 @@ type Modal =
   | { kind: "collections" }
   | { kind: "shopping-recipes" }
   | { kind: "chatgpt" }
-  | { kind: "feedback"; context: Feedback["context"] }
+  | { kind: "feedback"; context: FeedbackInput["context"] }
   | { kind: "grocery"; item: GroceryDraft }
   | { kind: "collection"; collection: Collection }
   | { kind: "meal"; meal: MealDraft }
@@ -226,6 +226,7 @@ function Dialog({
   children,
   wide = false,
   fullScreen = false,
+  shareable = true,
   timerHost,
 }: {
   title: string;
@@ -233,6 +234,7 @@ function Dialog({
   children: ReactNode;
   wide?: boolean;
   fullScreen?: boolean;
+  shareable?: boolean;
   timerHost?: (element: HTMLDivElement | null) => void;
 }) {
   const ref = useRef<HTMLDialogElement>(null);
@@ -278,7 +280,7 @@ function Dialog({
           {title}
         </h2>
         {timerHost && <div className="timer-slot" ref={timerHost} />}
-        <ShareLink compact />
+        {shareable && <ShareLink compact />}
         <button className="icon-button" aria-label="Close dialog" onClick={close}>
           <X size={20} />
         </button>
@@ -370,6 +372,13 @@ export function App() {
   const setHideChecked = (hideChecked: boolean) => updateRoute({ hideChecked });
 
   const setModal = (next: Modal | null) => {
+    // Feedback is transient, not a shareable view. Do not rewrite its originating URL.
+    if (next?.kind === "feedback" || (!next && modal?.kind === "feedback")) {
+      setModalState(next);
+
+      return;
+    }
+
     if (!next) {
       // Only go Back to a known Hearth parent, including the safe page behind a direct link.
       if (routeRef.current.view && entries.current.has(history.state?.hearth?.parent)) history.back();
@@ -1074,23 +1083,52 @@ export function App() {
               <button
                 onClick={(event) => {
                   event.currentTarget.closest("details")?.removeAttribute("open");
+                  const url = feedbackURL(location.href);
+                  // Derive structured fields from the redacted URL too: a search could contain a token.
+                  const capturedRoute = readRoute(new URL(url).hash);
                   setModal({
                     kind: "feedback",
                     context: {
-                      page,
-                      location: `/#${page}`,
-                      detail:
-                        page === "plan"
+                      app: { name: "Hearth", build: import.meta.env.HEARTH_BUILD_VERSION },
+                      page: {
+                        name: page,
+                        url,
+                        detail: (page === "plan"
                           ? `Meal plan · week of ${readableDate(week)}`
                           : page === "recipes"
-                            ? `Recipes${selectedCollection ? ` · ${selectedCollection.name}` : ""}${search ? ` · search: ${search}` : ""}`.slice(
-                                0,
-                                300,
-                              )
+                            ? `Recipes${selectedCollection ? ` · ${selectedCollection.name}` : ""}`
                             : page === "shopping"
                               ? `Shopping list · ${listBuilder ? "Build list" : shoppingMode ? "Shopping mode" : "My list"}`
-                              : "Groceries",
-                      display: matchMedia("(display-mode: standalone)").matches ? "standalone" : "browser",
+                              : "Groceries"
+                        ).slice(0, 300),
+                        view: {
+                          week: capturedRoute.week,
+                          mode: capturedRoute.mode,
+                          hideChecked: capturedRoute.hideChecked,
+                          collection: capturedRoute.collection.slice(0, 200),
+                          search: capturedRoute.search.slice(0, 300),
+                          selected: capturedRoute.selected.slice(0, 100).map((id) => id.slice(0, 200)),
+                          checklist: capturedRoute.checklist,
+                        },
+                      },
+                      browser: {
+                        userAgent: navigator.userAgent.slice(0, 1000),
+                        language: navigator.language.slice(0, 50),
+                        timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone.slice(0, 100),
+                        display:
+                          matchMedia("(display-mode: standalone)").matches ||
+                          ("standalone" in navigator && navigator.standalone === true)
+                            ? "standalone"
+                            : "browser",
+                        viewport: { width: innerWidth, height: innerHeight, pixelRatio: devicePixelRatio },
+                        touchPoints: navigator.maxTouchPoints,
+                        pointer: matchMedia("(pointer: coarse)").matches
+                          ? "coarse"
+                          : matchMedia("(pointer: fine)").matches
+                            ? "fine"
+                            : "none",
+                        online: navigator.onLine,
+                      },
                     },
                   });
                 }}
@@ -2019,6 +2057,7 @@ export function App() {
       {modal?.kind === "feedback" && (
         <Dialog
           title="File a ticket"
+          shareable={false}
           close={() => {
             setModal(null);
             requestAnimationFrame(() => pageOptions.current?.focus());
