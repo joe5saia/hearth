@@ -3,10 +3,26 @@ import { Miniflare, convertV4MiniflareOptions } from "miniflare";
 import { rolldown } from "rolldown";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { generateKeyPair, exportJWK, SignJWT } from "jose";
-import { z } from "zod";
 import { Effect, Schema } from "effect";
 import { updateRecipes } from "../src/recipes";
-import type { GroceryItem } from "../src/domain";
+import {
+  RecipeSchema,
+  RecipeFields,
+  CollectionSchema,
+  GroceryItemSchema,
+  MealSchema,
+  ExtraSchema,
+  ShoppingOrderSchema,
+  ShoppingNeedSchema,
+  MatchReportSchema,
+  type GroceryItem,
+} from "../src/domain";
+import {
+  CallToolResultSchema,
+  ListToolsResultSchema,
+  OAuthTokensSchema,
+  JSONRPCResponseSchema,
+} from "@modelcontextprotocol/core";
 
 let worker: Miniflare;
 
@@ -62,7 +78,9 @@ async function login(scope = scopes, tamper = false, identity = assertion) {
   expect(html).toContain('viewBox="0 0 368 100"');
   expect(html).toContain('href="data:image/svg+xml,');
   expect(html).not.toContain('class="brand-dot"');
-  const handle = html.match(/name="handle" value="([^"]+)"/)![1];
+  const handle = html.match(/name="handle" value="([^"]+)"/)?.[1];
+
+  if (handle === undefined) throw new Error("Consent handle missing");
 
   if (scope.includes("recipes")) {
     expect(html).toContain(
@@ -78,7 +96,10 @@ async function login(scope = scopes, tamper = false, identity = assertion) {
     );
   }
 
-  const cookie = page.headers.get("set-cookie")!.split(";")[0];
+  const setCookie = page.headers.get("set-cookie");
+
+  if (setCookie === null) throw new Error("Consent cookie missing");
+  const cookie = setCookie.split(";")[0];
   const form = new URLSearchParams({ handle, decision: "approve" });
   scope.forEach((s) => form.append("scope", s));
 
@@ -95,8 +116,14 @@ async function login(scope = scopes, tamper = false, identity = assertion) {
   }
 
   expect(approved.status, await approved.clone().text()).toBe(302);
-  const callback = new URL(approved.headers.get("location")!);
+  const location = approved.headers.get("location");
+
+  if (location === null) throw new Error("Consent redirect missing");
+  const callback = new URL(location);
   expect(callback.searchParams.get("state")).toBe("test-state");
+  const code = callback.searchParams.get("code");
+
+  if (code === null) throw new Error("Authorization code missing");
 
   const response = await request("/oauth/token", {
     method: "POST",
@@ -104,7 +131,7 @@ async function login(scope = scopes, tamper = false, identity = assertion) {
       grant_type: "authorization_code",
       client_id: clientId,
       redirect_uri: redirectUri,
-      code: callback.searchParams.get("code")!,
+      code,
       code_verifier: verifier,
       resource: `${origin}/mcp`,
     }),
@@ -112,7 +139,7 @@ async function login(scope = scopes, tamper = false, identity = assertion) {
 
   expect(response.status, await response.clone().text()).toBe(200);
 
-  return z.object({ access_token: z.string() }).parse(await response.json()).access_token;
+  return OAuthTokensSchema.parse(await response.json()).access_token;
 }
 
 type Json = string | number | boolean | null | readonly Json[] | { readonly [key: string]: Json | undefined };
@@ -136,25 +163,111 @@ async function rpc(method: string, params: { name?: string; arguments?: Json } =
 
   expect(response.status, await response.clone().text()).toBe(200);
 
-  return z
-    .object({
-      result: z.any().optional(),
-      error: z.object({ code: z.number(), message: z.string() }).optional(),
-    })
-    .parse(await response.json());
+  return JSONRPCResponseSchema.parse(await response.json());
 }
 
-const call = async (name: string, args: Json, bearer = token) => {
-  const response = await rpc("tools/call", { name, arguments: args }, bearer);
+const recipesOutput = Schema.Struct({ recipes: Schema.Array(RecipeSchema) });
 
-  if (response.result?.structuredContent) {
-    expect(JSON.parse(response.result.content[0].text)).toEqual(response.result.structuredContent);
-  }
+const okOutput = Schema.Struct({ ok: Schema.Literal(true) });
 
-  return response.error ? { isError: true, protocolError: response.error } : response.result;
+// Decode Worker JSON using the domain owners; only transport envelopes live here.
+const outputs = {
+  create_recipes: recipesOutput,
+  update_recipes: Schema.Struct({ ...recipesOutput.fields, missingIds: Schema.Array(Schema.String) }),
+  get_recipes: Schema.Struct({ ...recipesOutput.fields, missingIds: Schema.Array(Schema.String) }),
+  search_recipes: Schema.Struct({
+    recipes: Schema.Array(
+      Schema.Struct({
+        id: RecipeSchema.fields.id,
+        title: RecipeFields.fields.title,
+        ingredients: RecipeFields.fields.ingredients,
+      }),
+    ),
+    pagination: Schema.Struct({
+      total: Schema.Number,
+      limit: Schema.Number,
+      offset: Schema.Number,
+      hasMore: Schema.Boolean,
+      nextOffset: Schema.NullOr(Schema.Number),
+    }),
+  }),
+  list_collections: Schema.Struct({ collections: Schema.Array(CollectionSchema) }),
+  save_collection: Schema.Struct({ collection: CollectionSchema }),
+  list_groceries: Schema.Struct({ groceries: Schema.Array(GroceryItemSchema) }),
+  save_grocery: Schema.Struct({ grocery: GroceryItemSchema }),
+  list_meals: Schema.Struct({ meals: Schema.Array(MealSchema) }),
+  save_meal: Schema.Struct({ meal: MealSchema }),
+  get_shopping_list: Schema.Struct({
+    start: MealSchema.fields.date,
+    end: MealSchema.fields.date,
+    items: Schema.Array(
+      Schema.Struct({
+        key: Schema.String,
+        checkKey: Schema.String,
+        checked: Schema.Boolean,
+        name: Schema.String,
+        grocery: Schema.optional(GroceryItemSchema),
+        needs: Schema.Array(ShoppingNeedSchema),
+        packages: Schema.NullOr(Schema.Number),
+        warnings: Schema.Array(Schema.String),
+        recipes: Schema.Array(Schema.String),
+      }),
+    ),
+    extras: Schema.Array(ExtraSchema),
+    shoppingOrder: ShoppingOrderSchema,
+  }),
+  save_shopping_extra: Schema.Struct({ extra: ExtraSchema }),
+  import_recipe: Schema.Struct({ recipe: RecipeFields, warnings: Schema.Array(Schema.String) }),
+  match_groceries: Schema.Struct({ ok: Schema.Literal(true), report: MatchReportSchema }),
+  delete_recipe: okOutput,
+  delete_collection: okOutput,
+  delete_grocery: okOutput,
+  delete_meal: okOutput,
+  delete_shopping_extra: okOutput,
+  set_shopping_checked: okOutput,
+  set_shopping_order: okOutput,
+  add_demo_data: okOutput,
 };
 
-const success = async (name: string, args: Json) => {
+async function listTools(bearer = token) {
+  const response = await rpc("tools/list", {}, bearer);
+
+  if (!("result" in response)) throw new Error("Tool discovery returned a protocol error");
+
+  return ListToolsResultSchema.parse(response.result).tools;
+}
+
+const call = async <Name extends keyof typeof outputs>(name: Name, args: Json, bearer = token) => {
+  const response = await rpc("tools/call", { name, arguments: args }, bearer);
+
+  const result =
+    "result" in response
+      ? CallToolResultSchema.parse(response.result)
+      : { isError: true, protocolError: response.error, content: [], structuredContent: undefined };
+
+  const content = result.content.map((block) => {
+    if (block.type !== "text") throw new Error("Expected text tool content");
+
+    return block;
+  });
+
+  if (result.structuredContent) {
+    expect(JSON.parse(content[0].text)).toEqual(result.structuredContent);
+  }
+
+  return {
+    ...result,
+    content,
+    // Failure responses deliberately lack data; decode only when a scenario reads successful data.
+    get structuredContent() {
+      return Schema.decodeUnknownSync(Schema.make<(typeof outputs)[Name]>(outputs[name].ast), {
+        onExcessProperty: "error",
+      })(result.structuredContent);
+    },
+  };
+};
+
+const success = async <Name extends keyof typeof outputs>(name: Name, args: Json) => {
   const result = await call(name, args);
   expect(result.isError, JSON.stringify(result)).not.toBe(true);
   expect(result.structuredContent).toBeDefined();
@@ -257,9 +370,9 @@ beforeAll(async () => {
 
   const output = await bundle.generate({ format: "esm" });
   await bundle.close();
-  const script = output.output.find((o) => o.type === "chunk")!;
+  const script = output.output.find((o) => o.type === "chunk");
 
-  if (script.type !== "chunk") throw new Error("Bundle missing");
+  if (!script || script.type !== "chunk") throw new Error("Bundle missing");
   worker = new Miniflare(
     convertV4MiniflareOptions({
       workers: [
@@ -362,7 +475,7 @@ it("allows OAuth grants for only the configured preview service and rejects unre
       .sign(signingKey);
 
   const preview = await login(scopes, false, await sign({ sub: "", common_name: "preview-test.access" }));
-  expect((await rpc("tools/list", {}, preview)).result.tools).toHaveLength(22);
+  expect(await listTools(preview)).toHaveLength(22);
 
   for (const claims of [
     { sub: "", common_name: "other.access" },
@@ -402,8 +515,8 @@ it("advertises CIMD and resource discovery; denies anonymous and forged tokens",
 });
 
 it("publishes all 22 code-mode-friendly schemas with the single recipes scope", async () => {
-  const tools = (await rpc("tools/list")).result.tools;
-  expect(tools.map((t: any) => t.name).sort()).toEqual([
+  const tools = await listTools();
+  expect(tools.map((t) => t.name).sort()).toEqual([
     "add_demo_data",
     "create_recipes",
     "delete_collection",
@@ -429,7 +542,7 @@ it("publishes all 22 code-mode-friendly schemas with the single recipes scope", 
   ]);
 
   // The distributed skill instructions must name tools actually exposed over OAuth/MCP.
-  const names = new Set(tools.map((tool: any) => tool.name));
+  const names = new Set(tools.map((tool) => tool.name));
 
   for (const skill of ["managing-recipes", "planning-meals", "preparing-shopping"]) {
     const instructions = await readFile(`plugins/hearth/skills/${skill}/SKILL.md`, "utf8");
@@ -442,18 +555,32 @@ it("publishes all 22 code-mode-friendly schemas with the single recipes scope", 
   for (const tool of tools) {
     expect(tool.inputSchema.type).toBe("object");
     expect(tool.inputSchema.additionalProperties).toBe(false);
-    expect(tool.outputSchema.type).toBe("object");
+    expect(tool.outputSchema?.type).toBe("object");
   }
 
-  expect(tools.find((tool: any) => tool.name === "create_recipes").annotations.openWorldHint).toBe(true);
-  const create = tools.find((tool: any) => tool.name === "create_recipes").inputSchema;
-  expect(create.properties.recipes.items.properties.ingredients.items).toMatchObject({
-    type: "object",
-    additionalProperties: false,
+  const create = tools.find((tool) => tool.name === "create_recipes");
+
+  if (!create) throw new Error("create_recipes tool missing");
+  expect(create.annotations?.openWorldHint).toBe(true);
+  expect(create.inputSchema).toMatchObject({
     properties: {
-      name: { type: "string" },
-      quantity: { type: "number" },
-      unit: { type: "string" },
+      recipes: {
+        items: {
+          properties: {
+            ingredients: {
+              items: {
+                type: "object",
+                additionalProperties: false,
+                properties: {
+                  name: { type: "string" },
+                  quantity: { type: "number" },
+                  unit: { type: "string" },
+                },
+              },
+            },
+          },
+        },
+      },
     },
   });
 });
@@ -627,7 +754,7 @@ it("creates batches, searches like the app, paginates empty/end pages, and gets 
   const last = (await call("search_recipes", { query: "CHICKPEAS", offset: first.pagination.nextOffset }))
     .structuredContent;
 
-  expect(last.recipes.map((r: any) => r.title)).toEqual(["Fixture 25"]);
+  expect(last.recipes.map((r) => r.title)).toEqual(["Fixture 25"]);
   expect(last.pagination.nextOffset).toBeNull();
 
   for (const args of [{ query: "zz-no-match" }, { query: "CHICKPEAS", offset: 99 }, { query: "%" }]) {
@@ -639,7 +766,7 @@ it("creates batches, searches like the app, paginates empty/end pages, and gets 
 
   const ids = [last.recipes[0].id, first.recipes[0].id];
   const full = (await call("get_recipes", { ids: [ids[0], "missing", ids[1]] })).structuredContent;
-  expect(full.recipes.map((r: any) => r.id)).toEqual(ids);
+  expect(full.recipes.map((r) => r.id)).toEqual(ids);
   expect(full.missingIds).toEqual(["missing"]);
   expect(full.recipes[0]).toMatchObject({
     description: "",
@@ -655,15 +782,18 @@ it("rejects the entire batch when a recipe is deleted after validation", async (
   const [a, b] = created;
   const db = await worker.getD1Database("DB");
 
-  // SAFETY: updateRecipes uses only prepare and batch, both backed by real Miniflare D1.
-  const racingDb = {
+  // Forward the complete database interface to real Miniflare D1; inject only deletion timing.
+  const racingDb: D1Database = {
     prepare: db.prepare.bind(db),
-    async batch(statements: Parameters<typeof db.batch>[0]) {
+    dump: db.dump.bind(db),
+    exec: db.exec.bind(db),
+    withSession: db.withSession.bind(db),
+    async batch<T>(statements: D1PreparedStatement[]) {
       await db.prepare("DELETE FROM recipes WHERE id=?").bind(b.id).run();
 
-      return db.batch(statements);
+      return db.batch<T>(statements);
     },
-  } as D1Database;
+  };
 
   const update = updateRecipes(racingDb, [
     { id: a.id, changes: { minutes: 91 } },
@@ -804,17 +934,17 @@ it("keeps storage failures distinct from actionable input errors through the hou
   }
 
   const { grocery } = await success("save_grocery", input);
-  expect(
-    (await success("list_groceries", {})).groceries.filter((item: any) => item.name === input.name),
-  ).toEqual([grocery]);
+  expect((await success("list_groceries", {})).groceries.filter((item) => item.name === input.name)).toEqual([
+    grocery,
+  ]);
   await success("delete_grocery", { id: grocery.id });
 });
 
 it("arranges unused catalog products before planning them through the documented route contract", async () => {
-  const tools = (await rpc("tools/list")).result.tools;
+  const tools = await listTools();
 
   for (const name of ["list_groceries", "set_shopping_order"])
-    expect(tools.find((tool: any) => tool.name === name).description).toContain(
+    expect(tools.find((tool) => tool.name === name)?.description).toContain(
       'JSON.stringify(["grocery", id])',
     );
 
@@ -843,13 +973,13 @@ it("arranges unused catalog products before planning them through the documented
   expect((await success("list_meals", range)).meals).toEqual([]);
   expect((await success("get_shopping_list", range)).items).toEqual([]);
 
-  const catalog = (await success("list_groceries", {})).groceries.filter((item: any) =>
+  const catalog = (await success("list_groceries", {})).groceries.filter((item) =>
     products.some((product) => product.id === item.id),
   );
 
   expect(catalog).toEqual(products);
   // Reverse alphabetical order within one aisle; use only discovered IDs, not planned-item keys.
-  const keys = [...catalog].reverse().map((item: any) => JSON.stringify(["grocery", item.id]));
+  const keys = [...catalog].reverse().map((item) => JSON.stringify(["grocery", item.id]));
   await success("set_shopping_order", { aisles: ["4"], items: keys });
   expect((await success("get_shopping_list", range)).shoppingOrder).toEqual({ aisles: ["4"], items: keys });
 
@@ -859,7 +989,7 @@ it("arranges unused catalog products before planning them through the documented
     recipes: [
       {
         ...draft("Unused route recipe"),
-        ingredients: catalog.map((item: any) => ({
+        ingredients: catalog.map((item) => ({
           name: item.name,
           quantity: 1,
           unit: "each",
@@ -879,13 +1009,13 @@ it("arranges unused catalog products before planning them through the documented
 
   expect((await success("get_shopping_list", range)).items).toEqual([]);
   const ordered = await success("get_shopping_list", { ...range, all: true });
-  expect(ordered.items.map((item: any) => item.name)).toEqual(["Z unused product", "A unused product"]);
-  expect(ordered.items.map((item: any) => item.key)).toEqual(keys);
-  expect(ordered.items.every((item: any) => item.checkKey !== item.key)).toBe(true);
+  expect(ordered.items.map((item) => item.name)).toEqual(["Z unused product", "A unused product"]);
+  expect(ordered.items.map((item) => item.key)).toEqual(keys);
+  expect(ordered.items.every((item) => item.checkKey !== item.key)).toBe(true);
 
   await success("set_shopping_order", { aisles: [], items: [] });
   expect(
-    (await success("get_shopping_list", { ...range, all: true })).items.map((item: any) => item.name),
+    (await success("get_shopping_list", { ...range, all: true })).items.map((item) => item.name),
   ).toEqual(["A unused product", "Z unused product"]);
   await success("delete_meal", { id: meal.id });
   await success("delete_recipe", { id: recipe.id });
@@ -919,7 +1049,7 @@ it("manages a collection, matched products, inclusive meal plan and shopping lif
   });
 
   await success("save_collection", { id: collection.id, name: "MCP renamed" });
-  expect((await success("get_recipes", { ids: [a.id, b.id] })).recipes.map((r: any) => r.category)).toEqual([
+  expect((await success("get_recipes", { ids: [a.id, b.id] })).recipes.map((r) => r.category)).toEqual([
     "MCP renamed",
     "MCP renamed",
   ]);
@@ -955,15 +1085,16 @@ it("manages a collection, matched products, inclusive meal plan and shopping lif
   const unavailable = await call("match_groceries", {});
   expect(unavailable.isError).toBe(true);
   expect(unavailable.content[0].text).toContain("requires a Cloudflare deployment with an AI binding");
-  expect(
-    (await success("get_recipes", { ids: [a.id, b.id] })).recipes.map((r: any) => r.ingredients),
-  ).toEqual([a.ingredients, b.ingredients]);
+  expect((await success("get_recipes", { ids: [a.id, b.id] })).recipes.map((r) => r.ingredients)).toEqual([
+    a.ingredients,
+    b.ingredients,
+  ]);
   // Local recipe saves still perform exact matching without any AI calls.
   await success("update_recipes", {
     updates: [a, b].map((r) => ({ id: r.id, changes: { ingredients: r.ingredients } })),
   });
   const linked = (await success("get_recipes", { ids: [a.id, b.id] })).recipes;
-  expect(linked[0].ingredients.map((i: any) => i.groceryItemId)).toEqual([rice.id, milk.id, null]);
+  expect(linked[0].ingredients.map((i) => i.groceryItemId)).toEqual([rice.id, milk.id, null]);
   expect(linked[1].ingredients[0].groceryItemId).toBe(rice.id);
 
   const start = "2030-05-10",
@@ -986,9 +1117,11 @@ it("manages a collection, matched products, inclusive meal plan and shopping lif
   const shopping = () => success("get_shopping_list", { start, end, all: true });
   expect((await success("get_shopping_list", { start, end })).items).toEqual([]);
   let list = await shopping();
-  const riceItem = list.items.find((i: any) => i.grocery?.id === rice.id);
-  const milkItem = list.items.find((i: any) => i.grocery?.id === milk.id);
-  expect(list.items.filter((i: any) => [rice.id, milk.id].includes(i.grocery?.id))).toHaveLength(2);
+  const riceItem = list.items.find((i) => i.grocery?.id === rice.id);
+  const milkItem = list.items.find((i) => i.grocery?.id === milk.id);
+  expect(list.items.filter((i) => i.grocery && [rice.id, milk.id].includes(i.grocery.id))).toHaveLength(2);
+
+  if (!riceItem || !milkItem) throw new Error("Workflow shopping products missing");
   expect(riceItem).toMatchObject({
     needs: [],
     packages: 1,
@@ -999,34 +1132,32 @@ it("manages a collection, matched products, inclusive meal plan and shopping lif
     needs: [],
     packages: 1,
   });
-  expect(list.items.every((i: any) => i.grocery)).toBe(true);
+  expect(list.items.every((i) => i.grocery)).toBe(true);
   expect(riceItem.key).not.toBe(riceItem.checkKey);
   await success("set_shopping_checked", { key: riceItem.checkKey, checked: true });
-  expect((await shopping()).items.find((i: any) => i.key === riceItem.key).checked).toBe(true);
+  expect((await shopping()).items.find((i) => i.key === riceItem.key)?.checked).toBe(true);
   await success("set_shopping_checked", { key: riceItem.checkKey, checked: false });
-  expect((await shopping()).items.find((i: any) => i.key === riceItem.key).checked).toBe(false);
-  expect((await success("get_shopping_list", { start, end })).items.map((i: any) => i.key)).toEqual([
+  expect((await shopping()).items.find((i) => i.key === riceItem.key)?.checked).toBe(false);
+  expect((await success("get_shopping_list", { start, end })).items.map((i) => i.key)).toEqual([
     riceItem.key,
   ]);
   await success("save_meal", { ...meals[0], scale: 2 });
   list = await shopping();
-  expect(list.items.find((i: any) => i.key === riceItem.key)).toMatchObject({
+  expect(list.items.find((i) => i.key === riceItem.key)).toMatchObject({
     checked: false,
     packages: 1,
     needs: [],
   });
-  expect(list.items.find((i: any) => i.key === riceItem.key).checkKey).toBe(riceItem.checkKey);
+  expect(list.items.find((i) => i.key === riceItem.key)?.checkKey).toBe(riceItem.checkKey);
   expect(
-    (await success("get_shopping_list", { start: "2031-01-01", end: "2031-01-01" })).items.map(
-      (i: any) => i.key,
-    ),
+    (await success("get_shopping_list", { start: "2031-01-01", end: "2031-01-01" })).items.map((i) => i.key),
   ).toEqual([riceItem.key]);
   await success("set_shopping_checked", { key: riceItem.checkKey, checked: true });
   expect((await success("get_shopping_list", { start, end })).items).toEqual([]);
   const route = { aisles: ["Pantry", "Cold"], items: [riceItem.key, milkItem.key] };
   await success("set_shopping_order", route);
   expect((await shopping()).shoppingOrder).toEqual(route);
-  expect((await shopping()).items.slice(0, 2).map((i: any) => i.key)).toEqual(route.items);
+  expect((await shopping()).items.slice(0, 2).map((i) => i.key)).toEqual(route.items);
   await success("set_shopping_order", { aisles: [], items: [] });
   expect((await shopping()).shoppingOrder).toEqual({ aisles: [], items: [] });
   const { extra } = await success("save_shopping_extra", { name: "Paper towels", checked: 0 });
@@ -1035,7 +1166,7 @@ it("manages a collection, matched products, inclusive meal plan and shopping lif
     (await success("get_shopping_list", { start: "2031-01-01", end: "2031-01-01" })).extras,
   ).toContainEqual({ ...extra, name: "Kitchen towels", checked: 1 });
   await success("delete_shopping_extra", { id: extra.id });
-  expect((await shopping()).extras.some((e: any) => e.id === extra.id)).toBe(false);
+  expect((await shopping()).extras.some((e) => e.id === extra.id)).toBe(false);
 
   const db = await worker.getD1Database("DB");
 
@@ -1063,7 +1194,7 @@ it("manages a collection, matched products, inclusive meal plan and shopping lif
   }
 
   await success("delete_collection", { id: collection.id });
-  expect((await success("get_recipes", { ids: [a.id, b.id] })).recipes.map((r: any) => r.category)).toEqual([
+  expect((await success("get_recipes", { ids: [a.id, b.id] })).recipes.map((r) => r.category)).toEqual([
     "",
     "",
   ]);
@@ -1071,12 +1202,12 @@ it("manages a collection, matched products, inclusive meal plan and shopping lif
   for (const meal of meals) await success("delete_meal", { id: meal.id });
 
   for (const grocery of [rice, milk]) await success("delete_grocery", { id: grocery.id });
-  const unlinked = (await success("get_recipes", { ids: linked.map((recipe: any) => recipe.id) })).recipes;
+  const unlinked = (await success("get_recipes", { ids: linked.map((recipe) => recipe.id) })).recipes;
   expect(unlinked).toEqual(
-    linked.map((recipe: any) => ({
+    linked.map((recipe) => ({
       ...recipe,
       category: "",
-      ingredients: recipe.ingredients.map((ingredient: any) => ({ ...ingredient, groceryItemId: null })),
+      ingredients: recipe.ingredients.map((ingredient) => ({ ...ingredient, groceryItemId: null })),
     })),
   );
 
@@ -1086,9 +1217,9 @@ it("manages a collection, matched products, inclusive meal plan and shopping lif
   await success("set_shopping_checked", { key: riceItem.checkKey, checked: true });
   expect(await db.prepare("SELECT * FROM checks WHERE key=?").bind(riceItem.checkKey).first()).toBeNull();
   await success("save_grocery", rice);
-  expect((await shopping()).items.find((i: any) => i.key === riceItem.key).checked).toBe(true);
+  expect((await shopping()).items.find((i) => i.key === riceItem.key)?.checked).toBe(true);
   await success("set_shopping_checked", { key: riceItem.checkKey, checked: false });
-  expect((await shopping()).items.find((i: any) => i.key === riceItem.key).checked).toBe(false);
+  expect((await shopping()).items.find((i) => i.key === riceItem.key)?.checked).toBe(false);
   await success("delete_grocery", { id: rice.id });
 
   for (const recipe of linked) await success("delete_recipe", { id: recipe.id });
@@ -1181,7 +1312,7 @@ it("does not derive shopping needs from scaled meals and seeds only an empty hou
   const meals = await success("list_meals", { start: "2033-04-04", end: "2033-04-10" });
   const shopping = await success("get_shopping_list", { start: "2033-04-04", end: "2033-04-10" });
   expect(recipes.pagination.total).toBeGreaterThan(0);
-  expect(meals.meals.map((meal: any) => meal.date)).toEqual([
+  expect(meals.meals.map((meal) => meal.date)).toEqual([
     "2033-04-04",
     "2033-04-05",
     "2033-04-06",
@@ -1209,7 +1340,9 @@ it("exports MCP tool failures even under HTTP 200 and never exports OAuth creden
 
   const failure = telemetryEvents
     .slice(before)
-    .find((event) => event.event === "mcp_tool_failure" && event.operation === "delete_recipe")!;
+    .find((event) => event.event === "mcp_tool_failure" && event.operation === "delete_recipe");
+
+  if (!failure) throw new Error("Expected MCP failure telemetry missing");
 
   expect(
     telemetryEvents.find(

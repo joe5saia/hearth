@@ -152,7 +152,7 @@ function api(request: Request, db: D1Database, ai?: Ai, ctx?: ExecutionContext) 
   });
 }
 
-// Authentication stays at the website entrypoint; shared operations are transport-independent.
+/** Serve household JSON with no-store responses; callers must authenticate before dispatch. */
 export function householdApi(
   request: Request,
   db: D1Database,
@@ -173,14 +173,30 @@ export function householdApi(
       NotFound: (error) => failure(error.message, 404),
       Conflict: (error) => failure(error.message, 409),
       AiUnavailable: (error) => failure(error.message, 503),
-      StorageError: () => failure("We couldn’t save that change. Please try again.", 500),
-      StoredDataError: () => failure("Something went wrong. Please try again.", 500),
+      StorageError: () =>
+        failure(
+          "Household data is unavailable. Refresh to check the current state before retrying any changes.",
+          500,
+        ),
+      StoredDataError: () =>
+        failure(
+          "Some saved household data couldn’t be read. Refresh to check the current state before retrying any changes. If this continues, report it with the request ID.",
+          500,
+        ),
     }),
+    Effect.satisfiesErrorType<never>(),
     Effect.catchCause(() =>
       record("api_failure", {
         reason: request.signal.aborted ? "aborted" : "internal_error",
         outcome: "error",
-      }).pipe(Effect.andThen(failure("Something went wrong. Please try again.", 500))),
+      }).pipe(
+        Effect.andThen(
+          failure(
+            "We couldn’t complete this household request. Refresh to check the current state before retrying any changes. If this continues, report it with the request ID.",
+            500,
+          ),
+        ),
+      ),
     ),
     Effect.tap((response) => Effect.sync(() => response.headers.set("Cache-Control", "no-store"))),
   );
@@ -256,7 +272,9 @@ async function browserTelemetry(request: Request, observation: Observation, loca
   }
 }
 
+/** Website composition root: Access authentication precedes household and asset dispatch. */
 export default {
+  /** Allow only exact public install reads without Access; protect API writes against cross-site requests. */
   async fetch(
     request: Request,
     env: WebsiteEnv & TelemetryEnv & { PREVIEW_CLIENT_ID?: string },
@@ -268,6 +286,7 @@ export default {
       ctx,
       "hearth-web",
       apiOperation(new URL(request.url).pathname),
+      /** Dispatch within the current request's observation and binding lifetime. */
       async (observation, tracer) => {
         // Home-screen installers may fetch these without the browser's Access session.
         // Access path rules also match descendants; only exact read-only files bypass JWT verification here.

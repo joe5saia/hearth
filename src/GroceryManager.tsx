@@ -5,6 +5,7 @@ import { displayAmount, units, UnitSchema, type GroceryDraft, type GroceryItem, 
 import type { MatchReport } from "./domain";
 import "./grocery-manager.css";
 
+/** Save and removal callbacks report success; removal is only available for saved products. */
 export type GroceryFormProps = {
   item: GroceryDraft;
   aisles: readonly string[];
@@ -16,6 +17,7 @@ export type GroceryFormProps = {
   remove?: () => Promise<boolean>;
 };
 
+/** Edits a local product draft and locks its controls while a write is pending. */
 export function GroceryForm({ item, aisles, busy, error, save, cancel, remove }: GroceryFormProps) {
   const [draft, setDraft] = useState<GroceryDraft>(item);
   const [aliases, setAliases] = useState(item.aliases.join("\n"));
@@ -105,7 +107,7 @@ export function GroceryForm({ item, aisles, busy, error, save, cancel, remove }:
                 ),
               ],
             }),
-          "Could not save this grocery item. Your changes are still here; please try again.",
+          "Could not confirm whether this grocery item was saved. Refresh the grocery catalog to check its current state.",
         );
       }}
     >
@@ -300,7 +302,11 @@ export function GroceryForm({ item, aisles, busy, error, save, cancel, remove }:
             className="secondary danger"
             disabled={locked}
             onClick={() => {
-              if (!locked) void write(remove, "Could not delete this grocery item. Please try again.");
+              if (!locked)
+                void write(
+                  remove,
+                  "Could not confirm whether this grocery item was deleted. Refresh the grocery catalog to check its current state.",
+                );
             }}
           >
             Delete item
@@ -317,6 +323,7 @@ export function GroceryForm({ item, aisles, busy, error, save, cancel, remove }:
   );
 }
 
+/** Catalog editing is delegated to callers; matching may update recipe ingredient links. */
 export type GroceryManagerProps = {
   groceries: readonly GroceryItem[];
   recipes: readonly Recipe[];
@@ -328,6 +335,7 @@ export type GroceryManagerProps = {
   match: () => Promise<Readonly<MatchReport>>;
 };
 
+/** Shows catalog coverage with route-owned search and delegates edit navigation to callers. */
 export function GroceryManager({
   groceries,
   recipes,
@@ -376,12 +384,12 @@ export function GroceryManager({
       const report = await match();
       setMatchFailed(report.failed > 0 || report.conflicts > 0);
       setMatchMessage(
-        `Matching completed: ${report.matched} linked · ${report.unmatched} need review · ${report.failed} failed · ${report.conflicts} skipped because data changed. Existing links and manual exclusions were kept.${report.failed ? " Check Cloudflare AI billing/access and retry failed ingredients." : ""}`,
+        `Matching completed: ${report.matched} linked · ${report.unmatched} need review · ${report.failed} failed · ${report.conflicts} skipped because data changed. Existing links and manual exclusions were kept.${report.failed ? " Review ingredient links for the failed matches." : ""}`,
       );
-    } catch (error) {
+    } catch {
       setMatchFailed(true);
       setMatchMessage(
-        error instanceof Error ? error.message : "Could not match ingredients. Please try again.",
+        "Could not confirm the ingredient matching result. Refresh recipes to check their current links.",
       );
     } finally {
       setMatching(false);

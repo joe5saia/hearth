@@ -7,12 +7,14 @@ const queue: BrowserEvent[] = [];
 
 let sending = false;
 
+/** Classifies an API-relative path without retaining URLs or resource identifiers. */
 export function browserOperation(path: string) {
   const operation = apiOperation(`/api/${path}`);
 
   return operation === "assets" || operation === "telemetry" ? "unknown" : operation;
 }
 
+/** Buffers at most 80 typed measurements; never supply household content or exception text. */
 export function browserEvent(event: BrowserEvent["event"], fields: BrowserMeasurement = {}) {
   if (enabled === false || queue.length >= 80) return;
 
@@ -28,6 +30,7 @@ export function browserEvent(event: BrowserEvent["event"], fields: BrowserMeasur
   queue.push({ event, page, device: innerWidth < 768 ? "narrow" : "wide", ...fields });
 }
 
+/** Applies server telemetry opt-in and returns validated response correlation for a generated operation ID. */
 export function browserResponse(response: Response, operationId: string) {
   enabled = response.headers.get("X-Hearth-Telemetry") === "1";
 
@@ -66,6 +69,7 @@ async function flush(hidden = false) {
   }
 }
 
+/** Installs page-lifetime listeners and best-effort flushing; call once at browser startup. */
 export function initializeBrowserTelemetry() {
   const vital = (metric: Metric) =>
     browserEvent("browser_vital", {

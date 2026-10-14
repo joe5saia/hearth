@@ -17,6 +17,7 @@ const operations = [
   "unknown",
 ] as const;
 
+/** Classifies a pathname into fixed operation labels, never exporting path segments. */
 export function apiOperation(path: string) {
   const parts = path.split("/");
 
@@ -42,6 +43,7 @@ const uuid = Schema.String.check(
   Schema.isPattern(/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/),
 );
 
+/** Allowlisted browser wire contract: bounded measurements and correlation, never household content. */
 export const BrowserEventSchema = Schema.Struct({
   event: Schema.Literals([
     "browser_request",
@@ -93,8 +95,11 @@ export const BrowserEventSchema = Schema.Struct({
   ),
 });
 
+/** Decoded browser event accepted by the telemetry ingestion boundary. */
 export type BrowserEvent = typeof BrowserEventSchema.Type;
 
+/** Caller-supplied measurements; page, device, and event classification belong to the browser adapter. */
 export type BrowserMeasurement = Omit<BrowserEvent, "event" | "page" | "device">;
 
+/** Ingestion accepts one to twenty independently validated browser events per request. */
 export const BrowserBatchSchema = Schema.Array(BrowserEventSchema).check(Schema.isLengthBetween(1, 20));

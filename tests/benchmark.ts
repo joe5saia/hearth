@@ -43,8 +43,8 @@ for (const [name, recipeCount, mealCount, photoBytes] of [
   ["large", 500, 2000, 0],
   ["photos", 50, 100, 32_768],
 ] as const) {
-  const recipes = Schema.decodeUnknownSync(Schema.Array(RecipeSchema))(
-    Array.from({ length: recipeCount }, (_, i) => ({
+  const recipes = Schema.decodeSync(Schema.Array(RecipeSchema))(
+    Array.from({ length: recipeCount }, (_, i): typeof RecipeSchema.Encoded => ({
       id: `recipe-${i}`,
       title: `Recipe ${String(i).padStart(4, "0")}`,
       description: "Benchmark recipe",
@@ -68,8 +68,8 @@ for (const [name, recipeCount, mealCount, photoBytes] of [
     })),
   );
 
-  const meals = Schema.decodeUnknownSync(Schema.Array(MealSchema))(
-    Array.from({ length: mealCount }, (_, i) => ({
+  const meals = Schema.decodeSync(Schema.Array(MealSchema))(
+    Array.from({ length: mealCount }, (_, i): typeof MealSchema.Encoded => ({
       id: `meal-${i}`,
       recipeId: recipes[(i * 37) % recipeCount].id,
       date: `2026-09-${String((i % 28) + 1).padStart(2, "0")}`,
@@ -79,8 +79,8 @@ for (const [name, recipeCount, mealCount, photoBytes] of [
     })),
   );
 
-  const groceries = Schema.decodeUnknownSync(Schema.Array(GroceryItemSchema))(
-    Array.from({ length: recipeCount }, (_, i) => ({
+  const groceries = Schema.decodeSync(Schema.Array(GroceryItemSchema))(
+    Array.from({ length: recipeCount }, (_, i): typeof GroceryItemSchema.Encoded => ({
       id: `grocery-${i}`,
       name: `Product ${i}`,
       quantity: 500,

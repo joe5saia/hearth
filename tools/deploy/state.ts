@@ -1,29 +1,37 @@
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { z } from "zod";
 
-export type Outcome = "passed" | "failed" | "blocked" | "dry-run";
-export type Attempt = {
-  sha: string;
-  startedAt: string;
-  outcome?: Outcome;
-  evidence?: string;
-  investigationThread?: string;
-};
-type State = {
-  notifications: Record<string, boolean>;
-  attempts: Attempt[];
-};
+const outcomeSchema = z.enum(["passed", "failed", "blocked", "dry-run"]);
+const attemptSchema = z.object({
+  sha: z.string().regex(/^[a-f0-9]{40}$/),
+  startedAt: z.string(),
+  outcome: outcomeSchema.optional(),
+  evidence: z.string().optional(),
+  investigationThread: z.string().optional(),
+});
+const stateSchema = z.object({
+  notifications: z.record(z.string(), z.boolean()),
+  attempts: z.array(attemptSchema),
+});
 
-// One owning orb is the only writer. Synchronous atomic replacement prevents
-// interleaved webhook/tool calls from losing updates; never share this directory.
+/** Recorded verification result; blocked authentication is not a passing deployment. */
+export type Outcome = z.infer<typeof outcomeSchema>;
+/** One claimed commit and its optional final verification evidence. */
+export type Attempt = z.infer<typeof attemptSchema>;
+type State = z.infer<typeof stateSchema>;
+
+/** Single-owner-orb persistence; atomic replacement does not support shared-directory writers. */
 export class DeploymentState {
+  /** Uses the owning orb's private directory; does not create it until the first write. */
   constructor(private readonly directory: string) {}
 
+  /** Returns empty state only for a missing file; corrupt persisted state fails closed. */
   read(): State {
     try {
-      return JSON.parse(readFileSync(join(this.directory, "state.json"), "utf8"));
+      return stateSchema.parse(JSON.parse(readFileSync(join(this.directory, "state.json"), "utf8")));
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) throw error;
       return { notifications: {}, attempts: [] };
     }
   }
@@ -35,6 +43,7 @@ export class DeploymentState {
     renameSync(temporary, join(this.directory, "state.json"));
   }
 
+  /** Persists delivery after waking; interruption may redeliver, so next() deduplicates claims. */
   async notify(id: string, wake: () => Promise<void>, signal: AbortSignal): Promise<void> {
     signal.throwIfAborted();
     const state = this.read();
@@ -50,6 +59,7 @@ export class DeploymentState {
     this.write(latest);
   }
 
+  /** Resumes active work first; a completed commit needs an explicitly reviewed retry. */
   next(sha: string, retryAfterReview = false): { attempt: Attempt; resume: boolean } | null {
     if (!/^[a-f0-9]{40}$/.test(sha)) throw new Error("Invalid main commit SHA");
     const state = this.read();
@@ -63,6 +73,7 @@ export class DeploymentState {
     return { attempt, resume: previous !== undefined };
   }
 
+  /** Finalizes only the active claim, requiring evidence and a failure investigation thread. */
   finish(sha: string, outcome: Outcome, evidence: string, investigationThread?: string): void {
     const state = this.read();
     const active = state.attempts.find((attempt) => !attempt.outcome);

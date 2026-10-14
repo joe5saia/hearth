@@ -12,7 +12,6 @@ import {
   GroceryItemSchema,
   shoppingList,
   checkKey,
-  type Meal,
   type MealDraft,
   type Ingredient,
   type IngredientDraft,
@@ -86,6 +85,8 @@ function options(
             if (url.pathname === "/recipes/4") return new Response("<html>Sign in</html>");
 
             if (url.pathname === "/recipes/5") return new Response("x".repeat(5_000_001));
+
+            if (url.pathname === "/recipes/6") throw new Error("private upstream fetch detail");
 
             return new Response(await readFile("tests/fixtures/nyt-coq-au-vin.html", "utf8"));
           }
@@ -229,18 +230,64 @@ describe("real Worker with disposable SQLite D1", () => {
       const failed = await send("recipes", "PUT", JSON.stringify(sampleRecipes[0]));
       expect(failed.status).toBe(500);
       expect(failed.headers.get("Cache-Control")).toBe("no-store");
-      expect(await failed.json()).toEqual({ error: "We couldn’t save that change. Please try again." });
+      expect(await failed.json()).toEqual({
+        error:
+          "Household data is unavailable. Refresh to check the current state before retrying any changes.",
+      });
       expect(await db.prepare("SELECT count(*) AS count FROM recipes").first()).toEqual({ count: 0 });
     } finally {
       await db.prepare("DROP TRIGGER reject_recipe").run();
     }
 
     expect((await send("recipes", "PUT", JSON.stringify(sampleRecipes[0]))).status).toBe(200);
-    await db.prepare("UPDATE recipes SET instructions='[1]'").run();
-    const defect = await worker.dispatchFetch("http://localhost/api/household");
-    expect(defect.status).toBe(500);
-    expect(defect.headers.get("Cache-Control")).toBe("no-store");
-    expect(await defect.json()).toEqual({ error: "Something went wrong. Please try again." });
+
+    const grocery = {
+      id: "corruption-check",
+      name: "Rice",
+      aliases: [],
+      quantity: 1,
+      unit: "g",
+      aisle: "",
+      url: "",
+    };
+
+    expect((await send("groceries", "PUT", JSON.stringify(grocery))).status).toBe(200);
+    expect((await send("shopping-order", "PUT", JSON.stringify({ aisles: [], items: [] }))).status).toBe(200);
+
+    const before = Schema.decodeUnknownSync(HouseholdSchema)(
+      await (await worker.dispatchFetch("http://localhost/api/household")).json(),
+    );
+
+    for (const [corrupt, restore] of [
+      [
+        db.prepare("UPDATE recipes SET instructions='[1]'"),
+        db.prepare("UPDATE recipes SET instructions=?").bind(JSON.stringify(sampleRecipes[0].instructions)),
+      ],
+      [db.prepare("UPDATE groceries SET aliases='[1]'"), db.prepare("UPDATE groceries SET aliases='[]'")],
+      ...["aisles", "items"].flatMap((column) =>
+        ["[1]", '["duplicate","duplicate"]', JSON.stringify(["x".repeat(1001)]), "{}", "{"].map((value) => [
+          db.prepare(`UPDATE shopping_order SET ${column}=?`).bind(value),
+          db.prepare(`UPDATE shopping_order SET ${column}='[]'`),
+        ]),
+      ),
+    ]) {
+      try {
+        await corrupt.run();
+        const defect = await worker.dispatchFetch("http://localhost/api/household");
+        expect(defect.status).toBe(500);
+        expect(defect.headers.get("Cache-Control")).toBe("no-store");
+        expect(await defect.json()).toEqual({
+          error:
+            "Some saved household data couldn’t be read. Refresh to check the current state before retrying any changes. If this continues, report it with the request ID.",
+        });
+      } finally {
+        await restore.run();
+      }
+
+      const recovered = await worker.dispatchFetch("http://localhost/api/household");
+      expect(recovered.status).toBe(200);
+      expect(Schema.decodeUnknownSync(HouseholdSchema)(await recovered.json())).toEqual(before);
+    }
   });
   it("builds a persistent manual grocery list independently of recipes and meal scales", async () => {
     const put = async (path: string, value: typeof Schema.Json.Type) => {
@@ -322,7 +369,15 @@ describe("real Worker with disposable SQLite D1", () => {
     const list = () => shoppingList(household.groceries, household.shoppingOrder);
 
     let items = list();
-    const byId = (id: string) => items.find((item) => item.grocery?.id === id)!;
+
+    const byId = (id: string) => {
+      const item = items.find((item) => item.grocery?.id === id);
+
+      if (!item) throw new Error(`Expected grocery ${id} in the shopping list.`);
+
+      return item;
+    };
+
     expect(items).toHaveLength(products.length);
     expect(
       items.every(
@@ -725,7 +780,7 @@ describe("real Worker with disposable SQLite D1", () => {
     const recipe = { ...sampleRecipes[0], category: "Vegetarian" };
     expect((await send("recipes", "PUT", JSON.stringify(recipe))).status).toBe(200);
     const db = await worker.getD1Database("DB");
-    let resolveRename!: () => void;
+    let resolveRename: (() => void) | undefined;
 
     const renamed = new Promise<void>((resolve) => {
       resolveRename = resolve;
@@ -733,13 +788,17 @@ describe("real Worker with disposable SQLite D1", () => {
 
     const rename = async () => {
       await db.prepare("UPDATE collections SET name='Plant-based' WHERE id='vegetarian'").run();
+
+      if (!resolveRename) throw new Error("Rename signal was not initialized.");
       resolveRename();
     };
 
-    // SAFETY: Only prepare and batch are used by this route, both backed by real D1.
     // Separate reads force the rename between recipes and collections; a batch
     // returns its complete snapshot before the competing rename is applied.
-    const racingDb = {
+    const racingDb: D1Database = {
+      exec: db.exec.bind(db),
+      dump: db.dump.bind(db),
+      withSession: db.withSession.bind(db),
       prepare(sql: string) {
         const statement = db.prepare(sql);
         const read = statement.all.bind(statement);
@@ -754,15 +813,16 @@ describe("real Worker with disposable SQLite D1", () => {
 
         return statement;
       },
-      async batch(statements: Parameters<typeof db.batch>[0]) {
-        const results = await db.batch(statements);
+      async batch<T>(statements: D1PreparedStatement[]) {
+        const results = await db.batch<T>(statements);
         await rename();
 
         return results;
       },
-    } as D1Database;
+    };
 
-    // SAFETY: The local API read uses only DB and LOCAL_DEV, not other Worker bindings.
+    // SAFETY: WebsiteEnv requires deployment-only bindings that this local API read
+    // never uses; this real-D1 snapshot smoke exercises DB with LOCAL_DEV enabled.
     const env = { DB: racingDb, LOCAL_DEV: "true" } as WebsiteEnv;
     const response = await server.fetch(new Request("http://localhost/api/household"), env);
     expect(response.status).toBe(200);
@@ -923,14 +983,23 @@ describe("real Worker with disposable SQLite D1", () => {
     expect((await send("recipes", "PUT", JSON.stringify(sampleRecipes[0]))).status).toBe(200);
     const db = await worker.getD1Database("DB");
 
-    const stored = await db
-      .prepare("SELECT source,photo,ingredients FROM recipes WHERE id=?")
-      .bind(sampleRecipes[0].id)
-      .first<{ source: string; photo: string; ingredients: string }>();
+    const stored = Schema.decodeUnknownSync(
+      Schema.Struct({
+        source: RecipeSchema.fields.source,
+        photo: RecipeSchema.fields.photo,
+        ingredients: Schema.fromJsonString(RecipeSchema.fields.ingredients),
+      }),
+      { onExcessProperty: "error" },
+    )(
+      await db
+        .prepare("SELECT source,photo,ingredients FROM recipes WHERE id=?")
+        .bind(sampleRecipes[0].id)
+        .first(),
+    );
 
-    expect(stored?.photo).toBe("/photos/chicken.jpg");
-    expect(stored?.source).toBe(sampleRecipes[0].source);
-    expect(JSON.parse(stored?.ingredients ?? "[]")).toEqual(sampleRecipes[0].ingredients);
+    expect(stored.photo).toBe("/photos/chicken.jpg");
+    expect(stored.source).toBe(sampleRecipes[0].source);
+    expect(stored.ingredients).toEqual(sampleRecipes[0].ingredients);
   });
   it("rejects malformed JSON, invalid URLs, quantities, empty ingredients, and invalid dates", async () => {
     expect((await send("recipes", "PUT", JSON.stringify(sampleRecipes[0]))).status).toBe(200);
@@ -978,7 +1047,14 @@ describe("real Worker with disposable SQLite D1", () => {
     expect(await db.prepare("SELECT count(*) AS count FROM recipes").first()).toEqual({ count: 0 });
   });
   it("persists recipe-free notes, validates them, and converts entries without affecting other meals", async () => {
-    const note: Meal = { ...meal, id: "note-only", recipeId: null, scale: 1, note: "Pizza" };
+    const note = Schema.decodeUnknownSync(MealSchema)({
+      ...meal,
+      id: "note-only",
+      recipeId: null,
+      scale: 1,
+      note: "Pizza",
+    });
+
     const put = (entry: MealDraft) => send("meals", "PUT", JSON.stringify(entry));
 
     const household = async () =>
@@ -1220,14 +1296,23 @@ describe("real Worker with disposable SQLite D1", () => {
     expect(result.recipe.instructions).toHaveLength(9);
     expect((await send("recipes", "PUT", JSON.stringify(result.recipe))).status).toBe(200);
 
-    const stored = await db
-      .prepare("SELECT source,ingredients,instructions FROM recipes WHERE id=?")
-      .bind(result.recipe.id)
-      .first<{ source: string; ingredients: string; instructions: string }>();
+    const stored = Schema.decodeUnknownSync(
+      Schema.Struct({
+        source: RecipeSchema.fields.source,
+        ingredients: Schema.fromJsonString(RecipeSchema.fields.ingredients),
+        instructions: Schema.fromJsonString(RecipeSchema.fields.instructions),
+      }),
+      { onExcessProperty: "error" },
+    )(
+      await db
+        .prepare("SELECT source,ingredients,instructions FROM recipes WHERE id=?")
+        .bind(result.recipe.id)
+        .first(),
+    );
 
-    expect(stored?.source).toBe(source);
-    expect(JSON.parse(stored?.ingredients ?? "[]")).toEqual(result.recipe.ingredients);
-    expect(JSON.parse(stored?.instructions ?? "[]")).toEqual(result.recipe.instructions);
+    expect(stored.source).toBe(source);
+    expect(stored.ingredients).toEqual(result.recipe.ingredients);
+    expect(stored.instructions).toEqual(result.recipe.instructions);
     expect((await send(`recipes/${result.recipe.id}`, "DELETE", "{}")).status).toBe(200);
   });
   it("rejects unsupported URLs, blocked pages, redirects, missing recipe data, and oversized pages", async () => {
@@ -1246,6 +1331,20 @@ describe("real Worker with disposable SQLite D1", () => {
     }
 
     expect((await send("recipes/import", "POST", "{}")).status).toBe(400);
+
+    const rejected = await send(
+      "recipes/import",
+      "POST",
+      JSON.stringify({ url: "https://cooking.nytimes.com/recipes/6" }),
+    );
+
+    expect(rejected.status).toBe(400);
+    expect(rejected.headers.get("Cache-Control")).toBe("no-store");
+    expect(await rejected.json()).toEqual({
+      error: "NYT couldn’t be read. Try an unlocked share link or add the recipe manually.",
+    });
+    const db = await worker.getD1Database("DB");
+    expect(await db.prepare("SELECT count(*) AS count FROM recipes").first()).toEqual({ count: 0 });
   });
   it("requires a signed Access token even when the assets router omits runtime context", async () => {
     expect((await send("demo?today=2026-09-27", "POST", "{}")).status).toBe(200);

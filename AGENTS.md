@@ -1,3 +1,11 @@
+# Application guidance
+
+Read [docs/coding-standards.md](docs/coding-standards.md) before changing code. It defines
+Hearth's module ownership, boundary parsing, type preservation, Effect style, and documentation rules.
+Read [docs/errors.md](docs/errors.md) before changing errors, rendered failure messages, public
+error contracts, HTTP statuses, retry guidance, or failure telemetry. Preserve existing behavior
+and verify changes through the real application boundaries.
+
 # Development commands
 
 Use `npx task` to discover repository tasks and `npx task <name> -- <args>` to run them.

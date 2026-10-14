@@ -10,6 +10,7 @@ import { recipeMcp } from "./mcp";
 import { consentPage } from "./mcp-consent";
 import { observedFetch, type TelemetryEnv } from "./observability";
 
+/** Current MCP Worker bindings; OAuth persistence and household storage belong to this environment. */
 export interface McpEnv extends TelemetryEnv {
   DB: D1Database;
   AI?: Ai;
@@ -100,7 +101,9 @@ async function authorize(request: Request, env: McpEnv & { OAUTH_PROVIDER: OAuth
   }
 }
 
+/** Compose OAuth and MCP per request without retaining bindings or execution contexts. */
 export default {
+  /** Reject foreign origins before OAuth dispatch; only scoped tokens reach household tools. */
   async fetch(request: Request, env: McpEnv, ctx: ExecutionContext) {
     const path = new URL(request.url).pathname;
 
@@ -122,8 +125,10 @@ export default {
       const provider = new OAuthProvider<McpEnv>({
         apiRoute: "/mcp",
         apiHandler: {
+          /** Enforce the household scope and forward provider-verified token metadata to MCP. */
           async fetch(request, env, context) {
-            // SAFETY: OAuthProvider authenticates the token and supplies this resource context.
+            // SAFETY: OAuthProvider verifies tokens and injects auth, but types apiHandler's
+            // context as ExecutionContext. tests/mcp.test.ts checks forged tokens and missing scopes.
             const auth = (context as OAuthResourceContext<unknown>).auth;
 
             if (!auth.scope.includes("recipes")) return insufficientScope(auth, ["recipes"]);
@@ -140,10 +145,12 @@ export default {
           },
         },
         defaultHandler: {
-          // SAFETY: OAuthProvider injects its documented OAuthHelpers binding before dispatch.
+          /** Gate browser consent with Access; OAuthProvider owns the consent transaction and cookies. */
           fetch: (request, env) =>
             observation.step(
               "oauth.consent",
+              // SAFETY: OAuthProvider injects OAUTH_PROVIDER before dispatch, but its handler
+              // Env type omits the binding. tests/mcp.test.ts exercises consent and CSRF rejection.
               () => authorize(request, env as McpEnv & { OAUTH_PROVIDER: OAuthHelpers }),
               tracer,
             ),

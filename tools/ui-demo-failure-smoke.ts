@@ -3,6 +3,8 @@ import { spawn } from "node:child_process";
 import { mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { Schema } from "effect";
+import { HouseholdSchema, IdSchema } from "../src/domain.ts";
 
 const root = new URL(process.argv[2] ?? "http://localhost:5173").origin;
 assert(["localhost", "127.0.0.1"].includes(new URL(root).hostname), "Use disposable local data only");
@@ -11,7 +13,7 @@ const scratch = await mkdtemp(join(tmpdir(), "hearth-demo-failures-"));
 const household = async () => {
   const response = await fetch(`${root}/api/household`);
   assert(response.ok);
-  return response.json();
+  return Schema.decodeUnknownSync(HouseholdSchema, { onExcessProperty: "error" })(await response.json());
 };
 const original = await household();
 const failures: string[] = [];
@@ -46,7 +48,9 @@ try {
               const kind = new URL(request.url()).pathname.split('/')[2];
               if (!['PUT', 'POST'].includes(request.method()) || !['extras', 'meals', 'recipes', 'groceries', 'collections'].includes(kind)) return;
               const body = request.postDataJSON();
-              if (body?.id) console.log('OWNED ' + JSON.stringify({ kind, id: body.id }));
+              if (body !== null && typeof body === 'object' && typeof body.id === 'string') {
+                console.log('OWNED ' + JSON.stringify({ kind, id: body.id }));
+              }
             });
             if (${JSON.stringify(fault)} === 'teardown') {
               page.on('response', response => {
@@ -61,7 +65,8 @@ try {
                 const body = request.method() === 'PUT' ? request.postDataJSON() : null;
                 const reject = ${JSON.stringify(fault)} === 'route'
                   ? request.url().endsWith('/api/shopping-order') && request.method() === 'PUT'
-                  : request.url().endsWith('/api/extras') && body?.checked === 1 && body.name.includes('demo');
+                  : request.url().endsWith('/api/extras') && body !== null && typeof body === 'object' &&
+                    body.checked === 1 && typeof body.name === 'string' && body.name.includes('demo');
                 if (reject) {
                   console.log('INJECTED ${fault}');
                   await route.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ error: 'Injected save failure' }) });
@@ -94,7 +99,10 @@ try {
     const owned = output
       .split("\n")
       .filter((line) => line.startsWith("OWNED "))
-      .map((line) => JSON.parse(line.slice(6)));
+      .map((line) => Schema.decodeUnknownSync(Schema.Struct({
+        kind: Schema.Literals(["extras", "meals", "recipes", "groceries", "collections"]),
+        id: IdSchema,
+      }))(JSON.parse(line.slice(6))));
     const current = await household();
     try {
       assert(output.includes(`INJECTED ${fault}`), `${fault} injection was not exercised`);
@@ -127,11 +135,11 @@ try {
         });
         assert(response.ok, `Fallback cleanup ${path}: ${response.status}`);
       };
-      for (const kind of ["extras", "meals", "recipes", "groceries", "collections"]) {
+      for (const kind of ["extras", "meals", "recipes", "groceries", "collections"] as const) {
         for (const item of current[kind]) {
           if (
             owned.some((entry) => entry.kind === kind && entry.id === item.id) &&
-            !original[kind].some((entry: any) => entry.id === item.id)
+            !original[kind].some((entry) => entry.id === item.id)
           ) {
             await api(`${kind}/${encodeURIComponent(item.id)}`, "DELETE");
           }
@@ -139,10 +147,10 @@ try {
       }
       if (JSON.stringify(current.shoppingOrder) !== JSON.stringify(original.shoppingOrder))
         await api("shopping-order", "PUT", original.shoppingOrder);
-      for (const key of new Set([...current.checks, ...original.checks].map((entry: any) => entry.key))) {
+      for (const key of new Set([...current.checks, ...original.checks].map((entry) => entry.key))) {
         const fallback = key.startsWith('["shopping-list",') ? 1 : 0;
-        const checked = original.checks.find((entry: any) => entry.key === key)?.checked ?? fallback;
-        const now = current.checks.find((entry: any) => entry.key === key)?.checked ?? fallback;
+        const checked = original.checks.find((entry) => entry.key === key)?.checked ?? fallback;
+        const now = current.checks.find((entry) => entry.key === key)?.checked ?? fallback;
         if (checked !== now) await api("checks", "PUT", { key, checked });
       }
       assert.deepEqual(await household(), original, "Reproduction fallback cleanup failed");

@@ -89,6 +89,9 @@ tasks:
   typecheck:
     desc: Check TypeScript types
     cmds: [npm run check]
+  typecheck:tools:
+    desc: Check first-party tooling types (run ui:setup first for external browser declarations)
+    cmds: [npx tsc --noEmit --project tsconfig.tools.json]
   lint:
     desc: Run Oxlint and vendored rules (optional -- paths or flags)
     cmds: ["npm run lint -- {{.CLI_ARGS}}"]

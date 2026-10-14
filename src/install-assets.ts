@@ -1,5 +1,4 @@
-// Shared by the Worker and the production/Preview Access exceptions.
-// Keep exact file paths: never expose /icons/* or the SPA fallback anonymously.
+/** Exact anonymous installer paths shared by the Worker and Access; never broaden to /icons/* or SPA fallback. */
 export const publicInstallPaths: readonly string[] = [
   "/apple-touch-icon.png",
   "/icons/apple-touch-icon-120.png",

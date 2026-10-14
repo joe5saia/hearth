@@ -1,7 +1,9 @@
 import { validDate, weekStart } from "./domain";
 
+/** Top-level destinations accepted by the hash router. */
 export type Page = "plan" | "recipes" | "shopping" | "groceries" | "recipe-checklist";
 
+/** Dialog destinations layered over a top-level page. */
 export type View =
   | "recipe"
   | "editor"
@@ -13,6 +15,7 @@ export type View =
   | "chatgpt"
   | "shopping-recipes";
 
+/** Saved navigation state only; unsaved household drafts do not belong in routes. */
 export type Route = {
   page: Page;
   week: string;
@@ -44,6 +47,7 @@ const views: readonly View[] = [
   "shopping-recipes",
 ];
 
+/** Parses the hash allowlist, defaulting invalid fields and normalizing the plan week. */
 export function readRoute(hash = location.hash): Route {
   const [page, query = ""] = hash.slice(1).split("?");
   const params = new URLSearchParams(query);
@@ -71,6 +75,7 @@ export function readRoute(hash = location.hash): Route {
   };
 }
 
+/** Serializes only fields relevant to the page and open dialog, preserving selection order. */
 export function routeHash(route: Route): string {
   const params = new URLSearchParams();
 
@@ -112,11 +117,12 @@ export function routeHash(route: Route): string {
   return `#${route.page}${query ? `?${query}` : ""}`;
 }
 
-// Reconstruct rather than copying location.href: never share an auth query or unknown URL fields.
+/** Reconstructs a root URL from the parsed route, excluding auth queries and unknown URL fields. */
 export function shareURL(): string {
   return `${location.origin}/${routeHash(readRoute())}`;
 }
 
+/** Uses native sharing, falling back to clipboard except on cancellation; clipboard failures reject. */
 export async function shareLocation(): Promise<"shared" | "copied" | "cancelled"> {
   const url = shareURL();
 

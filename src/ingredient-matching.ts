@@ -1,13 +1,16 @@
 import { Data, Effect, Option, Schema } from "effect";
-import { GroceryId } from "./domain.ts";
+import { GroceryId, IngredientSchema } from "./domain.ts";
 import type { GroceryItem, Ingredient, Recipe, MatchReport } from "./domain.ts";
 import { database, stored, type StorageError, type StoredDataError } from "./storage.ts";
 import { record } from "./observability";
 
+/** Workers AI normalizer; changing it requires a normalization-cache version bump. */
 export const normalizationModel = "@cf/meta/llama-3.2-3b-instruct";
 
+/** Product selector; changing it requires a selection-cache version bump. */
 export const selectionModel = "typesafe/jev";
 
+/** Classified inference failure; its optional cause is private diagnostic data. */
 export class MatchingError extends Data.TaggedError("MatchingError")<{
   reason:
     | "invalid_response"
@@ -22,7 +25,7 @@ export class MatchingError extends Data.TaggedError("MatchingError")<{
 
 type MatchingFailure = MatchingError | StorageError | StoredDataError;
 
-// Only emit fixed categories: dependency errors and schema errors can contain private input.
+/** Returns only safe telemetry categories, never dependency messages or private input. */
 export function matchingFailureReason(error: MatchingFailure): string {
   switch (error._tag) {
     case "StorageError":
@@ -88,12 +91,22 @@ const Selection = Schema.Struct({
 
 const Decision = Schema.Struct({
   id: Schema.NullOr(GroceryId),
-  suggestions: Schema.Array(GroceryId),
+  suggestions: Schema.required(IngredientSchema.fields.grocerySuggestions),
 });
 
 type Decision = typeof Decision.Type;
 
-type UsageExample = { recipeId: string; recipeTitle: string; ingredientName: string };
+const validateDecision = (decision: Decision, candidates: readonly GroceryItem[]) =>
+  (decision.id !== null && !candidates.some((item) => item.id === decision.id)) ||
+  decision.suggestions.some((id) => !candidates.some((item) => item.id === id))
+    ? Effect.fail(new MatchingError({ reason: "invalid_selection" }))
+    : Effect.void;
+
+type UsageExample = {
+  recipeId: Recipe["id"];
+  recipeTitle: Recipe["title"];
+  ingredientName: Ingredient["name"];
+};
 
 const SelectionResponse = Schema.Union([
   Selection,
@@ -164,10 +177,12 @@ function closeWord(a: string, b: string): boolean {
   return previous[b.length] <= 2;
 }
 
+/** Per-catalog lexical index; preserves catalog ordering and performs no inference or I/O. */
 export class GrocerySearch {
   private readonly vocabulary = new Map<string, Set<number>>();
   private readonly groceries: readonly GroceryItem[];
 
+  /** Indexes names and aliases; callers must keep this catalog unchanged while using the index. */
   constructor(groceries: readonly GroceryItem[]) {
     this.groceries = groceries;
 
@@ -185,6 +200,7 @@ export class GrocerySearch {
     }
   }
 
+  /** Returns all fuzzy lexical candidates in catalog order, without treating them as matches. */
   candidates(original: string, core: string): GroceryItem[] {
     const query = [...new Set(words(`${original} ${core}`))];
     const found = new Set<number>();
@@ -197,6 +213,7 @@ export class GrocerySearch {
   }
 }
 
+/** Calls AI with a cancellable 15-second limit and validates a nonempty core of at most 150 characters. */
 export function normalizeIngredient(ai: Pick<Ai, "run">, name: string) {
   return Effect.gen(function* () {
     const response = yield* runModel(ai, normalizationModel, {
@@ -249,7 +266,7 @@ function chooseProduct(
   recipe: Recipe,
   candidates: readonly GroceryItem[],
   report: MatchReport,
-  examples?: ReadonlyMap<string, readonly UsageExample[]>,
+  examples?: ReadonlyMap<GroceryId, readonly UsageExample[]>,
 ): Effect.Effect<Decision, MatchingError> {
   return Effect.gen(function* () {
     if (!candidates.length) return { id: null, suggestions: [] };
@@ -390,12 +407,14 @@ function chooseProduct(
   });
 }
 
-class MatchCache<A> {
+const CacheRow = Schema.Struct({ value: Schema.String });
+
+class MatchCache<A, I> {
   private readonly pending = new Map<string, Effect.Effect<A, MatchingFailure>>();
-  private readonly schema: Schema.Codec<A, unknown>;
+  private readonly schema: Schema.Codec<A, I>;
   private readonly db: D1Database | undefined;
 
-  constructor(schema: Schema.Codec<A, unknown>, db?: D1Database) {
+  constructor(schema: Schema.Codec<A, I>, db?: D1Database) {
     this.schema = schema;
     this.db = db;
   }
@@ -418,14 +437,18 @@ class MatchCache<A> {
                     "SELECT value FROM ingredient_match_cache WHERE key=? AND created_at > unixepoch()-604800",
                   )
                   .bind(key)
-                  .first<{ value: string }>(),
+                  .first(),
               )
             : null;
 
           if (row) {
             cached = true;
 
-            return yield* stored(() => Schema.decodeUnknownSync(schema)(JSON.parse(row.value)));
+            return yield* stored(() => {
+              const { value } = Schema.decodeUnknownSync(CacheRow)(row);
+
+              return Schema.decodeUnknownSync(schema)(JSON.parse(value));
+            });
           }
 
           const value = yield* create;
@@ -462,6 +485,11 @@ const cacheKey = (value: string) =>
     ),
   );
 
+/**
+ * Proposes links only for omitted grocery IDs; explicit null and existing links are untouched.
+ * Runs at most three ingredients concurrently, with run-local deduplication and optional seven-day
+ * D1 caches. The optional performance.now() deadline returns completed work, not recipe persistence.
+ */
 export function matchIngredients(
   ai: Pick<Ai, "run">,
   recipes: readonly Recipe[],
@@ -497,7 +525,7 @@ export function matchIngredients(
     const normalizations = new MatchCache(Schema.String, db);
     const selections = new MatchCache(Decision, db);
     // Freeze history before inference: new automatic matches must not reinforce themselves.
-    const history = new Map<string, UsageExample[]>();
+    const history = new Map<GroceryId, UsageExample[]>();
 
     for (const recipe of [...historyRecipes].sort(
       (a, b) => a.title.localeCompare(b.title) || a.id.localeCompare(b.id),
@@ -605,11 +633,19 @@ export function matchIngredients(
 
             if (selected.cached) report.selectionCacheHits++;
             let decision = selected.value;
+            yield* validateDecision(decision, candidates);
             const suggestions = decision.suggestions;
 
             // Reconsider only close choices, using up to ten OTHER recipes per product.
             if (!decision.id && suggestions.length >= 2) {
-              const shortlist = suggestions.map((id) => candidates.find((item) => item.id === id)!);
+              const shortlist: GroceryItem[] = [];
+
+              for (const id of suggestions) {
+                const product = candidates.find((item) => item.id === id);
+
+                if (!product) return yield* new MatchingError({ reason: "invalid_selection" });
+                shortlist.push(product);
+              }
 
               const examples = new Map(
                 shortlist.map((item) => [
@@ -635,6 +671,7 @@ export function matchIngredients(
 
                 if (contextual.cached) report.selectionCacheHits++;
                 decision = contextual.value;
+                yield* validateDecision(decision, shortlist);
               }
             }
 
@@ -649,24 +686,30 @@ export function matchIngredients(
               grocerySuggestions: suggestions.length ? suggestions : undefined,
             };
           }).pipe(
-            Effect.catch((error) =>
-              Effect.sync(() => {
-                report.failed++;
-                console.warn(
-                  JSON.stringify({
-                    event: "ingredient_matching_ingredient_failed",
-                    runId,
-                    recipeIndex,
-                    ingredientIndex: index,
-                    stage,
-                    reason: matchingFailureReason(error),
-                    candidates: candidateCount,
-                    elapsedMs: Math.round(performance.now() - ingredientStarted),
-                  }),
-                );
-              }),
-            ),
+            Effect.catchTags({
+              MatchingError: ingredientFailure,
+              StorageError: ingredientFailure,
+              StoredDataError: ingredientFailure,
+            }),
           );
+
+          function ingredientFailure(error: MatchingFailure) {
+            return Effect.sync(() => {
+              report.failed++;
+              console.warn(
+                JSON.stringify({
+                  event: "ingredient_matching_ingredient_failed",
+                  runId,
+                  recipeIndex,
+                  ingredientIndex: index,
+                  stage,
+                  reason: matchingFailureReason(error),
+                  candidates: candidateCount,
+                  elapsedMs: Math.round(performance.now() - ingredientStarted),
+                }),
+              );
+            });
+          }
 
           const completed = report.matched + report.unmatched + report.failed;
           const now = performance.now();

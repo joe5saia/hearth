@@ -11,7 +11,7 @@ import {
 
 const normalize = (name: string) => name.trim().replace(/\s+/g, " ").toLowerCase();
 
-// Browser-safe: importing this module never accesses a database or Worker binding.
+/** Browser-safe exact name/alias matching; ambiguous or blank names have no match. */
 export function matchGrocery(name: string, groceries: readonly GroceryItem[]): GroceryItem | undefined {
   const key = normalize(name);
 
@@ -24,21 +24,30 @@ export function matchGrocery(name: string, groceries: readonly GroceryItem[]): G
   return matches.length === 1 ? matches[0] : undefined;
 }
 
+/** SQL representation with aliases stored as JSON text. */
 export type GroceryRow = Omit<GroceryDraft, "aliases"> & { aliases: string };
 
-export const parseGrocery = (row: GroceryRow): GroceryItem =>
-  Schema.decodeUnknownSync(GroceryItemSchema)({ ...row, aliases: JSON.parse(row.aliases) });
+const decodeGroceryRow = Schema.decodeUnknownSync(
+  Schema.Struct({
+    ...GroceryItemSchema.fields,
+    aliases: Schema.fromJsonString(GroceryItemSchema.fields.aliases),
+  }),
+);
 
+/** Decodes an untrusted SQL grocery row, including its JSON aliases. */
+// oxlint-disable-next-line anti-slop/no-unknown-parameters -- This is the SQL decoding boundary, not an inner operation.
+export const parseGrocery = (row: unknown): GroceryItem => decodeGroceryRow(row);
+
+/** Reads validated catalog items in name/ID order. */
 export function getGroceries(db: D1Database) {
   return Effect.gen(function* () {
-    const rows = yield* database(() =>
-      db.prepare("SELECT * FROM groceries ORDER BY name,id").all<GroceryRow>(),
-    );
+    const rows = yield* database(() => db.prepare("SELECT * FROM groceries ORDER BY name,id").all());
 
     return yield* stored(() => rows.results.map(parseGrocery));
   });
 }
 
+/** Matches omitted links, preserves explicit null, and rejects missing explicit grocery IDs. */
 export function linkIngredients(ingredients: readonly Ingredient[], groceries: readonly GroceryItem[]) {
   return Effect.gen(function* () {
     return yield* Effect.forEach(ingredients, (ingredient) =>
@@ -69,9 +78,10 @@ export function linkIngredients(ingredients: readonly Ingredient[], groceries: r
   });
 }
 
+/** Validates and upserts a catalog item, trimming its display name and aisle. */
 export function saveGrocery(db: D1Database, item: GroceryItem) {
   return Effect.gen(function* () {
-    const decoded = yield* Schema.decodeUnknownEffect(GroceryItemSchema)(item).pipe(
+    const decoded = yield* Schema.decodeEffect(GroceryItemSchema)(item).pipe(
       Effect.mapError(
         () => new ValidationError({ message: "Check the grocery name, package quantity, unit, and URL." }),
       ),
@@ -85,6 +95,7 @@ export function saveGrocery(db: D1Database, item: GroceryItem) {
   });
 }
 
+/** Builds an upsert for an already validated grocery, encoding aliases as JSON. */
 export function groceryStatement(db: D1Database, grocery: GroceryItem) {
   return db
     .prepare(`INSERT INTO groceries(id,name,url,aisle,quantity,unit,aliases) VALUES(?,?,?,?,?,?,?)
@@ -100,9 +111,10 @@ export function groceryStatement(db: D1Database, grocery: GroceryItem) {
     );
 }
 
+/** Atomically renames an aisle and its saved position, rejecting an occupied target. */
 export function renameAisle(db: D1Database, input: typeof RenameAisleSchema.Type) {
   return Effect.gen(function* () {
-    const decoded = yield* Schema.decodeUnknownEffect(RenameAisleSchema)(input).pipe(
+    const decoded = yield* Schema.decodeEffect(RenameAisleSchema)(input).pipe(
       Effect.mapError(() => new ValidationError({ message: "Enter an aisle name up to 150 characters." })),
     );
 
@@ -139,6 +151,7 @@ export function renameAisle(db: D1Database, input: typeof RenameAisleSchema.Type
   });
 }
 
+/** Atomically deletes a grocery, unlinks recipe ingredients, and removes list membership. */
 export function deleteGrocery(db: D1Database, id: GroceryId) {
   return Effect.gen(function* () {
     const [result] = yield* database(() =>

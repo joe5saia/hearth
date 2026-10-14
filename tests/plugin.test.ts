@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { strFromU8, unzipSync } from "fflate";
 import { expect, it } from "vitest";
+import { z } from "zod";
 
 it("builds real, reproducible web and portable ZIPs with distinct connection wiring and no checkout leakage", async () => {
   const directory = await mkdtemp(join(tmpdir(), "hearth-plugin-smoke-"));
@@ -51,7 +52,25 @@ it("builds real, reproducible web and portable ZIPs with distinct connection wir
     expect(Object.keys(portableFiles).sort()).toEqual(
       [...common, "mcp.json", ...skills.map((name) => `skills/${name}/agents/openai.yaml`)].sort(),
     );
-    const manifest = JSON.parse(strFromU8(webFiles["plugin.json"]));
+
+    const manifest = z
+      .object({
+        name: z.string(),
+        version: z.string(),
+        extensions: z.object({
+          "com.openai": z.object({
+            apps: z.string(),
+            interface: z.object({
+              composerIcon: z.string().startsWith("./"),
+              composerIconDark: z.string().startsWith("./"),
+              logo: z.string().startsWith("./"),
+              logoDark: z.string().startsWith("./"),
+            }),
+          }),
+        }),
+      })
+      .parse(JSON.parse(strFromU8(webFiles["plugin.json"])));
+
     expect(manifest).toMatchObject({
       name: "hearth",
       version: "2.3.7",
@@ -60,7 +79,16 @@ it("builds real, reproducible web and portable ZIPs with distinct connection wir
     expect(JSON.parse(strFromU8(webFiles[".app.json"]))).toEqual({
       apps: { hearth: { id: "asdk_app_smoke", required: true } },
     });
-    expect(JSON.parse(strFromU8(portableFiles["plugin.json"])).extensions["com.openai"].apps).toBeUndefined();
+
+    const portableManifest = z
+      .object({
+        extensions: z.object({
+          "com.openai": z.object({ apps: z.string().optional() }),
+        }),
+      })
+      .parse(JSON.parse(strFromU8(portableFiles["plugin.json"])));
+
+    expect(portableManifest.extensions["com.openai"].apps).toBeUndefined();
     expect(JSON.parse(strFromU8(portableFiles["mcp.json"]))).toEqual({
       $schema: "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json",
       mcpServers: { hearth: { type: "streamable-http", url: "https://hearth-mcp.joesaia.trade/mcp" } },
@@ -77,7 +105,7 @@ it("builds real, reproducible web and portable ZIPs with distinct connection wir
       expect(webFiles[path]).toEqual(portableFiles[path]);
     }
 
-    for (const field of ["composerIcon", "composerIconDark", "logo", "logoDark"]) {
+    for (const field of ["composerIcon", "composerIconDark", "logo", "logoDark"] as const) {
       const path = manifest.extensions["com.openai"].interface[field].slice(2);
       const png = Buffer.from(webFiles[path]);
       expect(png.subarray(0, 8).toString("hex")).toBe("89504e470d0a1a0a");
@@ -91,9 +119,12 @@ it("builds real, reproducible web and portable ZIPs with distinct connection wir
     expect(await readFile(join(directory, "hearth-plugin.zip"))).toEqual(portable);
     build();
     expect(await readdir(directory)).not.toContain("hearth-chatgpt.zip");
-    expect(JSON.parse(await readFile(join(directory, "release.json"), "utf8")).assets).toEqual([
-      "hearth-plugin.zip",
-    ]);
+
+    const release = z
+      .object({ assets: z.array(z.string()) })
+      .parse(JSON.parse(await readFile(join(directory, "release.json"), "utf8")));
+
+    expect(release.assets).toEqual(["hearth-plugin.zip"]);
 
     for (const args of [["--require-web"], ["--app-id", "plugin_not-an-app"], ["--version", "1.02.3"]]) {
       const result = spawnSync("npx", ["task", "plugin:build", "--", "--output", directory, ...args], {

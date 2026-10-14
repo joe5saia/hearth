@@ -3,11 +3,12 @@ import { spawnSync } from "node:child_process";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { Effect, Schema } from "effect";
+import { z } from "zod";
 import { GroceryItemSchema, HouseholdSchema, MatchReportSchema, RecipeSchema, type Recipe } from "../src/domain.ts";
 import { GrocerySearch, matchIngredients, normalizeIngredient, normalizationModel } from "../src/ingredient-matching.ts";
 import { Cloudflare, previewFetch, previewName } from "./preview.ts";
 
-const product = (id: string, name: string, aliases: string[] = []) => Schema.decodeUnknownSync(GroceryItemSchema)({ id: `matching-eval-${id}`, name, aliases, quantity: 1, unit: "each", aisle: "Produce", url: "" });
+const product = (id: string, name: string, aliases: string[] = []) => Schema.decodeSync(GroceryItemSchema)({ id: `matching-eval-${id}`, name, aliases, quantity: 1, unit: "each", aisle: "Produce", url: "" });
 const groceries = [
   product("white-onion", "White onion"),
   ...Array.from({ length: 60 }, (_, i) => product(`yellow-onion-${i}`, `Brand ${i} yellow onion bag`)),
@@ -28,14 +29,14 @@ const cases = [
   { name: "Toasted sesame oil for finishing", expected: undefined, core: /^toasted sesame oil$/i },
   { name: "Dragon fruit, peeled", expected: undefined, core: /^dragon fruit$/i },
 ];
-const recipes = [...Schema.decodeUnknownSync(Schema.Array(RecipeSchema))(cases.map((item, i) => ({
+const recipes = [...Schema.decodeSync(Schema.Array(RecipeSchema))(cases.map((item, i): typeof RecipeSchema.Encoded => ({
   id: `matching-eval-recipe-${i}`, title: `Matching evaluation ${i + 1}`, description: "Disposable evaluation recipe.",
   servings: 2, minutes: 20, category: "", photo: "", source: "", rating: "neutral",
   ingredients: [{ name: item.name, originalText: item.originalText ?? item.name, quantity: 2, unit: "each" }],
   instructions: [i === 6 ? "Use raw fresh tomatoes in this uncooked salad. Do not use canned tomatoes." : i === 7 ? "Finish with toasted sesame oil for its sesame aroma; olive oil is not a substitute." : `Prepare ${item.name} as described and cook the recipe.`],
 })))];
 // Explicit links and opt-outs must survive the AI pass.
-recipes[0] = Schema.decodeUnknownSync(RecipeSchema)({ ...recipes[0], ingredients: [...recipes[0].ingredients,
+recipes[0] = Schema.decodeSync(RecipeSchema)({ ...recipes[0], ingredients: [...recipes[0].ingredients,
   { name: "Chopped White Onions", quantity: 1, unit: "each", groceryItemId: null },
   { name: "Chopped White Onions", quantity: 1, unit: "each", groceryItemId: groceries[1].id },
 ] });
@@ -46,11 +47,13 @@ function validate(actual: readonly Recipe[]) {
     const expected = item.expected ? `matching-eval-${item.expected}` : undefined;
     return { ingredient: item.name, expected: expected ?? null, actual: ingredient?.groceryItemId ?? null, correct: !!ingredient && ingredient.groceryItemId === expected };
   });
-  const first = actual.find((recipe) => recipe.id === recipes[0].id)!;
+  const first = actual.find((recipe) => recipe.id === recipes[0].id);
+  assert(first, "The first evaluation recipe must survive matching.");
   assert.equal(first.ingredients[1].groceryItemId, null);
   assert.equal(first.ingredients[2].groceryItemId, groceries[1].id);
-  for (const [index, recipe] of recipes.entries()) {
-    const saved = actual.find((r) => r.id === recipe.id)!;
+  for (const recipe of recipes) {
+    const saved = actual.find((r) => r.id === recipe.id);
+    assert(saved, "Every evaluation recipe must survive matching.");
     assert.equal(saved.ingredients[0].originalText, recipe.ingredients[0].originalText);
     assert.equal(saved.ingredients[0].quantity, 2);
     assert.equal(saved.ingredients[0].unit, "each");
@@ -61,8 +64,10 @@ function validate(actual: readonly Recipe[]) {
 
 const [mode = "models", output, normalizer = normalizationModel] = process.argv.slice(2);
 assert(["normalization", "models", "history", "preview", "preview-ui"].includes(mode), "Use normalization, models, history, preview, or preview-ui [report.json] [normalizer-model].");
-const trace: { model: string; ingredient: string; ms: number; response: object }[] = [];
-let reports: object[] = [];
+const trace: { model: string; ingredient: string; ms: number; response: unknown }[] = [];
+let reports: (typeof MatchReportSchema.Type | { baseline: typeof MatchReportSchema.Type; contextual: typeof MatchReportSchema.Type; contextualInputs: ContextualInput[]; outcomes: { title: string; ingredient: Recipe["ingredients"][number] }[] } | { endToEndMs: number; includes: string })[] = [];
+const contextualInputSchema = Schema.Struct({ state: Schema.Struct({ linkedRecipeExamples: Schema.Record(Schema.String, Schema.Array(Schema.Struct({ recipeTitle: Schema.String, ingredientName: Schema.String }))) }) });
+type ContextualInput = typeof contextualInputSchema.Type;
 let results: ReturnType<typeof validate> = [];
 let normalizationCorrect = 0;
 
@@ -70,29 +75,41 @@ if (mode === "models" || mode === "normalization" || mode === "history") {
   assert(process.env.CLOUDFLARE_ACCOUNT_ID && process.env.CLOUDFLARE_API_TOKEN, "Cloudflare credentials are required for real-model evaluation.");
   const api = new Cloudflare(process.env.CLOUDFLARE_ACCOUNT_ID ?? "", process.env.CLOUDFLARE_API_TOKEN ?? "");
   // The adapter calls real Cloudflare model inference, not a mock; only run() is consumed.
-  const contextualInputs: Record<string, unknown>[] = [];
+  const contextualInputs: ContextualInput[] = [];
   const ai = { run: async (model: string, input: Record<string, unknown>) => {
-    if ((input.state as { linkedRecipeExamples?: unknown } | undefined)?.linkedRecipeExamples) contextualInputs.push(input);
+    // Validate without stripping the remaining input captured in the evaluation report.
+    const context = Schema.decodeUnknownSync(Schema.Struct({ state: Schema.optional(Schema.Struct({ linkedRecipeExamples: Schema.optional(Schema.Unknown) })) }))(input);
+    if (context.state?.linkedRecipeExamples) {
+      assert(Schema.is(contextualInputSchema)(input), "Linked recipe examples must carry recipe titles and ingredient names.");
+      contextualInputs.push(input);
+    }
     const actualModel = model === normalizationModel ? normalizer : model;
-    const messages = input.messages as { content: string }[] | undefined;
-    const ingredient = messages ? JSON.parse(messages[1].content).ingredient : (input.state as { ingredient: { name: string } }).ingredient.name;
+    const parsed = Schema.decodeUnknownSync(Schema.Union([
+      Schema.Struct({ messages: Schema.Array(Schema.Struct({ content: Schema.String })) }),
+      Schema.Struct({ state: Schema.Struct({ ingredient: Schema.Struct({ name: Schema.String }) }) }),
+    ]))(input);
+    const ingredient = "messages" in parsed
+      ? Schema.decodeUnknownSync(Schema.Struct({ ingredient: Schema.String }))(JSON.parse(parsed.messages[1].content)).ingredient
+      : parsed.state.ingredient.name;
     const started = performance.now();
-    const response = await api.request<Record<string, unknown>>(model === "typesafe/jev" ? "/ai/run" : `/ai/run/${actualModel}`, "POST", model === "typesafe/jev" ? { model, input } : input).catch((error) => {
-      console.error(error.message);
-      throw error;
+    const response = await api.request(model === "typesafe/jev" ? "/ai/run" : `/ai/run/${actualModel}`, z.record(z.string(), z.unknown()), "POST", model === "typesafe/jev" ? { model, input } : input).catch(() => {
+      // Provider errors can contain raw response bodies; do not print or rethrow them.
+      throw new Error("Model inference failed; inspect the provider status before another evaluation.");
     });
     trace.push({ model: actualModel, ingredient, ms: performance.now() - started, response });
     return response;
+  // SAFETY: Ai.run has model-specific overloads that a forwarding adapter cannot express.
+  // Inputs are parsed above; matching:eval exercises the real model output decoders.
   } } as Pick<Ai, "run">;
   if (mode === "normalization") {
     for (const item of cases) await Effect.runPromise(normalizeIngredient(ai, item.name));
   } else if (mode === "history") {
     const catalog = [product("fresh-parm", "BelGioioso Vegetarian Parmesan Cheese, 8 oz"), product("kraft-parm", "Kraft Finely Shredded Parmesan Natural Cheese, 6 oz")];
-    const targets = Schema.decodeUnknownSync(Schema.Array(RecipeSchema))(["Adult pasta dinner", "Baby broccoli cheese bites"].map((title, index) => ({
+    const targets = Schema.decodeSync(Schema.Array(RecipeSchema))(["Adult pasta dinner", "Baby broccoli cheese bites"].map((title, index): typeof RecipeSchema.Encoded => ({
       ...recipes[0], id: `context-target-${index}`, title, description: index ? "A baby recipe." : "A weekday dinner for adults.",
       ingredients: [{ name: "Parmesan, for serving", quantity: 1, unit: "tbsp" }], instructions: ["Sprinkle Parmesan over the cooked dish."],
     })));
-    const history = Schema.decodeUnknownSync(Schema.Array(RecipeSchema))(catalog.flatMap((item, group) => Array.from({ length: 12 }, (_, index) => ({
+    const history = Schema.decodeSync(Schema.Array(RecipeSchema))(catalog.flatMap((item, group) => Array.from({ length: 12 }, (_, index): typeof RecipeSchema.Encoded => ({
       ...targets[group], id: `history-${group}-${index}`, title: `${group ? "Baby vegetable bites" : "Adult pasta dinner"} ${index}`,
       ingredients: [{ name: "Parmesan", quantity: 2, unit: "tbsp", groceryItemId: item.id }],
     }))));
@@ -101,12 +118,14 @@ if (mode === "models" || mode === "normalization" || mode === "history") {
     assert.equal(baseline.report.failed + contextual.report.failed, 0);
     assert(contextualInputs.length > 0, "Live Jev must exercise the ambiguous shortlist/history pass.");
     for (const input of contextualInputs) {
-      const state = input.state as { linkedRecipeExamples: Record<string, { recipeTitle: string; ingredientName: string }[]> };
+      const state = input.state;
       assert(Object.values(state.linkedRecipeExamples).every((examples) => examples.length === 10));
       assert(Object.values(state.linkedRecipeExamples).flat().every((example) => example.ingredientName === "Parmesan"));
     }
     results = targets.map((target, index) => {
-      const ingredient = contextual.recipes.find((recipe) => recipe.id === target.id)!.ingredients[0];
+      const saved = contextual.recipes.find((recipe) => recipe.id === target.id);
+      assert(saved, "Contextual matching must preserve each target recipe.");
+      const ingredient = saved.ingredients[0];
       const expected = catalog[index].id;
       // Unresolved choices are surfaced for review, never silently linked to the wrong preference.
       return { ingredient: target.title, expected, actual: ingredient.groceryItemId ?? null,
@@ -122,15 +141,17 @@ if (mode === "models" || mode === "normalization" || mode === "history") {
   }
   const normalized = trace.filter((item) => item.model === normalizer);
   for (const item of normalized) {
-    const response = item.response as { response?: string | { core: string }; core?: string };
-    const core = response.core ?? (typeof response.response === "string" ? JSON.parse(response.response).core : response.response?.core ?? "");
+    const normalizedSchema = Schema.Struct({ core: Schema.String });
+    const response = Schema.decodeUnknownSync(Schema.Union([normalizedSchema, Schema.Struct({ response: Schema.Union([Schema.String, normalizedSchema]) })]))(item.response);
+    const core = "core" in response ? response.core : typeof response.response === "string"
+      ? Schema.decodeUnknownSync(normalizedSchema)(JSON.parse(response.response)).core : response.response.core;
     if (cases.find((entry) => entry.name === item.ingredient)?.core.test(core)) normalizationCorrect++;
   }
 } else {
   const name = previewName(process.env.AMP_THREAD_ID ?? "");
-  const send = async (path: string, method = "GET", body?: object) => {
+  const send = async (path: string, method = "GET", body?: typeof GroceryItemSchema.Encoded | typeof RecipeSchema.Encoded | Record<string, never>) => {
     const response = await previewFetch(name, path, method, body ? JSON.stringify(body) : undefined);
-    assert(response.ok, `${method} ${path}: ${response.status} ${await response.clone().text()}`);
+    assert(response.ok, `${method} ${path}: ${response.status}; inspect Preview request logs.`);
     return response;
   };
   const state = async () => Schema.decodeUnknownSync(HouseholdSchema)(await (await send("/api/household")).json());
@@ -149,11 +170,11 @@ if (mode === "models" || mode === "normalization" || mode === "history") {
     for (const recipe of recipes) await send("/api/recipes", "PUT", recipe);
     for (let run = 0; run < 2; run++) {
       if (run) for (const recipe of recipes) await send("/api/recipes", "PUT", recipe);
-      let payload: object;
+      let payload: unknown;
       if (mode === "preview-ui" && !run) {
         const directory = resolve(".wrangler/hearth-previews", name);
-        const { url } = JSON.parse(await readFile(resolve(directory, "preview.json"), "utf8"));
-        const token = JSON.parse(await readFile(resolve(directory, "credentials.json"), "utf8"));
+        const { url } = Schema.decodeUnknownSync(Schema.Struct({ url: Schema.String }))(JSON.parse(await readFile(resolve(directory, "preview.json"), "utf8")));
+        const token = Schema.decodeUnknownSync(Schema.Struct({ client_id: Schema.String, client_secret: Schema.String }))(JSON.parse(await readFile(resolve(directory, "credentials.json"), "utf8")));
         browser("open", `${url}/#groceries`, "--headers", JSON.stringify({ "CF-Access-Client-Id": token.client_id, "CF-Access-Client-Secret": token.client_secret }));
         browser("set", "viewport", "1280", "900", "2");
         browser("wait", ".grocery-manager");

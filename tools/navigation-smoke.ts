@@ -1,15 +1,29 @@
 import assert from "node:assert/strict";
 import { mkdir } from "node:fs/promises";
 import { resolve } from "node:path";
+import { Schema } from "effect";
+import { HouseholdSchema } from "../src/domain.ts";
+
+// Supplied by ui:setup alongside the browser runtime below.
+// @ts-ignore Browser declarations exist only after task ui:setup, outside the checkout.
+import type * as Playwright from "/tmp/hearth-ui/node_modules/@playwright/test/index.d.ts";
+
+declare global {
+  /** Browser-only capture used to verify the share payload without opening a native sheet. */
+  interface Window {
+    /** Share payload captured by this smoke's platform-boundary replacement. */
+    shared?: ShareData;
+  }
+}
 
 // Supplied by the repository's ui:setup task, not a project dependency.
 // @ts-expect-error External browser runtime.
-const { chromium, webkit, devices, expect } = await import("/tmp/hearth-ui/node_modules/@playwright/test/index.mjs");
+const { chromium, webkit, devices, expect }: typeof Playwright = await import("/tmp/hearth-ui/node_modules/@playwright/test/index.mjs");
 const root = new URL(process.argv[2] ?? "http://localhost:5173").origin;
 assert(["localhost", "127.0.0.1"].includes(new URL(root).hostname), "Disposable local data only");
 const artifacts = resolve(".amp/in/artifacts");
 await mkdir(artifacts, { recursive: true });
-const original = await (await fetch(`${root}/api/household`)).json() as any;
+const original = Schema.decodeUnknownSync(HouseholdSchema)(await (await fetch(`${root}/api/household`)).json());
 const id = () => crypto.randomUUID();
 const collection = { id: id(), name: "Navigation smoke collection" };
 const grocery = { id: id(), name: "Navigation smoke lentils", unit: "g", quantity: 500, url: "", aisle: "Pantry", aliases: [] };
@@ -17,7 +31,7 @@ const recipe = { id: id(), title: "Navigation smoke lentil soup", description: "
 const meal = { id: id(), recipeId: recipe.id, date: "2026-11-04", slot: "Dinner", scale: 1.5, note: "Saved household meal" };
 async function api(path: string, method: string, body?: unknown) {
   const response = await fetch(`${root}/api/${path}`, { method, headers: { "Content-Type": "application/json" }, body: body === undefined ? undefined : JSON.stringify(body) });
-  assert(response.ok, `${method} ${path}: ${response.status} ${await response.text()}`);
+  assert(response.ok, `${method} ${path}: HTTP ${response.status}`);
 }
 const errors: string[] = [];
 let count = 0;
@@ -34,7 +48,7 @@ try {
     const browser = await engine.launch();
     const context = await browser.newContext(options);
     const page = await context.newPage();
-    page.on("pageerror", (error: Error) => errors.push(`${profile}: ${error.message}`));
+    page.on("pageerror", () => errors.push(`${profile}: browser exception`));
     try {
       const check = async (name: string, run: () => Promise<void>) => {
         await run(); count++; console.log(`PASS ${profile}: ${name}`);
@@ -189,25 +203,25 @@ try {
         await page.reload();
         await dialog().getByRole("button", { name: "Edit meal", exact: true }).click();
         await dialog().getByLabel(/A note for this meal/).fill("Pending navigation save");
-        let release!: () => void;
-        let requested!: () => void;
+        let release: (() => void) | undefined;
+        let requested: (() => void) | undefined;
         const held = new Promise<void>((done) => { release = done; });
         const started = new Promise<void>((done) => { requested = done; });
-        const hold = async (route: any) => { requested(); await held; await route.continue(); };
+        const hold = async (route: Playwright.Route) => { requested?.(); await held; await route.continue(); };
         await page.route("**/api/meals", hold);
         try {
           await dialog().getByRole("button", { name: "Save to meal plan", exact: true }).click();
           await started;
           await page.goBack();
           await expect(dialog()).toHaveAttribute("aria-label", "Recipe details");
-          release();
+          release?.();
           await expect(page.getByText("Meal plan updated", { exact: true })).toBeVisible();
           await expect(dialog()).toHaveAttribute("aria-label", "Recipe details");
           await expect(page).toHaveURL(new RegExp(`view=recipe&id=${recipe.id}`));
-          const saved = await (await fetch(`${root}/api/household`)).json() as any;
-          assert.equal(saved.meals.find((item: any) => item.id === meal.id).note, "Pending navigation save");
+          const saved = Schema.decodeUnknownSync(HouseholdSchema)(await (await fetch(`${root}/api/household`)).json());
+          assert.equal(saved.meals.find((item) => item.id === meal.id)?.note, "Pending navigation save");
         } finally {
-          release(); await page.unroute("**/api/meals", hold);
+          release?.(); await page.unroute("**/api/meals", hold);
           await api("meals", "PUT", meal);
         }
       });
@@ -238,16 +252,16 @@ try {
       });
       await check("share affordance delivers exact recipe, plan and shopping links without credentials", async () => {
         // Exercise the UI-to-platform boundary on both engines; real native sheet needs an Apple device.
-        await page.evaluate(() => Object.defineProperty(navigator, "share", { configurable: true, value: async (payload: unknown) => { (window as any).shared = payload; } }));
+        await page.evaluate(() => Object.defineProperty(navigator, "share", { configurable: true, value: async (payload: ShareData) => { window.shared = payload; } }));
         for (const hash of [`#recipes?view=recipe&id=${recipe.id}`, "#plan?week=2026-11-02", "#shopping?mode=focus&hideChecked=1"]) {
           await open(hash);
-          await page.evaluate(() => Object.defineProperty(navigator, "share", { configurable: true, value: async (payload: unknown) => { (window as any).shared = payload; } }));
+          await page.evaluate(() => Object.defineProperty(navigator, "share", { configurable: true, value: async (payload: ShareData) => { window.shared = payload; } }));
           await page.getByRole("button", { name: "Share link", exact: true }).last().click();
-          await expect.poll(() => page.evaluate(() => (window as any).shared?.url)).toBe(`${root}/${hash}`);
+          await expect.poll(() => page.evaluate(() => window.shared?.url)).toBe(`${root}/${hash}`);
         }
         await page.evaluate(() => history.replaceState(history.state, "", `${location.pathname}?auth-secret=DO-NOT-SHARE${location.hash}&token=DO-NOT-SHARE`));
         await page.getByRole("button", { name: "Share link", exact: true }).click();
-        await expect.poll(() => page.evaluate(() => (window as any).shared?.url)).toBe(`${root}/#shopping?mode=focus&hideChecked=1`);
+        await expect.poll(() => page.evaluate(() => window.shared?.url)).toBe(`${root}/#shopping?mode=focus&hideChecked=1`);
       });
       if (profile === "desktop") await check("clipboard fallback copies a reusable link", async () => {
         await context.grantPermissions(["clipboard-read", "clipboard-write"]);
@@ -269,6 +283,6 @@ try {
   await api(`groceries/${grocery.id}`, "DELETE");
   await api(`collections/${collection.id}`, "DELETE");
 }
-const after = await (await fetch(`${root}/api/household`)).json();
+const after = Schema.decodeUnknownSync(HouseholdSchema)(await (await fetch(`${root}/api/household`)).json());
 assert.deepEqual(after, original, "Fixture cleanup must preserve original household");
 console.log(`PASS ${count} navigation scenarios across desktop Chromium and touch iPhone/iPad WebKit; household unchanged.`);

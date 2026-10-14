@@ -9,12 +9,24 @@ import { z } from "zod";
 const issuer = "https://ampcode.com/api/workload-identity";
 const keys = createRemoteJWKSet(new URL(`${issuer}/jwks.json`));
 
+class BootstrapError extends Error {}
+
+const settingsSchema = z.object({
+  "amp.mcpServers": z.object({
+    hearth_eval: z.object({
+      url: z.unknown().optional(),
+      headers: z.object({ Authorization: z.unknown().optional() }).passthrough().optional(),
+    }).passthrough().optional(),
+  }).passthrough().optional(),
+}).passthrough();
+
+/** Mints and verifies an ephemeral orb identity; callers must never persist or log its token. */
 export async function ampIdentity(audience: string) {
   let token: string;
   try {
     token = execFileSync("amp", ["orb", "id-token", "--audience", audience], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
   } catch {
-    throw new Error("Could not mint an Amp orb identity. Run this task inside the authorized project's orb.");
+    throw new BootstrapError("Could not mint an Amp orb identity. Run this task inside the authorized project's orb.");
   }
   const { payload } = await jwtVerify(token, keys, {
     issuer, audience, algorithms: ["RS256"],
@@ -32,22 +44,22 @@ function previewEndpoint(value: string) {
     url.protocol !== "https:" || url.port || url.username || url.password || url.search || url.hash ||
     url.pathname !== "/eval/mcp" ||
     !/^(p\d{6}-[a-f0-9]{10}-mcp)-hearth-mcp-\1\.[a-z0-9-]+\.workers\.dev$/.test(url.hostname)
-  ) throw new Error("Expected an isolated Hearth Preview HTTPS /eval/mcp URL; production is not allowed.");
+  ) throw new BootstrapError("Expected an isolated Hearth Preview HTTPS /eval/mcp URL; production is not allowed.");
   return url;
 }
 
 async function readSettings(path: string) {
-  try { return JSON.parse(await readFile(path, "utf8")); }
+  try { return settingsSchema.parse(JSON.parse(await readFile(path, "utf8"))); }
   catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return {};
-    throw new Error("Could not read settings; refusing to overwrite them.");
+    if (error instanceof Error && "code" in error && error.code === "ENOENT") return settingsSchema.parse({});
+    throw new BootstrapError("Could not read settings; refusing to overwrite them.");
   }
 }
 
 async function main() {
   const [operation, value] = process.argv.slice(2);
   if (!["connect", "check", "disconnect"].includes(operation) || !value)
-    throw new Error("Usage: npx task mcp:eval -- connect|check|disconnect <Preview /eval/mcp URL>");
+    throw new BootstrapError("Usage: npx task mcp:eval -- connect|check|disconnect <Preview /eval/mcp URL>");
   const url = previewEndpoint(value);
   const settingsPath = resolve(process.env.XDG_CONFIG_HOME ?? resolve(homedir(), ".config"), "amp/settings.json");
   if (operation !== "disconnect") {
@@ -64,7 +76,7 @@ async function main() {
         "io.modelcontextprotocol/clientCapabilities": {},
       } } }),
     });
-    if (response.status !== 200) throw new Error(`Preview discovery failed: HTTP ${response.status}. Settings were not changed.`);
+    if (response.status !== 200) throw new BootstrapError(`Preview discovery failed: HTTP ${response.status}. Settings were not changed.`);
     const discovered = z.object({ result: z.object({ tools: z.array(z.object({ name: z.string() })).min(1) }) }).parse(await response.json());
     if (operation === "check") {
       console.log(JSON.stringify({ status: "authenticated", tools: discovered.result.tools.map((tool) => tool.name) }));
@@ -72,32 +84,32 @@ async function main() {
     }
     const workspace = await readSettings(resolve(".amp/settings.json"));
     if (workspace["amp.mcpServers"]?.hearth_eval)
-      throw new Error("A workspace hearth_eval entry would override the trusted user configuration. Remove that entry explicitly first.");
+      throw new BootstrapError("A workspace hearth_eval entry would override the trusted user configuration. Remove that entry explicitly first.");
   }
   const settings = await readSettings(settingsPath);
   const servers = settings["amp.mcpServers"] ?? {};
   if (operation === "disconnect") {
     if (!servers.hearth_eval) { console.log("No eval connection installed"); return; }
     if (servers.hearth_eval.url !== url.href || servers.hearth_eval.headers?.Authorization !== "Bearer ${amp:id-token}")
-      throw new Error("Refusing to remove a different MCP connection.");
+      throw new BootstrapError("Refusing to remove a different MCP connection.");
     delete servers.hearth_eval;
   } else {
     if (servers.hearth_eval && servers.hearth_eval.headers?.Authorization !== "Bearer ${amp:id-token}")
-      throw new Error("Refusing to overwrite an unrelated hearth_eval connection.");
+      throw new BootstrapError("Refusing to overwrite an unrelated hearth_eval connection.");
     servers.hearth_eval = { url: url.href, headers: { Authorization: "Bearer ${amp:id-token}" } };
   }
   settings["amp.mcpServers"] = servers;
   await mkdir(dirname(settingsPath), { recursive: true, mode: 0o700 });
   // Tighten permissions before overwriting an existing file that may contain other private settings.
-  try { await chmod(settingsPath, 0o600); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+  try { await chmod(settingsPath, 0o600); } catch (error) { if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) throw error; }
   await writeFile(settingsPath, JSON.stringify(settings, null, 2) + "\n", { mode: 0o600 });
   console.log(operation === "connect" ? "Installed hearth_eval with automatically refreshed Amp identity. Reload MCP to discover tools; no bearer token was saved." : "Removed the eval connection. Reload MCP to unload tools.");
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
-  main().catch(() => {
+  main().catch((error: unknown) => {
     // Do not print library/CLI errors that could contain token or configuration data.
-    console.error("MCP eval bootstrap failed. Check the Preview URL, identity authorization, connectivity, and settings conflicts. No credentials were logged.");
+    console.error(error instanceof BootstrapError ? error.message : "MCP eval bootstrap failed. Check the Preview URL, identity authorization, connectivity, and settings conflicts. No credentials were logged.");
     process.exitCode = 1;
   });
 }

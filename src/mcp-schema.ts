@@ -1,8 +1,8 @@
 import { JsonSchema, Schema } from "effect";
 
-// Return a separate adapter per registration: Effect's adapters attach ~standard
-// to their schema, and shared domain schemas must not be mutated.
+/** Creates an excess-property-rejecting registration adapter without mutating the domain schema. */
 export function mcpSchema<S extends Schema.ConstraintDecoder<unknown>>(schema: S) {
+  // Effect attaches ~standard to the schema, so each registration needs its own copy.
   const standard = Schema.toStandardSchemaV1(Schema.make<S>(schema.ast), {
     parseOptions: { onExcessProperty: "error" },
   });

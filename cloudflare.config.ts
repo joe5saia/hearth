@@ -1,7 +1,8 @@
 import { readFile } from "node:fs/promises";
 import { defineConfig, type WorkerConfig } from "cf/config";
+import { z } from "zod";
 
-// Shared by Alchemy production/local deployments and native cf Previews.
+/** Shared build/runtime settings; Alchemy retains production deployment ownership. */
 export const workerRuntime = {
   main: "src/server.ts",
   compatibilityDate: "2026-09-08",
@@ -13,8 +14,9 @@ export const workerRuntime = {
   },
 } as const;
 
-// Keep this nested: cf resource commands only need account settings, not a Preview build.
+/** Resolves only task-generated disposable Preview builds, never production deployment. */
 export default defineConfig({
+  /** Defers reading build state so account-only resource commands need no Preview config. */
   worker: async ({ isPreview, mode }) => {
     if (!isPreview || !["cf-preview", "cf-mcp-preview"].includes(mode ?? "")) {
       throw new Error("Use the Preview tasks for cf builds; Alchemy still owns production and local dev.");
@@ -24,7 +26,20 @@ export default defineConfig({
 
     if (!path) throw new Error("Run npx task preview -- up or npx task mcp:preview -- up.");
 
-    // SAFETY: Our tools serialize WorkerConfig; cf validates the resolved configuration before building.
-    return JSON.parse(await readFile(path, "utf8")) as WorkerConfig;
+    const config = z
+      .object({
+        name: z.string().min(1),
+        compatibilityDate: z.string(),
+        entrypoint: z.string(),
+        env: z.record(z.string(), z.object({ type: z.string() }).passthrough()),
+      })
+      .passthrough()
+      .parse(JSON.parse(await readFile(path, "utf8")));
+
+    // SAFETY: cf/config exports WorkerConfig but no runtime decoder for its binding union.
+    // These tools serialize WorkerConfig; required fields and binding objects are checked
+    // above, and cf validates the complete config before building. Named live checks:
+    // preview -- up/test and mcp:preview -- up followed by mcp:preview:test.
+    return config as WorkerConfig;
   },
 });

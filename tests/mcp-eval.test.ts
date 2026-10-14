@@ -4,6 +4,15 @@ import { rolldown } from "rolldown";
 import { readFile } from "node:fs/promises";
 import { generateKeyPair, exportJWK, SignJWT, type JWTPayload } from "jose";
 import { z } from "zod";
+import { CallToolRequestParamsSchema, CallToolResultSchema } from "@modelcontextprotocol/core";
+import { Schema } from "effect";
+import { CollectionSchema, RecipeSchema, RecipeId } from "../src/domain.ts";
+
+const CollectionsOutput = Schema.Struct({ collections: Schema.Array(CollectionSchema) });
+
+const RecipesOutput = Schema.Struct({ recipes: Schema.Array(RecipeSchema) });
+
+const GetRecipesOutput = Schema.Struct({ ...RecipesOutput.fields, missingIds: Schema.Array(RecipeId) });
 
 let worker: Miniflare;
 
@@ -33,7 +42,7 @@ const sign = (overrides: JWTPayload = {}, key = signingKey) =>
 async function request(
   bearer: string,
   method = "tools/list",
-  params: { name?: string; arguments?: object } = {},
+  params: Partial<Pick<z.infer<typeof CallToolRequestParamsSchema>, "name" | "arguments">> = {},
   path = "/eval/mcp",
   target = "preview",
   targetOrigin = origin,
@@ -86,9 +95,9 @@ beforeAll(async () => {
 
     const output = await bundle.generate({ format: "esm" });
     await bundle.close();
-    const script = output.output.find((item) => item.type === "chunk")!;
+    const script = output.output.find((item) => item.type === "chunk");
 
-    if (script.type !== "chunk") throw new Error("Bundle missing");
+    if (!script || script.type !== "chunk") throw new Error("Bundle missing");
     workers.push({
       name,
       modules: true,
@@ -139,14 +148,22 @@ it("lets separate authorized eval threads discover collections and patch recipes
   const second = await sign({ thread_id: "eval-b", sub: "user:owner:project:meal-planning:thread:eval-b" });
   const listed = await request(first, "tools/call", { name: "list_collections", arguments: {} });
   expect(listed.status).toBe(200);
-  const collections = z.object({ result: z.any() }).parse(await listed.json()).result;
-  expect(collections.structuredContent.collections).toEqual([
+  const collections = z.object({ result: CallToolResultSchema }).parse(await listed.json()).result;
+
+  const collectionData = Schema.decodeUnknownSync(CollectionsOutput, { onExcessProperty: "error" })(
+    collections.structuredContent,
+  );
+
+  expect(collectionData.collections).toEqual([
     { id: "comfort", name: "Comfort food" },
     { id: "special", name: "Something special" },
     { id: "vegetarian", name: "Vegetarian" },
     { id: "weeknight", name: "Weeknight favorites" },
   ]);
-  expect(JSON.parse(collections.content[0].text)).toEqual(collections.structuredContent);
+  const content = collections.content[0];
+
+  if (!content || content.type !== "text") throw new Error("Missing collections text content");
+  expect(JSON.parse(content.text)).toEqual(collections.structuredContent);
 
   const created = await request(first, "tools/call", {
     name: "create_recipes",
@@ -165,7 +182,13 @@ it("lets separate authorized eval threads discover collections and patch recipes
   });
 
   expect(created.status).toBe(200);
-  const saved = z.object({ result: z.any() }).parse(await created.json()).result.structuredContent.recipes[0];
+  const createdResult = z.object({ result: CallToolResultSchema }).parse(await created.json()).result;
+
+  const saved = Schema.decodeUnknownSync(RecipesOutput, { onExcessProperty: "error" })(
+    createdResult.structuredContent,
+  ).recipes[0];
+
+  if (!saved) throw new Error("Missing created recipe");
 
   const updated = await request(second, "tools/call", {
     name: "update_recipes",
@@ -173,9 +196,13 @@ it("lets separate authorized eval threads discover collections and patch recipes
   });
 
   expect(updated.status).toBe(200);
-  expect(
-    z.object({ result: z.any() }).parse(await updated.json()).result.structuredContent.recipes[0],
-  ).toEqual({
+  const updatedResult = z.object({ result: CallToolResultSchema }).parse(await updated.json()).result;
+
+  const updatedRecipes = Schema.decodeUnknownSync(GetRecipesOutput, { onExcessProperty: "error" })(
+    updatedResult.structuredContent,
+  );
+
+  expect(updatedRecipes.recipes[0]).toEqual({
     ...saved,
     category: "Something special",
   });
@@ -185,7 +212,13 @@ it("lets separate authorized eval threads discover collections and patch recipes
     arguments: { ids: [saved.id] },
   });
 
-  expect(z.object({ result: z.any() }).parse(await read.json()).result.structuredContent.recipes[0]).toEqual({
+  const readResult = z.object({ result: CallToolResultSchema }).parse(await read.json()).result;
+
+  const readRecipes = Schema.decodeUnknownSync(GetRecipesOutput, { onExcessProperty: "error" })(
+    readResult.structuredContent,
+  );
+
+  expect(readRecipes.recipes[0]).toEqual({
     ...saved,
     category: "Something special",
   });
@@ -194,6 +227,7 @@ it("lets separate authorized eval threads discover collections and patch recipes
 it("rejects invalid identities before writes, fails closed without policy, and leaves production OAuth intact", async () => {
   const db = await worker.getD1Database("DB", "preview");
   const before = (await db.prepare("SELECT * FROM recipes ORDER BY id").all()).results;
+  const firstRecipe = Schema.decodeUnknownSync(Schema.Struct({ id: RecipeId }))(before[0]);
 
   const invalid = [
     "",
@@ -214,7 +248,7 @@ it("rejects invalid identities before writes, fails closed without policy, and l
   for (const bearer of invalid) {
     const denied = await request(bearer, "tools/call", {
       name: "update_recipes",
-      arguments: { updates: [{ id: before[0].id, changes: { title: "Must not persist" } }] },
+      arguments: { updates: [{ id: firstRecipe.id, changes: { title: "Must not persist" } }] },
     });
 
     expect(denied.status).toBe(401);

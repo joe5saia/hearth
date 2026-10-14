@@ -3,6 +3,7 @@ import { faviconSvg, logoSvg } from "./brand";
 
 const escape = (value: string) => value.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
 
+/** Render escaped client details and the opaque consent handle; OAuthProvider validates submitted consent. */
 export function consentPage(details: ConsentDescription, handle: string) {
   return `<!doctype html>
 <html lang="en">

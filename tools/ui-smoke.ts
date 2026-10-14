@@ -1,10 +1,33 @@
 import assert from "node:assert/strict";
 import { mkdir, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
+import { Schema } from "effect";
+import { HouseholdSchema } from "../src/domain.ts";
+// @ts-ignore Browser declarations exist only after task ui:setup, outside the checkout.
+import type { Browser, BrowserContext, ConsoleMessage, Locator, Page } from "/tmp/hearth-ui/node_modules/playwright/index.d.ts";
+
+declare global {
+  interface Window {
+    /** Smoke-owned writes drained before restoring household state. */
+    uiWrites: Set<Promise<Response>>;
+    /** Prevents new writes while smoke contexts shut down. */
+    uiStopping?: boolean;
+    /** Captured menu events used to diagnose pointer activation failures. */
+    optionsEvents: { type: string; target: string | null; related: string | null }[];
+    /** Original fetch restored after the deliberate aisle-save rejection. */
+    aisleFetch: typeof fetch;
+    /** Per-frame product displacement relative to its aisle heading. */
+    aisleFrameErrors: number[];
+    /** Signals completion of the aisle animation sampling period. */
+    aisleFramesDone: boolean;
+    /** Pointer modality observed by the native-touch scenario. */
+    aislePointer: string;
+  }
+}
 
 // Playwright is deliberately supplied by the UI-smoke runner, not by this project.
 // @ts-expect-error The parent task installs this exact external runtime.
-const { chromium, webkit, devices } = await import("/tmp/hearth-ui/node_modules/playwright/index.mjs");
+const { chromium, webkit, devices }: typeof import("/tmp/hearth-ui/node_modules/playwright/index.d.ts") = await import("/tmp/hearth-ui/node_modules/playwright/index.mjs");
 
 const baseURL = process.argv[2] ?? "http://localhost:5173";
 const parsed = new URL(baseURL);
@@ -17,7 +40,7 @@ await mkdir(artifacts, { recursive: true });
 type Result = { case: string; engine: string; viewport: string; check: string; status: "pass" | "fail"; detail?: string };
 const results: Result[] = [];
 const failures: string[] = [];
-const contexts: any[] = [];
+const contexts: BrowserContext[] = [];
 const tempExtraIds = new Set<string>();
 const tempExtraNames = new Set<string>();
 const changedChecks = new Set<string>();
@@ -28,10 +51,10 @@ let shot = 0;
 async function household() {
   const response = await fetch(`${root}/api/household`);
   assert(response.ok, `GET household returned ${response.status}`);
-  const data = await response.json() as any;
+  const data: unknown = await response.json();
+  assert(Schema.is(HouseholdSchema)(data), "Expected a valid household snapshot");
   // Check rows have no display order; toggling a selected item may change D1 insertion order.
-  data.checks.sort((a: any, b: any) => a.key.localeCompare(b.key));
-  return data;
+  return { ...data, checks: [...data.checks].sort((a, b) => a.key.localeCompare(b.key)) };
 }
 const original = await household();
 const originalText = JSON.stringify(original);
@@ -42,7 +65,7 @@ async function api(path: string, method: string, body?: unknown) {
     headers: { "content-type": "application/json" },
     body: body === undefined ? undefined : JSON.stringify(body),
   });
-  assert(response.ok, `${method} ${path} returned ${response.status}: ${await response.text()}`);
+  assert(response.ok, `${method} ${path} returned ${response.status}`);
 }
 
 function record(caseName: string, engine: string, viewport: string, check: string, error?: unknown) {
@@ -62,7 +85,7 @@ async function check(caseName: string, engine: string, viewport: string, name: s
   }
 }
 
-async function settle(page: any) {
+async function settle(page: Page) {
   await page.waitForLoadState("domcontentloaded");
   await page.locator("h1:visible, .shopping-summary strong:visible").first().waitFor({ state: "visible" });
   await page.evaluate(async () => {
@@ -71,7 +94,7 @@ async function settle(page: any) {
   });
 }
 
-async function auditLayout(page: any, touch: boolean) {
+async function auditLayout(page: Page, touch: boolean) {
   const problems = await page.evaluate((expectTouch: boolean) => {
     const visible = (element: Element) => {
       const style = getComputedStyle(element);
@@ -118,24 +141,27 @@ async function auditLayout(page: any, touch: boolean) {
   if (touch) assert.equal(problems.coarse, true, "touch profile must match pointer: coarse");
 }
 
-async function screenshot(page: any, name: string) {
+async function screenshot(page: Page, name: string) {
   await page.screenshot({ path: resolve(artifacts, `${String(++shot).padStart(2, "0")}-${name}.png`), fullPage: false });
 }
 
-async function activate(locator: any, touch: boolean) {
+async function activate(locator: Locator, touch: boolean) {
   await locator.scrollIntoViewIfNeeded();
   touch ? await locator.tap() : await locator.click();
 }
 
-async function cancelDialog(page: any) {
+async function cancelDialog(page: Page) {
   const dialog = page.locator("dialog[open]").last();
   const title = await dialog.getAttribute("aria-label");
+  assert(title, "Open dialogs must expose an accessible title");
   await dialog.getByRole("button", { name: "Close dialog" }).click();
   await page.getByRole("dialog", { name: title, exact: true }).waitFor({ state: "detached" });
 }
 
-async function commonNavigation(page: any, touch: boolean, label: string, capture: boolean) {
-  await check(label, page.context().browser()?.browserType().name() ?? "webkit", `${page.viewportSize().width}×${page.viewportSize().height}`, "meal plan navigation, date disclosure, and unsaved meal cancellation", async () => {
+async function commonNavigation(page: Page, touch: boolean, label: string, capture: boolean) {
+  const viewport = page.viewportSize();
+  assert(viewport, "Navigation scenario requires a viewport");
+  await check(label, page.context().browser()?.browserType().name() ?? "webkit", `${viewport.width}×${viewport.height}`, "meal plan navigation, date disclosure, and unsaved meal cancellation", async () => {
     await page.goto(`${root}/#plan`); await settle(page);
     const currentWeek = await page.locator(".week-picker h2").textContent();
     await activate(page.getByRole("button", { name: "Next week" }), touch);
@@ -178,7 +204,9 @@ async function commonNavigation(page: any, touch: boolean, label: string, captur
     for (const control of [dialog.getByLabel("Date", { exact: true }), dialog.getByRole("combobox", { name: /^Meal/ })]) {
       assert(await control.evaluate((element: HTMLElement) => {
         const box = element.getBoundingClientRect();
-        const label = element.closest("label")!.getBoundingClientRect();
+        const parent = element.closest("label");
+        if (!parent) throw new Error("Date and meal controls must have a containing label");
+        const label = parent.getBoundingClientRect();
         return box.left >= label.left && box.right <= label.right + 1;
       }), "date and meal controls must stay inside their own columns");
     }
@@ -189,7 +217,7 @@ async function commonNavigation(page: any, touch: boolean, label: string, captur
     await cancelDialog(page);
   });
 
-  await check(label, page.context().browser()?.browserType().name() ?? "webkit", `${page.viewportSize().width}×${page.viewportSize().height}`, "planned recipe opens shared fullscreen details and preserves nested meal drafts", async () => {
+  await check(label, page.context().browser()?.browserType().name() ?? "webkit", `${viewport.width}×${viewport.height}`, "planned recipe opens shared fullscreen details and preserves nested meal drafts", async () => {
     const card = page.locator(".meal-card:not(.note-only-card)").first();
     const title = await card.locator("h3").textContent();
     await activate(card, touch);
@@ -197,8 +225,10 @@ async function commonNavigation(page: any, touch: boolean, label: string, captur
     await detail.waitFor();
     assert.equal(await detail.locator("h1").textContent(), title);
     const bounds = await detail.boundingBox();
-    assert.equal(bounds.width, page.viewportSize().width);
-    assert.equal(bounds.height, page.viewportSize().height);
+    const detailViewport = page.viewportSize();
+    assert(bounds && detailViewport, "Recipe details require a visible box and configured viewport");
+    assert.equal(bounds.width, detailViewport.width);
+    assert.equal(bounds.height, detailViewport.height);
     assert(await detail.getByRole("button", { name: "Edit recipe", exact: true }).isVisible());
     await auditLayout(page, touch);
     if (capture) await screenshot(page, `${label}-planned-recipe-detail`);
@@ -210,20 +240,24 @@ async function commonNavigation(page: any, touch: boolean, label: string, captur
     const meal = page.getByRole("dialog", { name: "Edit meal" });
     await meal.waitFor();
     const viewport = page.viewportSize();
+    assert(viewport, "Meal editor requires a configured viewport");
     const mobileEditor = viewport.width <= 850 || touch && viewport.height <= 500;
     const editorBounds = await meal.boundingBox();
+    assert(editorBounds, "Meal editor must have a visible box");
     if (mobileEditor) {
       assert.deepEqual(editorBounds, { x: 0, y: 0, ...viewport }, "mobile meal editor fills the viewport");
       const heading = await meal.locator(".modal-heading").boundingBox();
       const footer = await meal.locator(".form-actions").boundingBox();
       const fields = meal.locator(".meal-form-fields");
       const fieldBounds = await fields.boundingBox();
+      assert(heading && footer && fieldBounds, "Meal editor header, footer and fields must have visible boxes");
       assert(fieldBounds.y >= heading.y + heading.height, "fields start below the fixed header");
       assert(fieldBounds.y + fieldBounds.height <= footer.y, "footer must not overlay scrolling fields");
       await fields.evaluate((element: HTMLElement) => { element.scrollTop = element.scrollHeight; });
       assert.deepEqual(await meal.locator(".modal-heading").boundingBox(), heading);
       assert.deepEqual(await meal.locator(".form-actions").boundingBox(), footer);
       const note = await meal.getByLabel(/note for this meal/i).boundingBox();
+      assert(note, "Meal note must have a visible box");
       assert(note.y + note.height <= footer.y, "last field stays fully reachable above the footer");
       if (capture) await screenshot(page, `${label}-fullscreen-meal-scrolled`);
       await fields.evaluate((element: HTMLElement) => { element.scrollTop = 0; });
@@ -254,7 +288,7 @@ async function commonNavigation(page: any, touch: boolean, label: string, captur
     await cancelDialog(page);
   });
 
-  await check(label, page.context().browser()?.browserType().name() ?? "webkit", `${page.viewportSize().width}×${page.viewportSize().height}`, "recipes search, detail, scale, nested meal preview, and editor cancellation", async () => {
+  await check(label, page.context().browser()?.browserType().name() ?? "webkit", `${viewport.width}×${viewport.height}`, "recipes search, detail, scale, nested meal preview, and editor cancellation", async () => {
     await page.goto(`${root}/#recipes`); await settle(page);
     const search = page.getByLabel("Search recipes");
     await search.fill("__no_recipe_should_match__");
@@ -318,7 +352,7 @@ async function commonNavigation(page: any, touch: boolean, label: string, captur
     }
   });
 
-  await check(label, page.context().browser()?.browserType().name() ?? "webkit", `${page.viewportSize().width}×${page.viewportSize().height}`, "groceries catalog and unsaved grocery cancellation", async () => {
+  await check(label, page.context().browser()?.browserType().name() ?? "webkit", `${viewport.width}×${viewport.height}`, "groceries catalog and unsaved grocery cancellation", async () => {
     await page.goto(`${root}/#groceries`); await settle(page);
     const add = page.getByRole("button", { name: /add grocery item/i }).first();
     if (await add.count()) {
@@ -330,21 +364,24 @@ async function commonNavigation(page: any, touch: boolean, label: string, captur
   });
 }
 
-async function shoppingAndTimers(page: any, touch: boolean, label: string, capture: boolean) {
-  await check(label, page.context().browser()?.browserType().name() ?? "webkit", `${page.viewportSize().width}×${page.viewportSize().height}`, "focused page-options menu activates Arrange route with pointer input", async () => {
+async function shoppingAndTimers(page: Page, touch: boolean, label: string, capture: boolean) {
+  const viewport = page.viewportSize();
+  assert(viewport, "Shopping and timers scenario requires a viewport");
+  await check(label, page.context().browser()?.browserType().name() ?? "webkit", `${viewport.width}×${viewport.height}`, "focused page-options menu activates Arrange route with pointer input", async () => {
     await page.goto(`${root}/#shopping`); await settle(page);
     const options = page.getByLabel("Page options", { exact: true });
     await options.focus();
     await page.keyboard.press("Enter");
     await page.evaluate(() => {
-      const menu = document.querySelector(".page-options")!;
-      (window as any).optionsEvents = [];
+      const menu = document.querySelector(".page-options");
+      if (!menu) throw new Error("Page options menu is missing");
+      window.optionsEvents = [];
       for (const type of ["pointerdown", "focusout", "click"]) menu.addEventListener(type, (event: Event) => {
-        (window as any).optionsEvents.push({ type, target: (event.target as HTMLElement).tagName, related: (event as FocusEvent).relatedTarget instanceof HTMLElement ? ((event as FocusEvent).relatedTarget as HTMLElement).tagName : null });
+        window.optionsEvents.push({ type, target: event.target instanceof Element ? event.target.tagName : null, related: event instanceof FocusEvent && event.relatedTarget instanceof Element ? event.relatedTarget.tagName : null });
       }, { capture: true });
     });
     await activate(page.getByRole("button", { name: "Arrange route", exact: true }), touch);
-    assert(await page.locator(".route-editor").isVisible(), `Arrange route did not activate: ${JSON.stringify(await page.evaluate(() => (window as any).optionsEvents))}`);
+    assert(await page.locator(".route-editor").isVisible(), `Arrange route did not activate: ${JSON.stringify(await page.evaluate(() => window.optionsEvents))}`);
     await activate(options, touch);
     await activate(page.getByRole("button", { name: "Done arranging", exact: true }), touch);
     assert.equal(await page.locator(".route-editor").count(), 0);
@@ -352,13 +389,15 @@ async function shoppingAndTimers(page: any, touch: boolean, label: string, captu
     await page.keyboard.press("Enter");
     // Exercise browsers that clear focus rather than focusing a pointer-activated menu button.
     await page.evaluate(() => {
-      document.querySelector(".page-options-menu button")!.addEventListener("pointerdown", event => {
+      const button = document.querySelector(".page-options-menu button");
+      if (!button) throw new Error("Page options button is missing");
+      button.addEventListener("pointerdown", event => {
         event.preventDefault();
         if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
       }, { once: true });
     });
     await activate(page.getByRole("button", { name: "Arrange route", exact: true }), touch);
-    assert(await page.locator(".route-editor").isVisible(), `Focus loss swallowed Arrange route: ${JSON.stringify(await page.evaluate(() => (window as any).optionsEvents))}`);
+    assert(await page.locator(".route-editor").isVisible(), `Focus loss swallowed Arrange route: ${JSON.stringify(await page.evaluate(() => window.optionsEvents))}`);
     await activate(options, touch);
     await activate(page.getByRole("button", { name: "Done arranging", exact: true }), touch);
     await activate(options, touch);
@@ -369,7 +408,7 @@ async function shoppingAndTimers(page: any, touch: boolean, label: string, captu
     await page.getByLabel("New household item").focus();
     assert.equal(await page.locator(".page-options").getAttribute("open"), null, "moving keyboard focus outside must dismiss the menu");
   });
-  await check(label, page.context().browser()?.browserType().name() ?? "webkit", `${page.viewportSize().width}×${page.viewportSize().height}`, "List Builder, details/grips, membership persistence and route recovery", async () => {
+  await check(label, page.context().browser()?.browserType().name() ?? "webkit", `${viewport.width}×${viewport.height}`, "List Builder, details/grips, membership persistence and route recovery", async () => {
     await page.goto(`${root}/#shopping`); await settle(page);
     assert.equal(await page.locator(".shopping-range").count(), 0);
     await activate(page.getByRole("button", { name: "List Builder", exact: true }), touch);
@@ -380,12 +419,12 @@ async function shoppingAndTimers(page: any, touch: boolean, label: string, captu
     await activate(page.getByRole("button", { name: "Add household item" }), touch);
     const removeExtra = page.getByRole("button", { name: `Remove ${extraName}` });
     await removeExtra.waitFor();
-    const addedExtra = (await household()).extras.find((entry: any) => entry.name === extraName);
+    const addedExtra = (await household()).extras.find((entry) => entry.name === extraName);
     assert(addedExtra, "temporary household extra was not persisted");
     tempExtraIds.add(addedExtra.id);
     await activate(removeExtra, touch);
     await removeExtra.waitFor({ state: "detached" });
-    assert(!(await household()).extras.some((entry: any) => entry.id === addedExtra.id), "own extra was not removed");
+    assert(!(await household()).extras.some((entry) => entry.id === addedExtra.id), "own extra was not removed");
     tempExtraIds.delete(addedExtra.id);
     const grips = page.locator('[aria-label^="Drag "]');
     const details = page.locator('[aria-label^="Details for "]');
@@ -403,14 +442,15 @@ async function shoppingAndTimers(page: any, touch: boolean, label: string, captu
       await activate(box, touch);
       await page.locator(".shopping-save-status").waitFor({ state: "detached" });
       const current = await household();
-      for (const key of new Set([...current.checks.map((entry: any) => entry.key), ...original.checks.map((entry: any) => entry.key)])) {
+      for (const key of new Set([...current.checks.map((entry) => entry.key), ...original.checks.map((entry) => entry.key)])) {
         const fallback = key.startsWith('["shopping-list",') ? 1 : 0;
-        const before = original.checks.find((entry: any) => entry.key === key)?.checked ?? fallback;
-        const after = current.checks.find((entry: any) => entry.key === key)?.checked ?? fallback;
+        const before = original.checks.find((entry) => entry.key === key)?.checked ?? fallback;
+        const after = current.checks.find((entry) => entry.key === key)?.checked ?? fallback;
         if (before !== after) changedChecks.add(key);
       }
       assert.equal(await page.locator(".purchase-row").count(), original.groceries.length, "Builder must always show every grocery");
-      const restored = page.getByLabel(name!); await restored.waitFor();
+      assert(name !== null, "Shopping checkbox must have an accessible label");
+      const restored = page.getByLabel(name); await restored.waitFor();
       if ((await restored.isChecked()) !== was) await activate(restored, touch);
       await page.locator(".shopping-save-status").waitFor({ state: "detached" });
     }
@@ -428,7 +468,7 @@ async function shoppingAndTimers(page: any, touch: boolean, label: string, captu
     await auditLayout(page, touch);
   });
 
-  await check(label, page.context().browser()?.browserType().name() ?? "webkit", `${page.viewportSize().width}×${page.viewportSize().height}`, "catalog package size, product disclosure, and no single-item grips", async () => {
+  await check(label, page.context().browser()?.browserType().name() ?? "webkit", `${viewport.width}×${viewport.height}`, "catalog package size, product disclosure, and no single-item grips", async () => {
     await activate(page.getByRole("button", { name: "List Builder", exact: true }), touch);
     const counts = await page.locator(".purchase-group").evaluateAll((groups: Element[]) => groups.map(group => ({
       linked: group.getAttribute("aria-label") !== "Needs linking",
@@ -438,18 +478,21 @@ async function shoppingAndTimers(page: any, touch: boolean, label: string, captu
     for (const group of counts) assert.equal(group.grips, group.linked && group.rows > 1 ? group.rows : 0);
     assert.equal(await page.locator(".purchase-review,.purchase-need").count(), 0);
     const product = page.locator(".purchase-row").first();
-    const compactHeight = (await product.boundingBox()).height;
-    if (page.viewportSize().width >= 393) assert(compactHeight <= 82, `collapsed warning row is too tall: ${compactHeight}px`);
+    const compactBox = await product.boundingBox();
+    const compactViewport = page.viewportSize();
+    assert(compactBox && compactViewport, "Compact product requires a visible box and configured viewport");
+    const compactHeight = compactBox.height;
+    if (compactViewport.width >= 393) assert(compactHeight <= 82, `collapsed warning row is too tall: ${compactHeight}px`);
     await activate(product.locator("summary"), touch);
     assert(await product.getByRole("button", { name: "Edit product" }).isVisible());
     await auditLayout(page, touch);
     if (capture) await screenshot(page, `${label}-product-expanded`);
     await activate(product.locator("summary"), touch);
-    assert.equal((await product.boundingBox()).height, compactHeight);
+    assert.equal((await product.boundingBox())?.height, compactHeight);
     if (capture) await screenshot(page, `${label}-builder-compact`);
   });
 
-  await check(label, page.context().browser()?.browserType().name() ?? "webkit", `${page.viewportSize().width}×${page.viewportSize().height}`, "timer create, persistence, edit draft cancellation, focus, and cleanup", async () => {
+  await check(label, page.context().browser()?.browserType().name() ?? "webkit", `${viewport.width}×${viewport.height}`, "timer create, persistence, edit draft cancellation, focus, and cleanup", async () => {
     await page.goto(`${root}/#plan`); await settle(page);
     await activate(page.locator(".timer-toggle"), touch);
     const panel = page.getByLabel("Kitchen timers"); await panel.waitFor();
@@ -469,7 +512,7 @@ async function shoppingAndTimers(page: any, touch: boolean, label: string, captu
     await activate(panel.getByRole("button", { name: "Collapse timers" }), touch);
     await auditLayout(page, touch);
   });
-  await check(label, page.context().browser()?.browserType().name() ?? "webkit", `${page.viewportSize().width}×${page.viewportSize().height}`, `pointer drag, persisted insertion, ${touch ? "rotation cancellation, " : ""}keyboard arrows, quantities and checks preserved`, async () => {
+  await check(label, page.context().browser()?.browserType().name() ?? "webkit", `${viewport.width}×${viewport.height}`, `pointer drag, persisted insertion, ${touch ? "rotation cancellation, " : ""}keyboard arrows, quantities and checks preserved`, async () => {
     await page.goto(`${root}/#shopping`); await settle(page);
     await activate(page.getByRole("button", { name: "List Builder", exact: true }), touch);
     const before = await household();
@@ -484,9 +527,11 @@ async function shoppingAndTimers(page: any, touch: boolean, label: string, captu
     await grip.evaluate((element: HTMLElement) => element.scrollIntoView({ block: "center" }));
     await page.evaluate(() => new Promise(done => requestAnimationFrame(() => requestAnimationFrame(done))));
     const gripBox = await grip.boundingBox();
+    assert(gripBox, "Product drag grip must have a visible box");
     assert(gripBox.width >= 44 && gripBox.height >= 44, "drag target must remain at least 44px");
     const start = { x: gripBox.x + gripBox.width / 2, y: gripBox.y + gripBox.height / 2 };
     const destination = await group.locator(".purchase-row").last().boundingBox();
+    assert(destination, "Product drag destination must have a visible box");
     const hit = await page.evaluate(({ x, y }: { x: number; y: number }) => {
       const element = document.elementFromPoint(x, y);
       return { grip: !!element?.closest(".route-drag"), element: `${element?.tagName}.${element?.getAttribute("class")}`, scroll: scrollY };
@@ -507,8 +552,15 @@ async function shoppingAndTimers(page: any, touch: boolean, label: string, captu
     const committed = await household();
     assert.deepEqual(committed.checks, before.checks);
     assert.deepEqual(committed.shoppingOrder.aisles, before.shoppingOrder.aisles);
-    const ids = committed.shoppingOrder.items.map((key: string) => JSON.parse(key)[1]);
-    const persistedNames = ids.filter((id: string) => originalNames.includes(committed.groceries.find((item: any) => item.id === id)?.name)).map((id: string) => committed.groceries.find((item: any) => item.id === id).name);
+    const ids = committed.shoppingOrder.items.map((key) => {
+      const parsed: unknown = JSON.parse(key);
+      assert(Array.isArray(parsed) && typeof parsed[1] === "string", "Saved item key must contain a grocery ID");
+      return parsed[1];
+    });
+    const persistedNames = ids.flatMap((id) => {
+      const product = committed.groceries.find((item) => item.id === id);
+      return product && originalNames.includes(product.name) ? [product.name] : [];
+    });
     assert.deepEqual(persistedNames, [...originalNames.slice(1), originalNames[0]], "Worker must persist insertion, not a swap");
     await page.reload(); await settle(page);
     assert(await page.getByRole("button", { name: "Exit List Builder", exact: true }).isVisible(), "reload preserves List Builder mode");
@@ -516,9 +568,11 @@ async function shoppingAndTimers(page: any, touch: boolean, label: string, captu
     assert.deepEqual(await names(), persistedNames, "reload must retain the route");
     if (touch) {
       const viewport = page.viewportSize();
+      assert(viewport, "Rotation scenario requires a configured viewport");
       await grip.evaluate((element: HTMLElement) => element.scrollIntoView({ block: "center" }));
       await page.evaluate(() => new Promise(done => requestAnimationFrame(() => requestAnimationFrame(done))));
       const box = await grip.boundingBox();
+      assert(box, "Rotation drag grip must have a visible box");
       await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2); await page.mouse.down();
       await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2 + 12);
       await page.waitForTimeout(50);
@@ -548,7 +602,7 @@ async function shoppingAndTimers(page: any, touch: boolean, label: string, captu
     assert.deepEqual((await household()).checks, before.checks);
     await activate(page.getByRole("button", { name: "Exit List Builder" }), touch);
   });
-  await check(label, page.context().browser()?.browserType().name() ?? "webkit", `${page.viewportSize().width}×${page.viewportSize().height}`, "whole-aisle dragging, rename, cancellation and reload persistence", async () => {
+  await check(label, page.context().browser()?.browserType().name() ?? "webkit", `${viewport.width}×${viewport.height}`, "whole-aisle dragging, rename, cancellation and reload persistence", async () => {
     await page.reload(); await settle(page);
     await activate(page.getByLabel("Page options", { exact: true }), touch);
     await activate(page.getByRole("button", { name: "Arrange route" }), touch);
@@ -561,11 +615,13 @@ async function shoppingAndTimers(page: any, touch: boolean, label: string, captu
     const grip = sections.nth(sourceIndex).locator(".aisle-heading > .route-drag");
     await grip.scrollIntoViewIfNeeded();
     const box = await grip.boundingBox();
+    assert(box, "Aisle drag grip must have a visible box");
     await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
     await page.mouse.down();
     await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2 - 12);
     await sections.first().evaluate((element: HTMLElement) => element.scrollIntoView({ block: "center" }));
     const target = await sections.first().boundingBox();
+    assert(target, "Aisle drag destination must have a visible box");
     await page.mouse.move(box.x + box.width / 2, target.y + target.height / 2 - 10, { steps: 15 });
     await page.waitForFunction(() => !!document.querySelector(".route-aisle.drop-target"));
     if (capture) await screenshot(page, `${label}-aisle-dragging`);
@@ -578,9 +634,11 @@ async function shoppingAndTimers(page: any, touch: boolean, label: string, captu
     assert.deepEqual(moved.groceries, before.groceries);
     assert.deepEqual(moved.checks, before.checks);
     const viewport = page.viewportSize();
+    assert(viewport, "Resize scenario requires a configured viewport");
     const cancelGrip = sections.first().locator(".aisle-heading > .route-drag");
     await cancelGrip.scrollIntoViewIfNeeded();
     const cancelBox = await cancelGrip.boundingBox();
+    assert(cancelBox, "Canceled aisle drag grip must have a visible box");
     await page.mouse.move(cancelBox.x + 22, cancelBox.y + 22);
     await page.mouse.down();
     await page.mouse.move(cancelBox.x + 22, cancelBox.y + 40);
@@ -593,17 +651,19 @@ async function shoppingAndTimers(page: any, touch: boolean, label: string, captu
     await page.waitForFunction(() => !document.getAnimations().some(animation => animation.playState === "running"));
     await page.evaluate(() => {
       const fetch = window.fetch;
-      (window as any).aisleFetch = fetch;
+      window.aisleFetch = fetch;
       window.fetch = (...args) => String(args[0]).endsWith("/api/shopping-order") && args[1]?.method === "PUT"
         ? new Promise((_, reject) => setTimeout(() => reject(new Error("Aisle smoke rejected save")), 80)) : fetch(...args);
     });
     try {
       await page.evaluate(() => {
-        const aisle = document.querySelector(".route-aisle")!;
-        const product = aisle.querySelector(".route-product")!;
+        const aisle = document.querySelector(".route-aisle");
+        if (!aisle) throw new Error("Route aisle is missing");
+        const product = aisle.querySelector(".route-product");
+        if (!product) throw new Error("Route product is missing");
         const relativeTop = product.getBoundingClientRect().top - aisle.getBoundingClientRect().top;
         const start = performance.now();
-        const w = window as any;
+        const w = window;
         w.aisleFrameErrors = [];
         w.aisleFramesDone = false;
         const sample = () => {
@@ -614,13 +674,13 @@ async function shoppingAndTimers(page: any, touch: boolean, label: string, captu
         sample();
       });
       await activate(sections.first().locator('.aisle-heading button[aria-label$="down"]'), touch);
-      await page.waitForFunction(() => (window as any).aisleFramesDone);
+      await page.waitForFunction(() => window.aisleFramesDone);
       await page.locator(".shopping-save-status").waitFor({ state: "detached" });
       assert.deepEqual(await names(), [initial[2], initial[0], initial[1], ...initial.slice(3)]);
-      assert(await page.evaluate(() => (window as any).aisleFrameErrors.every((offset: number) => offset < 1)), "aisle animation/rollback must move products together with their heading");
+      assert(await page.evaluate(() => window.aisleFrameErrors.every((offset) => offset < 1)), "aisle animation/rollback must move products together with their heading");
       assert.deepEqual((await household()).shoppingOrder, moved.shoppingOrder);
     } finally {
-      await page.evaluate(() => { window.fetch = (window as any).aisleFetch; });
+      await page.evaluate(() => { window.fetch = window.aisleFetch; });
     }
     await page.reload(); await settle(page);
     await page.locator(".route-aisle").first().waitFor();
@@ -633,12 +693,13 @@ async function shoppingAndTimers(page: any, touch: boolean, label: string, captu
         await touchGrip.scrollIntoViewIfNeeded();
         const touchBox = await touchGrip.boundingBox();
         const touchTarget = await sections.nth(2).boundingBox();
-        await page.evaluate(() => { (window as any).aislePointer = ""; document.addEventListener("pointerdown", event => { (window as any).aislePointer = event.pointerType; }, { once: true }); });
+        assert(touchBox && touchTarget, "Touch aisle drag requires visible grip and destination boxes");
+        await page.evaluate(() => { window.aislePointer = ""; document.addEventListener("pointerdown", event => { window.aislePointer = event.pointerType; }, { once: true }); });
         await cdp.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x: touchBox.x + 22, y: touchBox.y + 22 }] });
         await page.waitForFunction(() => !!document.querySelector(".route-aisle.is-dragging"));
         await cdp.send("Input.dispatchTouchEvent", { type: "touchMove", touchPoints: [{ x: touchBox.x + 22, y: touchTarget.y + touchTarget.height / 2 + 10 }] });
         await page.waitForFunction(() => !!document.querySelector(".route-aisle.drop-target"));
-        assert.equal(await page.evaluate(() => (window as any).aislePointer), "touch");
+        assert.equal(await page.evaluate(() => window.aislePointer), "touch");
         await cdp.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
         await page.locator(".shopping-save-status").waitFor({ state: "detached" });
         assert.deepEqual((await household()).shoppingOrder, { ...moved.shoppingOrder, aisles: [moved.shoppingOrder.aisles[0], moved.shoppingOrder.aisles[2], moved.shoppingOrder.aisles[1], ...moved.shoppingOrder.aisles.slice(3)] });
@@ -665,7 +726,7 @@ async function shoppingAndTimers(page: any, touch: boolean, label: string, captu
     await activate(page.getByRole("button", { name: "Save", exact: true }), touch);
     await page.getByLabel("Aisle name", { exact: true }).waitFor({ state: "detached" });
     const renamed = await household();
-    assert.deepEqual(renamed.groceries, before.groceries.map((item: any) => item.aisle === oldName ? { ...item, aisle: newName } : item));
+    assert.deepEqual(renamed.groceries, before.groceries.map((item) => item.aisle === oldName ? { ...item, aisle: newName } : item));
     assert.deepEqual(renamed.shoppingOrder, { ...moved.shoppingOrder, aisles: [newName, ...moved.shoppingOrder.aisles.slice(1)] });
     assert.deepEqual(renamed.checks, before.checks);
     await page.reload(); await settle(page);
@@ -686,13 +747,13 @@ async function shoppingAndTimers(page: any, touch: boolean, label: string, captu
 }
 
 const consoleErrors: string[] = [];
-async function makeContext(browser: any, viewport: { width: number; height: number }, touch: boolean, mobile: boolean) {
+async function makeContext(browser: Browser, viewport: { width: number; height: number }, touch: boolean, mobile: boolean) {
   const profile = mobile ? devices[viewport.width >= 768 && viewport.height >= 600 ? "iPad (gen 7)" : "iPhone 14"] : {};
   const context = await browser.newContext({ ...profile, viewport, deviceScaleFactor: 2, hasTouch: touch, isMobile: mobile });
   context.setDefaultTimeout(10_000);
   contexts.push(context);
   await context.addInitScript(() => {
-    const w = window as any;
+    const w = window;
     const fetch = window.fetch;
     w.uiWrites = new Set();
     window.fetch = (...args) => {
@@ -707,18 +768,18 @@ async function makeContext(browser: any, viewport: { width: number; height: numb
     };
   });
   const page = await context.newPage();
-  page.on("console", (message: any) => { if (message.type() === "error") consoleErrors.push(message.text()); });
+  page.on("console", (message: ConsoleMessage) => { if (message.type() === "error") consoleErrors.push(message.text()); });
   page.on("pageerror", (error: Error) => consoleErrors.push(error.message));
   return { context, page };
 }
 
-async function closeContext(context: any) {
+async function closeContext(context: BrowserContext) {
   for (const page of context.pages()) {
     await page.evaluate(async () => {
-      const w = window as any;
+      const w = window;
       w.uiStopping = true;
       await Promise.allSettled([...(w.uiWrites ?? [])]);
-    }).catch(error => failures.push(`Write-drain cleanup: ${error.message}`));
+    }).catch((error: unknown) => failures.push(`Write-drain cleanup: ${error instanceof Error ? error.message : String(error)}`));
   }
   await context.close();
 }
@@ -784,10 +845,12 @@ try {
       const heading = await zoom.locator(".modal-heading").boundingBox();
       const timer = await zoom.locator(".timer-header").boundingBox();
       const close = await zoom.getByRole("button", { name: "Close dialog" }).boundingBox();
+      assert(heading && timer && close, "Timer and dialog header controls must have visible boxes");
       assert(timer.y >= close.y + close.height, "active timer must use its own header row");
       assert(timer.y + timer.height <= heading.y + heading.height, "timer must stay inside the dialog header");
       for (const button of await zoom.locator(".timer-header-actions button").all()) {
         const bounds = await button.boundingBox();
+        assert(bounds, "Timer button must have a visible box");
         assert(bounds.width >= 44 && bounds.height >= 44);
       }
       await screenshot(zoom, "active-modal-320");
@@ -802,6 +865,7 @@ try {
         for (const label of await zoom.locator(".nav-label").all()) {
           const bounds = await label.boundingBox();
           const parent = await label.locator("..").boundingBox();
+          assert(bounds && parent, "Navigation label and target must have visible boxes");
           assert(bounds.x >= parent.x && bounds.x + bounds.width <= parent.x + parent.width + 1, "tab text must wrap within its target");
         }
         assert(await zoom.locator(".timer-toggle strong").evaluate((element: HTMLElement) => element.scrollWidth <= element.clientWidth), "countdown must not clip");
@@ -819,17 +883,17 @@ try {
   // Browser writes are drained and contexts closed before restoring the exact snapshot.
   try {
     for (const [from, to] of renamedAisles) {
-      if ((await household()).groceries.some((item: any) => item.aisle === from))
+      if ((await household()).groceries.some((item) => item.aisle === from))
         await api("shopping-aisles", "PUT", { from, to });
     }
     const current = await household();
     for (const extra of current.extras) if (tempExtraIds.has(extra.id) || tempExtraNames.has(extra.name)) await api(`extras/${encodeURIComponent(extra.id)}`, "DELETE");
     if (changedOrder && JSON.stringify(current.shoppingOrder) !== JSON.stringify(original.shoppingOrder)) await api("shopping-order", "PUT", original.shoppingOrder);
-    const allCheckKeys = new Set([...changedChecks, ...current.checks.map((entry: any) => entry.key), ...original.checks.map((entry: any) => entry.key)]);
+    const allCheckKeys = new Set([...changedChecks, ...current.checks.map((entry) => entry.key), ...original.checks.map((entry) => entry.key)]);
     for (const key of allCheckKeys) {
       const fallback = key.startsWith('["shopping-list",') ? 1 : 0;
-      const wanted = original.checks.find((entry: any) => entry.key === key)?.checked ?? fallback;
-      const now = current.checks.find((entry: any) => entry.key === key)?.checked ?? fallback;
+      const wanted = original.checks.find((entry) => entry.key === key)?.checked ?? fallback;
+      const now = current.checks.find((entry) => entry.key === key)?.checked ?? fallback;
       if (wanted !== now) await api("checks", "PUT", { key, checked: wanted });
     }
     const restored = await household();

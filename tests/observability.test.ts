@@ -151,11 +151,17 @@ it("exports correlated request, D1 and decode spans without household content", 
     .toBe(true);
   await expect.poll(() => traces.some((s) => s.traceId === traceId && s.name === "GET household")).toBe(true);
   const requestSpans = traces.filter((s) => s.traceId === traceId);
-  const root = requestSpans.find((s) => s.name === "GET household")!;
+  const root = requestSpans.find((s) => s.name === "GET household");
+
+  if (!root) throw new Error("Missing GET household span");
   expect(root.parentSpanId).toBeUndefined();
-  const api = requestSpans.find((s) => s.name === "api.operation")!;
+  const api = requestSpans.find((s) => s.name === "api.operation");
+
+  if (!api) throw new Error("Missing api.operation span");
   expect(api.parentSpanId).toBe(root.spanId);
-  const household = requestSpans.find((s) => s.name === "household.load")!;
+  const household = requestSpans.find((s) => s.name === "household.load");
+
+  if (!household) throw new Error("Missing household.load span");
   expect(household.parentSpanId).toBe(api.spanId);
   expect(requestSpans.find((s) => s.name === "db.call")?.parentSpanId).toBe(household.spanId);
   expect(events.find((e) => e.requestId === requestId && e.event === "database_call")).toMatchObject({

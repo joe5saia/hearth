@@ -1,5 +1,6 @@
 import { defineConfig } from "oxlint";
 
+/** Applies the vendored first-party rules while excluding tooling and generated infrastructure. */
 export default defineConfig({
   ignorePatterns: ["tools/**", ".alchemy/**", ".cloudflare/**", "dist/**", ".amp/**"],
   jsPlugins: [{ name: "anti-slop", specifier: "./tools/oxlint/anti-slop/index.ts" }],

@@ -1,10 +1,14 @@
 import assert from "node:assert/strict";
 import { readFile, writeFile } from "node:fs/promises";
 import { randomBytes, createHash } from "node:crypto";
+import { Buffer } from "node:buffer";
+import { Schema } from "effect";
+import { z } from "zod";
+import { CollectionSchema, GroceryItemSchema, RecipeSchema, IngredientSchema, MealSchema, ExtraSchema, ShoppingNeedSchema, ShoppingOrderSchema, MatchReportSchema } from "../src/domain.ts";
 
 const root = ".wrangler/mcp-preview";
-const state = JSON.parse(await readFile(`${root}/state.json`, "utf8"));
-const origin: string = state.url;
+const state = z.object({ url: z.url(), client_id: z.string(), client_secret: z.string() }).parse(JSON.parse(await readFile(`${root}/state.json`, "utf8")));
+const origin = state.url;
 const accessHeaders = { "CF-Access-Client-Id": state.client_id, "CF-Access-Client-Secret": state.client_secret };
 const redirectUri = "http://localhost:3456/callback";
 
@@ -16,11 +20,11 @@ async function request(path: string, init: RequestInit = {}) {
 
 async function login() {
   const resource = await request("/.well-known/oauth-protected-resource/mcp");
-  const scopes = (await resource.json()).scopes_supported as string[];
+  const { scopes_supported: scopes } = z.object({ scopes_supported: z.array(z.string()) }).parse(await resource.json());
   assert.deepEqual(scopes, ["recipes"], "Single household scope advertised");
   const clientId = `${origin}/test-client.json`;
-  const verifier = randomBytes(48).toString("base64url");
-  const oauthState = randomBytes(24).toString("base64url");
+  const verifier = Buffer.from(randomBytes(48)).toString("base64url");
+  const oauthState = Buffer.from(randomBytes(24)).toString("base64url");
   const query = new URLSearchParams({ client_id: clientId, redirect_uri: redirectUri, response_type: "code", scope: scopes.join(" "), resource: `${origin}/mcp`, code_challenge: createHash("sha256").update(verifier).digest("base64url"), code_challenge_method: "S256", state: oauthState });
   let page: Response;
   for (let attempt = 0; ; attempt++) {
@@ -40,14 +44,18 @@ async function login() {
   scopes.forEach((scope) => form.append("scope", scope));
   const approved = await request("/authorize", { method: "POST", headers: { ...accessHeaders, Cookie: cookies, Origin: origin }, body: form });
   assert.equal(approved.status, 302, "Consent approval");
-  const callback = new URL(approved.headers.get("location")!);
+  const location = approved.headers.get("location");
+  assert.ok(location, "Consent approval must include a callback location");
+  const callback = new URL(location);
   assert.ok(callback.searchParams.get("state") === oauthState, "OAuth state matched");
   assert.ok(callback.searchParams.get("iss") === origin, "OAuth issuer matched");
-  const response = await request("/oauth/token", { method: "POST", body: new URLSearchParams({ grant_type: "authorization_code", client_id: clientId, redirect_uri: redirectUri, code: callback.searchParams.get("code")!, code_verifier: verifier, resource: `${origin}/mcp` }) });
+  const code = callback.searchParams.get("code");
+  assert.ok(code, "Consent callback must include an authorization code");
+  const response = await request("/oauth/token", { method: "POST", body: new URLSearchParams({ grant_type: "authorization_code", client_id: clientId, redirect_uri: redirectUri, code, code_verifier: verifier, resource: `${origin}/mcp` }) });
   assert.equal(response.status, 200, "PKCE token exchange");
-  const token = await response.json();
+  const token = z.object({ access_token: z.string().min(1) }).parse(await response.json());
   assert.ok(token.access_token, "Access token issued");
-  return { token: token.access_token as string, clientId };
+  return { token: token.access_token, clientId };
 }
 
 async function rpc(token: string, method: string, params: Record<string, unknown> = {}, expectedProtocolError?: number) {
@@ -55,7 +63,7 @@ async function rpc(token: string, method: string, params: Record<string, unknown
   if (params.name) headers.set("Mcp-Name", String(params.name));
   const response = await request("/mcp", { method: "POST", headers, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params: { ...params, _meta: { "io.modelcontextprotocol/protocolVersion": "2026-07-28", "io.modelcontextprotocol/clientInfo": { name: "hearth-preview-test", version: "1" }, "io.modelcontextprotocol/clientCapabilities": {} } } }) });
   assert.equal(response.status, 200, `MCP ${method} HTTP status`);
-  const message = await response.json();
+  const message = z.object({ result: z.unknown().optional(), error: z.object({ code: z.number() }).optional() }).parse(await response.json());
   if (expectedProtocolError !== undefined) {
     assert.equal(message.error?.code, expectedProtocolError, `MCP ${method} rejected`);
     return message.error;
@@ -66,28 +74,56 @@ async function rpc(token: string, method: string, params: Record<string, unknown
 
 const metadata = await request("/.well-known/oauth-authorization-server");
 assert.equal(metadata.status, 200, "Public OAuth discovery");
-assert.equal((await metadata.json()).client_id_metadata_document_supported, true);
+assert.equal(z.object({ client_id_metadata_document_supported: z.boolean() }).parse(await metadata.json()).client_id_metadata_document_supported, true);
 assert.equal((await request("/mcp")).status, 401, "Anonymous MCP denied without Access redirect");
 assert.ok([302, 401, 403].includes((await request("/authorize")).status), "Anonymous consent denied");
 const auth = await login();
-const tools = (await rpc(auth.token, "tools/list")).tools;
-assert.deepEqual(tools.map((tool: any) => tool.name).sort(), [
+const wireProperty = z.object({ type: z.string() });
+const tools = z.object({ tools: z.array(z.object({ name: z.string(), outputSchema: z.object({ type: z.string() }).optional(), inputSchema: z.unknown() })) }).parse(await rpc(auth.token, "tools/list")).tools;
+assert.deepEqual(tools.map((tool) => tool.name).sort(), [
   "add_demo_data", "create_recipes", "delete_collection", "delete_grocery", "delete_meal",
   "delete_recipe", "delete_shopping_extra", "get_recipes", "get_shopping_list", "import_recipe",
   "list_collections", "list_groceries", "list_meals", "match_groceries", "save_collection",
   "save_grocery", "save_meal", "save_shopping_extra", "search_recipes", "set_shopping_checked",
   "set_shopping_order", "update_recipes",
 ]);
-assert.ok(tools.every((tool: any) => tool.outputSchema?.type === "object"));
-const ingredientProperties = tools.find((tool: any) => tool.name === "create_recipes").inputSchema.properties.recipes.items.properties.ingredients.items.properties;
+assert.ok(tools.every((tool) => tool.outputSchema?.type === "object"));
+const createTool = tools.find((tool) => tool.name === "create_recipes");
+assert.ok(createTool, "Recipe creation tool is advertised");
+const ingredientProperties = z.object({ properties: z.object({ recipes: z.object({ items: z.object({ properties: z.object({ ingredients: z.object({ items: z.object({ properties: z.object({ name: wireProperty, quantity: wireProperty, unit: wireProperty }) }) }) }) }) }) }) }).parse(createTool.inputSchema).properties.recipes.items.properties.ingredients.items.properties;
 assert.equal(ingredientProperties.name.type, "string", "Ingredient name is typed on the wire");
 assert.equal(ingredientProperties.quantity.type, "number", "Ingredient quantity is typed on the wire");
 assert.equal(ingredientProperties.unit.type, "string", "Ingredient unit is typed on the wire");
-const call = async (name: string, args: object) => {
-  const result = await rpc(auth.token, "tools/call", { name, arguments: args });
+// These response projections reuse domain schemas; MCP owns their envelope shapes.
+const recipesOutput = Schema.Struct({ recipes: Schema.Array(RecipeSchema) });
+const ok = Schema.Struct({ ok: Schema.Literal(true) });
+const outputs = {
+  list_collections: Schema.Struct({ collections: Schema.Array(CollectionSchema) }),
+  save_collection: Schema.Struct({ collection: CollectionSchema }),
+  save_grocery: Schema.Struct({ grocery: GroceryItemSchema }),
+  list_groceries: Schema.Struct({ groceries: Schema.Array(GroceryItemSchema) }),
+  create_recipes: recipesOutput,
+  update_recipes: recipesOutput,
+  get_recipes: Schema.Struct({ ...recipesOutput.fields, missingIds: Schema.Array(Schema.String) }),
+  search_recipes: Schema.Struct({ recipes: Schema.Array(Schema.Struct({ id: Schema.String, title: Schema.String, ingredients: Schema.Array(IngredientSchema) })), pagination: Schema.Struct({ total: Schema.Number, nextOffset: Schema.NullOr(Schema.Number), hasMore: Schema.Boolean }) }),
+  match_groceries: Schema.Struct({ ...ok.fields, report: MatchReportSchema }),
+  save_meal: Schema.Struct({ meal: MealSchema }),
+  list_meals: Schema.Struct({ meals: Schema.Array(MealSchema) }),
+  get_shopping_list: Schema.Struct({ items: Schema.Array(Schema.Struct({ key: Schema.String, checkKey: Schema.String, checked: Schema.Boolean, grocery: Schema.optional(GroceryItemSchema), needs: Schema.Array(ShoppingNeedSchema), packages: Schema.NullOr(Schema.Number) })), extras: Schema.Array(ExtraSchema), shoppingOrder: ShoppingOrderSchema }),
+  save_shopping_extra: Schema.Struct({ extra: ExtraSchema }),
+  delete_recipe: ok, delete_grocery: ok, delete_collection: ok, delete_meal: ok,
+  delete_shopping_extra: ok, set_shopping_checked: ok, set_shopping_order: ok,
+};
+const toolResult = z.object({ isError: z.boolean().optional(), content: z.array(z.object({ type: z.literal("text"), text: z.string() })), structuredContent: z.unknown().optional() });
+const call = async <N extends keyof typeof outputs>(name: N, args: Record<string, unknown>) => {
+  const result = toolResult.parse(await rpc(auth.token, "tools/call", { name, arguments: args }));
   assert.ok(!result.isError, `${name} succeeded`);
   assert.deepEqual(JSON.parse(result.content[0].text), result.structuredContent);
-  return result.structuredContent;
+  // Non-transforming output contracts validate without stripping extra wire fields,
+  // so whole-recipe equality checks still detect unexpected changes.
+  const structuredContent = result.structuredContent;
+  assert.ok(Schema.is(outputs[name])(structuredContent), `${name} returned its expected output contract`);
+  return structuredContent;
 };
 assert.equal((await call("search_recipes", { query: "" })).pagination.total, 0, "Use a fresh mcp:preview up --empty; never run fixture/bulk matching against seeded household data.");
 assert.equal((await call("list_groceries", {})).groceries.length, 0, "Use a fresh empty fixture grocery catalog.");
@@ -97,7 +133,7 @@ for (const collection of [
   { id: "special", name: "Something special" },
   { id: "vegetarian", name: "Vegetarian" },
   { id: "weeknight", name: "Weeknight favorites" },
-]) assert.ok(collections.collections.some((saved: any) => saved.id === collection.id && saved.name === collection.name), "Default collection remains available alongside eval fixtures");
+]) assert.ok(collections.collections.some((saved) => saved.id === collection.id && saved.name === collection.name), "Default collection remains available alongside eval fixtures");
 const tag = `Evaluation ${Date.now()}`;
 const fixture = (i: number) => ({ title: `${tag} ${String(i).padStart(2, "0")}`, servings: 3, minutes: 24 + i, category: "Vegetarian", ingredients: [{ name: "Chickpeas", quantity: 1.5, unit: "can" }, { name: "Lemon", quantity: 0.5, unit: "each" }], instructions: ["Rinse chickpeas.", "Mix with lemon."] });
 // Exercise real AI through the same OAuth token before adding bulk unlinked fixtures.
@@ -147,23 +183,24 @@ await call("save_collection", { id: collection.id, name: `${tag} renamed` });
 assert.equal((await call("get_recipes", { ids: [planned.id] })).recipes[0].category, `${tag} renamed`);
 const { meal } = await call("save_meal", { recipeId: planned.id, date: "2035-06-04", slot: "Dinner", scale: 2.5, note: "Live OAuth workflow" });
 const range = { start: meal.date, end: meal.date };
-assert.ok((await call("list_meals", range)).meals.some((entry: any) => entry.id === meal.id));
+assert.ok((await call("list_meals", range)).meals.some((entry) => entry.id === meal.id));
 let shopping = await call("get_shopping_list", range);
-const item = shopping.items.find((entry: any) => entry.grocery?.id === grocery.id);
+const item = shopping.items.find((entry) => entry.grocery?.id === grocery.id);
+assert.ok(item, "Planned grocery appears in the shopping list");
 assert.equal(item.needs[0].quantity, 625); assert.equal(item.packages, 2);
 await call("set_shopping_checked", { key: item.checkKey, checked: true });
-assert.equal((await call("get_shopping_list", range)).items.find((entry: any) => entry.key === item.key).checked, true);
+assert.equal((await call("get_shopping_list", range)).items.find((entry) => entry.key === item.key)?.checked, true);
 await call("save_meal", { ...meal, scale: 3 });
 shopping = await call("get_shopping_list", range);
-assert.equal(shopping.items.find((entry: any) => entry.key === item.key).checked, false);
+assert.equal(shopping.items.find((entry) => entry.key === item.key)?.checked, false);
 await call("set_shopping_order", { aisles: ["Pantry"], items: [item.key] });
 assert.deepEqual((await call("get_shopping_list", range)).shoppingOrder, { aisles: ["Pantry"], items: [item.key] });
 const { extra } = await call("save_shopping_extra", { name: `${tag} towels`, checked: 0 });
 await call("save_shopping_extra", { ...extra, checked: 1 });
-assert.ok((await call("get_shopping_list", range)).extras.some((entry: any) => entry.id === extra.id && entry.checked === 1));
-assert.ok((await call("list_groceries", {})).groceries.some((entry: any) => entry.id === grocery.id));
+assert.ok((await call("get_shopping_list", range)).extras.some((entry) => entry.id === extra.id && entry.checked === 1));
+assert.ok((await call("list_groceries", {})).groceries.some((entry) => entry.id === grocery.id));
 for (const [name, args] of [["delete_recipe", { id: planned.id }], ["delete_grocery", { id: grocery.id }], ["add_demo_data", { today: meal.date }], ["import_recipe", { url: "https://example.com/recipe" }]] as const) {
-  assert.equal((await rpc(auth.token, "tools/call", { name, arguments: args })).isError, true, `${name} rejects unsafe operation`);
+  assert.equal(toolResult.parse(await rpc(auth.token, "tools/call", { name, arguments: args })).isError, true, `${name} rejects unsafe operation`);
 }
 await call("delete_collection", { id: collection.id });
 assert.equal((await call("get_recipes", { ids: [planned.id] })).recipes[0].category, "");

@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { Check, Share2 } from "lucide-react";
 import { shareLocation, shareURL } from "./navigation";
 
+/** Shares saved route state, offering a manual-copy prompt if platform sharing and copying fail. */
 export function ShareLink({ compact = false }: { compact?: boolean }) {
   const [message, setMessage] = useState("");
   useEffect(() => {

@@ -4,6 +4,7 @@ import { DatabaseSync } from "node:sqlite";
 import { Miniflare, convertV4MiniflareOptions } from "miniflare";
 import { rolldown } from "rolldown";
 import { Schema } from "effect";
+import { z } from "zod";
 import { HouseholdSchema } from "../src/domain";
 import { seedSql } from "../tools/production-data";
 
@@ -13,12 +14,16 @@ it("imports complete household data into real D1, preserves large/NUL/Unicode va
 
   for (const name of migrations) source.exec(await readFile(`migrations/${name}`, "utf8"));
 
-  const schema = source
-    .prepare(
-      "SELECT sql FROM sqlite_schema WHERE sql IS NOT NULL ORDER BY CASE type WHEN 'table' THEN 0 WHEN 'index' THEN 1 ELSE 2 END",
+  const schema = z
+    .array(z.object({ sql: z.string() }))
+    .parse(
+      source
+        .prepare(
+          "SELECT sql FROM sqlite_schema WHERE sql IS NOT NULL ORDER BY CASE type WHEN 'table' THEN 0 WHEN 'index' THEN 1 ELSE 2 END",
+        )
+        .all(),
     )
-    .all()
-    .map((row) => String(row.sql));
+    .map((row) => row.sql);
 
   const text = (value: string) => `CAST(X'${Buffer.from(value).toString("hex")}' AS TEXT)`;
   const photo = `data:image/png;base64,${"a".repeat(1_200_000)}`;
@@ -92,10 +97,14 @@ it("imports complete household data into real D1, preserves large/NUL/Unicode va
       await db.batch(statements.map((sql) => db.prepare(sql)));
     }
 
-    const tables = source
-      .prepare("SELECT name FROM sqlite_schema WHERE type='table' AND name NOT LIKE 'sqlite_%'")
-      .all()
-      .map((row) => String(row.name));
+    const tables = z
+      .array(z.object({ name: z.string() }))
+      .parse(
+        source
+          .prepare("SELECT name FROM sqlite_schema WHERE type='table' AND name NOT LIKE 'sqlite_%'")
+          .all(),
+      )
+      .map((row) => row.name);
 
     for (const table of tables) {
       const expected = source.prepare(`SELECT * FROM "${table}" ORDER BY 1`).all();
@@ -114,12 +123,22 @@ it("imports complete household data into real D1, preserves large/NUL/Unicode va
     expect(household.meals).toHaveLength(2);
     await expect(db.prepare("DELETE FROM recipes WHERE id='dinner'").run()).rejects.toThrow();
     await db.prepare("DELETE FROM groceries WHERE id='oil'").run();
-    expect(
-      JSON.parse(
-        String((await db.prepare("SELECT ingredients FROM recipes WHERE id='dinner'").first())!.ingredients),
-      )[0].groceryItemId,
-    ).toBeNull();
-    expect((await db.prepare("SELECT version FROM grocery_revision").first())!.version).toBe(74);
+
+    const recipe = z
+      .object({ ingredients: z.string() })
+      .parse(await db.prepare("SELECT ingredients FROM recipes WHERE id='dinner'").first());
+
+    const updatedIngredients = z
+      .array(z.object({ groceryItemId: z.string().nullable() }))
+      .parse(JSON.parse(recipe.ingredients));
+
+    expect(updatedIngredients[0].groceryItemId).toBeNull();
+
+    const revision = z
+      .object({ version: z.number() })
+      .parse(await db.prepare("SELECT version FROM grocery_revision").first());
+
+    expect(revision.version).toBe(74);
   } finally {
     source.close();
     await worker.dispose();

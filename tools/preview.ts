@@ -4,6 +4,7 @@ import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { bindings, type WorkerConfig } from "cf/config";
+import { z } from "zod";
 import { workerRuntime } from "../cloudflare.config.ts";
 import { publicInstallPaths } from "../src/install-assets.ts";
 import { initializePreviewSeed, previewSeedPending, seedPreview } from "./production-data.ts";
@@ -13,21 +14,35 @@ const stateRoot = resolve(".wrangler/hearth-previews");
 const ownedName = /^p(\d{6})-([a-f0-9]{10})$/;
 const day = 86_400_000;
 
-type Resource = { id: string; name: string };
-type Preview = Resource & { urls?: string[] };
-type Database = Resource & { uuid: string };
-type Token = Resource & { client_id: string; client_secret?: string };
-type Policy = { name: string; decision: string; include: object[]; require?: object[]; exclude?: object[] };
-type App = Resource & {
-  aud: string;
-  domain?: string;
-  allowed_idps: string[];
-  policies: Policy[];
-  destinations?: { type: string; worker_id?: string }[];
+const resourceSchema = z.object({ id: z.string(), name: z.string() });
+const previewSchema = resourceSchema.extend({ urls: z.array(z.string()).optional() });
+const databaseSchema = z.object({ uuid: z.string(), name: z.string() });
+/** Access inventory metadata; authentication fields are validated only on the selected source. */
+export const appInventorySchema = resourceSchema.passthrough();
+const tokenSchema = resourceSchema.extend({ client_id: z.string(), client_secret: z.string().optional() });
+const policySchema = z.object({
+  name: z.string(), decision: z.string(), include: z.array(z.object({}).passthrough()),
+  require: z.array(z.object({}).passthrough()).optional(), exclude: z.array(z.object({}).passthrough()).optional(),
+}).passthrough();
+/** Requires explicit source identity providers and policies before copying household access. */
+export const sourceAuthSchema = z.object({
+  allowed_idps: z.array(z.string()), policies: z.array(policySchema),
+});
+type Database = z.infer<typeof databaseSchema>;
+type Token = z.infer<typeof tokenSchema>;
+type Inventory = {
+  previews: z.infer<typeof previewSchema>[];
+  databases: Database[];
+  apps: z.infer<typeof appInventorySchema>[];
+  tokens: z.infer<typeof resourceSchema>[];
 };
-type Script = { id: string; tag: string; tags?: string[] };
-type Inventory = { previews: Preview[]; databases: Database[]; apps: App[]; tokens: Token[] };
+const previewStateSchema = z.object({ url: z.url() });
+const householdSmokeSchema = z.object({
+  recipes: z.array(z.object({}).passthrough()),
+  extras: z.array(z.object({ id: z.string(), name: z.string() })),
+});
 
+/** Derives a seven-day disposable resource identity from the full owning thread ID. */
 export function previewName(thread: string, now = Date.now()): string {
   if (!/^T-[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(thread)) {
     throw new Error("Set AMP_THREAD_ID to the full owning Amp thread ID.");
@@ -36,6 +51,7 @@ export function previewName(thread: string, now = Date.now()): string {
   return `p${expiry}-${createHash("sha256").update(thread).digest("hex").slice(0, 10)}`;
 }
 
+/** Rejects unmanaged names before deriving their UTC cleanup deadline. */
 export function expiresAt(name: string): number {
   const match = ownedName.exec(name);
   if (!match) throw new Error(`Not a managed Hearth preview: ${name}`);
@@ -45,18 +61,21 @@ export function expiresAt(name: string): number {
   return expiry;
 }
 
+/** Account-scoped operator API; never logs request bodies or credential-bearing results. */
 export class Cloudflare {
   private account: string;
   private token: string;
   private transport: typeof fetch;
 
+  /** Keeps the supplied account credentials private to this API client. */
   constructor(account: string, token: string, transport: typeof fetch = fetch) {
     this.account = account;
     this.token = token;
     this.transport = transport;
   }
 
-  async request<T>(path: string, method = "GET", body?: object): Promise<T> {
+  /** Calls the account API; callers own the endpoint-specific result contract. */
+  async request<T>(path: string, schema: z.ZodType<T>, method = "GET", body?: object): Promise<T> {
     const response = await this.transport(
       `https://api.cloudflare.com/client/v4/accounts/${this.account}${path}`,
       {
@@ -66,30 +85,44 @@ export class Cloudflare {
         signal: AbortSignal.timeout(60_000),
       },
     );
-    const data = (await response.json()) as {
-      success: boolean;
-      result: T;
-      errors?: { code: number; message: string }[];
-    };
-    if (!response.ok || !data.success) {
+    const payload: unknown = await response.json().catch(() => undefined);
+    const errors = z.object({ errors: z.array(z.object({ code: z.number() })).nullish() }).safeParse(payload);
+    if (!response.ok) {
+      throw new Error(`${method} ${path}: HTTP ${response.status}; Cloudflare error codes: ${errors.success ? errors.data.errors?.map((e) => e.code).join("; ") ?? "none" : "none"}`);
+    }
+    const envelope = z.object({
+      success: z.boolean(), result: z.unknown().optional(),
+      errors: z.array(z.object({ code: z.number() })).nullish(),
+    }).safeParse(payload);
+    if (!envelope.success) {
+      throw new Error(`${method} ${path}: response envelope failed at ${envelope.error.issues.map(issue => `${issue.path.join(".") || "response"} (${issue.code})`).join("; ")}. Check the API contract before retrying.`);
+    }
+    const data = envelope.data;
+    if (!data.success) {
       // Never print request bodies, headers, or returned credential objects.
       throw new Error(
-        `${method} ${path}: HTTP ${response.status}; ${data.errors?.map((e) => `${e.code}: ${e.message}`).join("; ")}`,
+        `${method} ${path}: HTTP ${response.status}; Cloudflare error codes: ${data.errors?.map((e) => e.code).join("; ") ?? "none"}`,
       );
     }
-    return data.result;
+    const result = schema.safeParse(data.result);
+    if (!result.success) {
+      throw new Error(`${method} ${path}: response contract failed at ${result.error.issues.map(issue => `${issue.path.join(".") || "result"} (${issue.code})`).join("; ")}. Check the API contract before retrying.`);
+    }
+    return result.data;
   }
 
-  async list<T>(path: string): Promise<T[]> {
+  /** Reads all account API pages without retaining response credentials in logs. */
+  async list<T>(path: string, schema: z.ZodType<T>): Promise<T[]> {
     const result: T[] = [];
     for (let page = 1; ; page++) {
-      const batch = await this.request<T[]>(`${path}?per_page=100&page=${page}`);
+      const batch = await this.request(`${path}?per_page=100&page=${page}`, z.array(schema));
       result.push(...batch);
       if (batch.length < 100) return result;
     }
   }
 }
 
+/** Builds an isolated D1 configuration and refuses non-Preview database names. */
 export function previewConfig(worker: string, db: Database, audience: string, clientId: string): WorkerConfig {
   if (!db.name.startsWith(prefix)) throw new Error("Refusing a non-preview database.");
   expiresAt(db.name.slice(prefix.length));
@@ -113,27 +146,34 @@ export function previewConfig(worker: string, db: Database, audience: string, cl
   };
 }
 
+/** Owns disposable website Preview inventory and consumer-first cleanup. */
 export class Previews {
+  /** Account API path under the selected production-owned parent Worker. */
   readonly path: string;
+  /** Account client used for inventory and lifecycle operations. */
   readonly api: Cloudflare;
+  /** Parent Worker identity; never a disposable database identity. */
   readonly worker: string;
 
+  /** Selects a parent without modifying its production configuration. */
   constructor(api: Cloudflare, worker: string) {
     this.api = api;
     this.worker = worker;
     this.path = `/workers/workers/${worker}/previews`;
   }
 
+  /** Reads Preview, D1, Access application, and token metadata in parallel. */
   async inventory(): Promise<Inventory> {
     const [previews, databases, apps, tokens] = await Promise.all([
-      this.api.list<Preview>(this.path),
-      this.api.list<Database>("/d1/database"),
-      this.api.list<App>("/access/apps"),
-      this.api.list<Token>("/access/service_tokens"),
+      this.api.list(this.path, previewSchema),
+      this.api.list("/d1/database", databaseSchema),
+      this.api.list("/access/apps", appInventorySchema),
+      this.api.list("/access/service_tokens", resourceSchema),
     ]);
     return { previews, databases, apps, tokens };
   }
 
+  /** Includes orphaned dependencies so interrupted provisioning remains destroyable. */
   names(inventory: Inventory): string[] {
     return [
       ...new Set([
@@ -145,29 +185,31 @@ export class Previews {
     ].filter((name) => ownedName.test(name));
   }
 
+  /** Confirms deployment deletion before removing protection, data, or local secrets. */
   async down(name: string): Promise<void> {
     expiresAt(name);
     const inventory = await this.inventory();
     const preview = inventory.previews.find((p) => p.name === name);
     // Keep Access and D1 intact if Preview deletion fails. Never unprotect a live deployment.
-    if (preview) await this.api.request(`${this.path}/${preview.id}`, "DELETE");
-    if ((await this.api.list<Preview>(this.path)).some((p) => p.name === name)) {
+    if (preview) await this.api.request(`${this.path}/${preview.id}`, z.unknown(), "DELETE");
+    if ((await this.api.list(this.path, previewSchema)).some((p) => p.name === name)) {
       throw new Error("Preview still exists; retry teardown after deletion propagates.");
     }
     for (const db of inventory.databases.filter((r) => r.name === prefix + name)) {
-      await this.api.request(`/d1/database/${db.uuid}`, "DELETE");
+      await this.api.request(`/d1/database/${db.uuid}`, z.unknown(), "DELETE");
     }
     for (const app of inventory.apps.filter((r) => r.name === prefix + name || r.name === `${prefix}${name}-install`)) {
-      await this.api.request(`/access/apps/${app.id}`, "DELETE");
+      await this.api.request(`/access/apps/${app.id}`, z.unknown(), "DELETE");
     }
     for (const token of inventory.tokens.filter((r) => r.name === prefix + name)) {
-      await this.api.request(`/access/service_tokens/${token.id}`, "DELETE");
+      await this.api.request(`/access/service_tokens/${token.id}`, z.unknown(), "DELETE");
     }
     if (this.names(await this.inventory()).includes(name)) throw new Error("Cleanup incomplete; retry down.");
     await rm(resolve(stateRoot, name), { recursive: true, force: true });
     console.log(`Deleted ${name}: Preview, D1, Access application, service token, local credentials.`);
   }
 
+  /** Deletes only managed resources whose encoded cleanup deadline has passed. */
   async gc(now = Date.now()): Promise<void> {
     for (const name of this.names(await this.inventory())) {
       if (expiresAt(name) <= now) await this.down(name);
@@ -189,10 +231,15 @@ async function save(path: string, value: object): Promise<void> {
   await writeFile(path, JSON.stringify(value, null, 2) + "\n", { mode: 0o600 });
 }
 
+/**
+ * Provisions isolated dependencies; rolls back new resources but preserves failed updates.
+ * @param runCommand Executes migrations before deployment; captures deployment stdout only.
+ * @param verify Runs the authenticated persistence/Access smoke after saving deployment metadata.
+ */
 export async function up(
   manager: Previews,
   name: string,
-  sourceApp: App,
+  sourceApp: z.infer<typeof sourceAuthSchema>,
   runCommand = command,
   verify = smoke,
   seedMode: "production" | "empty" | "reseed" = "production",
@@ -204,22 +251,22 @@ export async function up(
   try {
     const preview =
       before.previews.find((p) => p.name === name) ??
-      (await manager.api.request<Preview>(`${manager.path}?ignore_base_config=true`, "POST", { name }));
+      (await manager.api.request(`${manager.path}?ignore_base_config=true`, previewSchema, "POST", { name }));
     const url = preview.urls?.find((u) => new URL(u).hostname.endsWith(".workers.dev"));
     if (!url) throw new Error("Preview has no workers.dev URL; production settings were not changed.");
     const resourceName = prefix + name;
     let token = before.tokens.find((t) => t.name === resourceName);
     let credentials: Token | undefined;
     try {
-      credentials = JSON.parse(await readFile(resolve(directory, "credentials.json"), "utf8"));
+      credentials = tokenSchema.parse(JSON.parse(await readFile(resolve(directory, "credentials.json"), "utf8")));
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) throw error;
     }
     if (!token || token.id !== credentials?.id) {
       // Referenced tokens cannot be deleted. Rotate the secret in place when a new orb lacks it.
       credentials = token
-        ? await manager.api.request<Token>(`/access/service_tokens/${token.id}/rotate`, "POST", {})
-        : await manager.api.request<Token>("/access/service_tokens", "POST", {
+        ? await manager.api.request(`/access/service_tokens/${token.id}/rotate`, tokenSchema, "POST", {})
+        : await manager.api.request("/access/service_tokens", tokenSchema, "POST", {
             name: resourceName,
             duration: "168h",
           });
@@ -252,15 +299,17 @@ export async function up(
       ],
     };
     const oldApp = before.apps.find((a) => a.name === resourceName);
-    const app = await manager.api.request<App>(
+    const app = await manager.api.request(
       `/access/apps${oldApp ? `/${oldApp.id}` : ""}`,
+      z.object({ aud: z.string() }),
       oldApp ? "PUT" : "POST",
       appBody,
     );
     const installName = `${resourceName}-install`;
     const oldInstallApp = before.apps.find((a) => a.name === installName);
-    await manager.api.request<App>(
+    await manager.api.request(
       `/access/apps${oldInstallApp ? `/${oldInstallApp.id}` : ""}`,
+      z.unknown(),
       oldInstallApp ? "PUT" : "POST",
       {
         name: installName,
@@ -272,9 +321,9 @@ export async function up(
     );
     const db =
       before.databases.find((d) => d.name === resourceName) ??
-      (await manager.api.request<Database>("/d1/database", "POST", { name: resourceName }));
+      (await manager.api.request("/d1/database", databaseSchema, "POST", { name: resourceName }));
     if (!before.databases.some((d) => d.uuid === db.uuid)) await initializePreviewSeed(manager.api, db.uuid, seedMode === "empty");
-    const config = previewConfig(manager.worker, db, app.aud, token.client_id);
+    const config = previewConfig(manager.worker, db, app.aud, tokenSchema.parse(credentials).client_id);
     const configPath = resolve(directory, "worker.json");
     await save(configPath, config);
     runCommand("npx", ["cf", "d1", "migrations", "apply", db.uuid, "--dir", resolve("migrations"), "--table", "d1_migrations"]);
@@ -291,10 +340,11 @@ export async function up(
       { HEARTH_PREVIEW_CONFIG: configPath },
     );
     // Read authoritative deployment metadata instead of coupling to beta CLI output.
-    const deployed = await manager.api.request<{ id: string }>(
+    const deployed = await manager.api.request(
       `${manager.path}/${preview.id}/deployments/latest`,
+      z.object({ id: z.string() }),
     );
-    const current = await manager.api.request<Preview>(`${manager.path}/${preview.id}`);
+    const current = await manager.api.request(`${manager.path}/${preview.id}`, previewSchema);
     if (!current.urls?.includes(url))
       throw new Error("Preview URL changed; inspect Access configuration before sharing.");
     await save(resolve(directory, "preview.json"), {
@@ -315,14 +365,19 @@ export async function up(
     if (isNew) {
       try {
         await manager.down(name);
-      } catch (cleanup) {
-        console.error(`Rollback incomplete. Run npx task preview -- down ${name}.`, cleanup);
+      } catch {
+        console.error(`Rollback incomplete. Run npx task preview -- down ${name}.`);
       }
     } else console.error(`Existing Preview preserved. Retry up or run npx task preview -- down ${name}.`);
     throw error;
   }
 }
 
+/**
+ * Sends local service credentials only to the saved origin; retries only Access rejections.
+ * @param transport Must honor manual redirects to avoid forwarding service credentials.
+ * @param wait Delays between Access propagation checks, never ambiguous write failures.
+ */
 export async function previewFetch(
   name: string,
   path: string,
@@ -333,8 +388,8 @@ export async function previewFetch(
 ): Promise<Response> {
   if (!path.startsWith("/") || path.startsWith("//")) throw new Error("Use an absolute path, not a URL.");
   const directory = resolve(stateRoot, name);
-  const { url } = JSON.parse(await readFile(resolve(directory, "preview.json"), "utf8")) as { url: string };
-  const token = JSON.parse(await readFile(resolve(directory, "credentials.json"), "utf8")) as Token;
+  const { url } = previewStateSchema.parse(JSON.parse(await readFile(resolve(directory, "preview.json"), "utf8")));
+  const token = tokenSchema.parse(JSON.parse(await readFile(resolve(directory, "credentials.json"), "utf8")));
   if (!token.client_secret) throw new Error("No local service secret; run up to rotate the Preview token.");
   const target = new URL(path, url);
   if (target.origin !== new URL(url).origin) throw new Error("Cross-origin preview request refused.");
@@ -360,7 +415,7 @@ export async function previewFetch(
 
 async function smoke(name: string): Promise<void> {
   const directory = resolve(stateRoot, name);
-  const { url } = JSON.parse(await readFile(resolve(directory, "preview.json"), "utf8")) as { url: string };
+  const { url } = previewStateSchema.parse(JSON.parse(await readFile(resolve(directory, "preview.json"), "utf8")));
   for (const path of ["/", "/api/household", "/brand/", "/favicon.ico", "/icons/favicon-32.png", "/icons/missing.png", "/apple-touch-icon.png/private", "/site.webmanifest/private"]) {
     const anonymous = await fetch(url + path, { redirect: "manual" });
     if (![302, 401, 403].includes(anonymous.status))
@@ -377,7 +432,7 @@ async function smoke(name: string): Promise<void> {
       }
     } else {
       if (!asset.headers.get("Content-Type")?.includes("application/manifest+json")) throw new Error("Manifest content type missing.");
-      const manifest = await asset.json() as { short_name: string; icons: { src: string }[] };
+      const manifest = z.object({ short_name: z.string(), icons: z.array(z.object({ src: z.string() })) }).parse(await asset.json());
       if (manifest.short_name !== "Hearth" || manifest.icons.length !== 4 || manifest.icons.some((icon) => !publicInstallPaths.includes(icon.src))) {
         throw new Error("Public manifest identity or icon URLs are incorrect.");
       }
@@ -390,12 +445,7 @@ async function smoke(name: string): Promise<void> {
   }
   const response = await previewFetch(name, "/api/household");
   if (!response.ok) throw new Error(`Authenticated API returned ${response.status}`);
-  const initial = (await response.json()) as {
-    recipes: object[];
-    meals: object[];
-    extras: { id: string; name: string }[];
-    checks: object[];
-  };
+  const initial = householdSmokeSchema.parse(await response.json());
   if (!Array.isArray(initial.recipes) || !Array.isArray(initial.extras))
     throw new Error("Invalid household response.");
   const html = await previewFetch(name, "/");
@@ -416,14 +466,14 @@ async function smoke(name: string): Promise<void> {
       JSON.stringify({ id, name: "Preview persistence check", checked: 0 }),
     );
     if (!saved.ok) throw new Error(`D1 write failed: ${saved.status}`);
-    const household = (await (await previewFetch(name, "/api/household")).json()) as typeof initial;
+    const household = householdSmokeSchema.parse(await (await previewFetch(name, "/api/household")).json());
     if (!household.extras.some((e) => e.id === id && e.name === "Preview persistence check"))
       throw new Error("D1 read-after-write failed.");
   } finally {
     const deleted = await previewFetch(name, `/api/extras/${id}`, "DELETE", "{}");
     if (!deleted.ok) throw new Error(`Smoke fixture cleanup failed: ${deleted.status}`);
   }
-  const final = (await (await previewFetch(name, "/api/household")).json()) as typeof initial;
+  const final = householdSmokeSchema.parse(await (await previewFetch(name, "/api/household")).json());
   if (final.extras.some((e) => e.id === id)) throw new Error("D1 delete did not persist.");
   const samples: number[] = [];
   for (let i = 0; i < 10; i++) {
@@ -464,7 +514,7 @@ async function main(): Promise<void> {
   const token = process.env.CLOUDFLARE_API_TOKEN;
   if (!account || !token) throw new Error("CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN are required.");
   const api = new Cloudflare(account, token);
-  const scripts = await api.list<Script>("/workers/scripts");
+  const scripts = await api.list("/workers/scripts", z.object({ id: z.string(), tag: z.string(), tags: z.array(z.string()).nullish() }));
   const workers = scripts.filter((s) =>
     ["alchemy:stack:hearth", "alchemy:stage:production", "alchemy:id:Website"].every((tag) =>
       s.tags?.includes(tag),
@@ -521,22 +571,26 @@ async function main(): Promise<void> {
   const sourceApp = inventory.apps.find(
     (app) =>
       app.name === "Hearth" &&
-      app.destinations?.some((d) => d.type === "worker" && d.worker_id === worker.tag),
+      z.object({ destinations: z.array(z.object({ type: z.string(), worker_id: z.string().optional() })) }).safeParse(app).data?.destinations.some((d) => d.type === "worker" && d.worker_id === worker.tag),
   );
-  if (!sourceApp?.policies.some((p) => p.decision === "allow"))
+  if (!sourceApp)
     throw new Error("Production Access allow policy not found; refusing to create a Preview.");
-  const settings = await api.request<{ previews_enabled: boolean }>(
+  const sourceAuth = sourceAuthSchema.parse(sourceApp);
+  if (!sourceAuth.policies.some((p) => p.decision === "allow"))
+    throw new Error("Production Access allow policy not found; refusing to create a Preview.");
+  const settings = await api.request(
     `/workers/scripts/${worker.id}/subdomain`,
+    z.object({ previews_enabled: z.boolean() }),
   );
   if (!settings.previews_enabled)
     throw new Error("workers.dev Preview URLs are disabled. Configure through the production owner first.");
   await manager.gc();
-  await up(manager, expiresAt(name) <= Date.now() ? generated : name, sourceApp, command, smoke, seedMode);
+  await up(manager, expiresAt(name) <= Date.now() ? generated : name, sourceAuth, command, smoke, seedMode);
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
-  main().catch((error: Error) => {
-    console.error(error.message);
+  main().catch((error: unknown) => {
+    console.error(error instanceof z.ZodError || error instanceof SyntaxError ? "Preview data failed validation; inspect local state and resource inventory before retrying." : error instanceof Error ? error.message : "Preview command failed; inspect resource inventory before retrying.");
     process.exitCode = 1;
   });
 }

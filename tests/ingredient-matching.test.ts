@@ -25,18 +25,89 @@ const histories: Record<string, readonly { recipeTitle: string; ingredientName: 
 
 const logs: V4WorkerdStructuredLog[] = [];
 
+const matchingEventBase = { runId: Schema.String };
+
+const elapsed = { elapsedMs: Schema.Number };
+
+const matchingEventSchema = Schema.Union([
+  Schema.Struct({
+    ...matchingEventBase,
+    event: Schema.Literal("ingredient_matching_started"),
+    scope: Schema.Literals(["recipe_draft", "new_recipes", "household"]),
+    cfRay: Schema.NullOr(Schema.String),
+    normalizationModel: Schema.String,
+    selectionModel: Schema.String,
+  }),
+  Schema.Struct({
+    ...matchingEventBase,
+    event: Schema.Literal("ingredient_matching_batch_started"),
+    recipes: Schema.Number,
+    groceries: Schema.Number,
+    ingredients: Schema.Number,
+    eligible: Schema.Number,
+    concurrency: Schema.Number,
+  }),
+  Schema.Struct({
+    ...matchingEventBase,
+    ...elapsed,
+    event: Schema.Literal("ingredient_matching_progress"),
+    eligible: Schema.Number,
+    completed: Schema.Number,
+    inFlight: Schema.Number,
+    remaining: Schema.Number,
+    proposedMatches: Schema.Number,
+    unmatched: Schema.Number,
+    failed: Schema.Number,
+    normalizationCalls: Schema.Number,
+    selectionCalls: Schema.Number,
+    normalizationCacheHits: Schema.Number,
+    selectionCacheHits: Schema.Number,
+  }),
+  Schema.Struct({
+    ...matchingEventBase,
+    ...elapsed,
+    event: Schema.Literal("ingredient_matching_persisting"),
+    changedRecipes: Schema.Number,
+    proposedMatches: Schema.Number,
+  }),
+  Schema.Struct({
+    ...matchingEventBase,
+    ...elapsed,
+    event: Schema.Literal("ingredient_matching_ingredient_failed"),
+    recipeIndex: Schema.Number,
+    ingredientIndex: Schema.Number,
+    stage: Schema.String,
+    reason: Schema.String,
+    candidates: Schema.Number,
+  }),
+  Schema.Struct({
+    ...matchingEventBase,
+    event: Schema.Literal("ingredient_matching_failed"),
+    stage: Schema.String,
+    reason: Schema.String,
+    elapsedMs: Schema.optional(Schema.Number),
+  }),
+  Schema.Struct({
+    ...matchingEventBase,
+    event: Schema.Literal("ingredient_matching_deadline"),
+    failed: Schema.Number,
+  }),
+  Schema.Struct({
+    ...matchingEventBase,
+    ...MatchReportSchema.fields,
+    event: Schema.Literal("ingredient_matching_completed"),
+    outcome: Schema.Literals(["partial", "complete"]),
+  }),
+]);
+
+const decodeMatchingEvent = Schema.decodeUnknownSync(matchingEventSchema);
+
 const logEvents = () =>
   logs.flatMap(({ message }) =>
-    message.startsWith('{"event":"ingredient_matching_')
-      ? [
-          Schema.decodeUnknownSync(
-            Schema.Record(Schema.String, Schema.Union([Schema.String, Schema.Number, Schema.Null])),
-          )(JSON.parse(message)),
-        ]
-      : [],
+    message.startsWith('{"event":"ingredient_matching_') ? [decodeMatchingEvent(JSON.parse(message))] : [],
   );
 
-const recipe = Schema.decodeUnknownSync(RecipeSchema)({
+const recipe = Schema.decodeSync(RecipeSchema)({
   id: "matching",
   title: "Onion salad",
   description: "A raw salad.",
@@ -60,7 +131,7 @@ const recipe = Schema.decodeUnknownSync(RecipeSchema)({
 });
 
 const product = (id: string, name: string) =>
-  Schema.decodeUnknownSync(GroceryItemSchema)({
+  Schema.decodeSync(GroceryItemSchema)({
     id,
     name,
     aliases: [],
@@ -237,15 +308,18 @@ beforeAll(async () => {
 
             if (mode.startsWith("suggestions") || mode === "history") {
               const criteria = input.questions.product.criteria;
-              const white = Object.keys(criteria).find((key) => criteria[key].startsWith("White onion;"))!;
+              const white = Object.keys(criteria).find((key) => criteria[key].startsWith("White onion;"));
 
               const yellow = Object.keys(criteria).find((key) =>
                 criteria[key].startsWith("Brand 0 yellow onion;"),
-              )!;
+              );
 
               const third = Object.keys(criteria).find((key) =>
                 criteria[key].startsWith("Brand 1 yellow onion;"),
-              )!;
+              );
+
+              if (white === undefined || yellow === undefined || third === undefined)
+                throw new Error("Matching shortlist is missing an expected onion product.");
 
               if (input.state.linkedRecipeExamples) {
                 histories.push(input.state.linkedRecipeExamples);
@@ -440,7 +514,7 @@ it.each([
   expect(saved.recipes.find((entry) => entry.id === recipe.id)).toEqual(recipe);
 
   for (const original of created) {
-    const actual = saved.recipes.find((entry) => entry.id === original.id)!;
+    const actual = saved.recipes.find((entry) => entry.id === original.id);
     expect(actual).toEqual({
       ...original,
       ingredients: [
@@ -484,7 +558,9 @@ it("rejects stale browser ingredient replacements after matching, then accepts a
         (await state()).recipes.find((entry) => entry.id === input.id)?.ingredients[0].groceryItemId,
     )
     .toBe("white");
-  const current = (await state()).recipes.find((entry) => entry.id === input.id)!;
+  const current = (await state()).recipes.find((entry) => entry.id === input.id);
+
+  if (!current) throw new Error("Background matching recipe is missing from household state.");
   expect(
     (await send("recipes", "PUT", { ...input, minutes: 45, expectedIngredients: input.ingredients }, true))
       .status,
@@ -801,6 +877,58 @@ it("reuses both persistent caches, but invalidates selection when recipe context
   expect(await match()).toMatchObject({ normalizationCalls: 1, selectionCalls: 1 });
 });
 
+it("rejects corrupt cached decisions without making saved recipes unreadable", async () => {
+  mode = "history";
+  expect(
+    (
+      await send("recipes", "PUT", {
+        ...recipe,
+        id: "history",
+        ingredients: [{ ...recipe.ingredients[0], groceryItemId: "white" }],
+      })
+    ).status,
+  ).toBe(200);
+  expect(await match()).toMatchObject({ matched: 1, selectionCalls: 2 });
+  const db = await worker.getD1Database("DB");
+
+  const { results } = await db
+    .prepare("SELECT key,value FROM ingredient_match_cache WHERE key LIKE 'j%'")
+    .all();
+
+  const cached = Schema.decodeUnknownSync(
+    Schema.Array(Schema.Struct({ key: Schema.String, value: Schema.String })),
+  )(results);
+
+  expect(cached).toHaveLength(2);
+
+  for (const { prefix, decision } of [
+    { prefix: "j2:", decision: { id: null, suggestions: ["white", "white"] } },
+    { prefix: "j2:", decision: { id: null, suggestions: ["white", "yellow-0", "yellow-1", "yellow-2"] } },
+    { prefix: "j2:", decision: { id: "missing", suggestions: [] } },
+    { prefix: "j2:", decision: { id: null, suggestions: ["missing"] } },
+    // Powder is in the catalog, but not in the contextual shortlist.
+    { prefix: "jh1:", decision: { id: "powder", suggestions: [] } },
+    { prefix: "jh1:", decision: { id: null, suggestions: ["powder"] } },
+  ]) {
+    for (const row of cached)
+      await db
+        .prepare("UPDATE ingredient_match_cache SET value=? WHERE key=?")
+        .bind(row.key.startsWith(prefix) ? JSON.stringify(decision) : row.value, row.key)
+        .run();
+    expect((await send("recipes", "PUT", recipe)).status).toBe(200);
+    const previousCalls = calls;
+    expect(await match()).toMatchObject({ matched: 0, unmatched: 0, failed: 1, selectionCalls: 0 });
+    expect(calls).toBe(previousCalls);
+    const actual = (await state()).recipes.find((entry) => entry.id === recipe.id);
+    expect(actual?.ingredients).toEqual([
+      prefix === "jh1:"
+        ? { ...recipe.ingredients[0], grocerySuggestions: ["white", "yellow-0", "yellow-1"] }
+        : recipe.ingredients[0],
+      ...recipe.ingredients.slice(1),
+    ]);
+  }
+});
+
 it("leaves uncertain, absent, malformed and unavailable model results unlinked without caching failures", async () => {
   const db = await worker.getD1Database("DB");
 
@@ -859,10 +987,17 @@ it("shares failed in-flight work without cancelling healthy ingredients, then re
   });
   expect(calls).toBe(3);
   const after = (await state()).recipes;
-  expect(after.find((entry) => entry.id === "healthy")!.ingredients[0].groceryItemId).toBe("white");
+  const healthy = after.find((entry) => entry.id === "healthy");
 
-  for (const id of [recipe.id, "duplicate"])
-    expect(after.find((entry) => entry.id === id)!.ingredients).toEqual(recipe.ingredients);
+  if (!healthy) throw new Error("Healthy matching recipe is missing from household state.");
+  expect(healthy.ingredients[0].groceryItemId).toBe("white");
+
+  for (const id of [recipe.id, "duplicate"]) {
+    const saved = after.find((entry) => entry.id === id);
+
+    if (!saved) throw new Error(`Matching recipe ${id} is missing from household state.`);
+    expect(saved.ingredients).toEqual(recipe.ingredients);
+  }
 
   mode = "success";
   expect(await match()).toMatchObject({
@@ -1111,7 +1246,11 @@ it("logs no-work completion with distinct run IDs and only validated Ray IDs", a
     expect(response.status).toBe(200);
     await expect.poll(() => logEvents().at(-1)?.event).toBe("ingredient_matching_completed");
     const events = logEvents();
-    expect(events[0].cfRay).toBe(ray === "private-header-secret" ? null : ray);
+    const started = events[0];
+
+    if (started.event !== "ingredient_matching_started")
+      throw new Error("Matching run did not begin with its started event.");
+    expect(started.cfRay).toBe(ray === "private-header-secret" ? null : ray);
     expect(runIds.has(events[0].runId)).toBe(false);
     runIds.add(events[0].runId);
     expect(events.find((event) => event.event === "ingredient_matching_batch_started")).toMatchObject({

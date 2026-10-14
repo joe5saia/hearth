@@ -2,6 +2,7 @@ import { Context, Effect, Exit, Layer, Logger, Option, References, Schema, Scope
 import { FetchHttpClient, HttpClient } from "effect/unstable/http";
 import { OtlpExporter, OtlpSerialization, OtlpTracer } from "effect/unstable/observability";
 
+/** Per-invocation export configuration; credentials never belong in telemetry fields. */
 export interface TelemetryEnv {
   AXIOM_TOKEN?: string;
   AXIOM_TRACES_DATASET?: string;
@@ -12,6 +13,7 @@ export interface TelemetryEnv {
   TELEMETRY_TRACE_SAMPLE_RATE?: string;
 }
 
+/** Application-owned primitive measurements; exporters retain only allowlisted keys. */
 export type Fields = Record<string, string | number | boolean>;
 
 // Only application-owned names and primitive measurements may cross the export boundary.
@@ -148,25 +150,39 @@ const traceClient = Layer.effect(
   ),
 ).pipe(Layer.provide(FetchHttpClient.layer));
 
+/** Owns one request's bounded events, sampled spans, and application-generated correlation. */
 export class Observation {
+  /** Correlates events with the current request root, never incoming trace context. */
   get traceId() {
     return this.root.traceId;
   }
+  /** Fresh server-generated correlation ID for this request. */
   readonly requestId = crypto.randomUUID();
+  /** Bounded export buffer; use event() to preserve filtering and correlation. */
   readonly events: Fields[] = [];
+  /** Request root, replaced by the configured tracer before running the handler. */
   root: Tracer.Span;
+  /** Monotonic request start used to measure elapsed duration. */
   readonly started = performance.now();
+  /** Validated sampling probability, defaulting to one for invalid configuration. */
   readonly sampleRate: number;
+  /** Single sampling decision shared by all spans in this request. */
   readonly sampled: boolean;
   private spans = 0;
   private droppedSpans = 0;
   private droppedEvents = 0;
 
+  /** Captures current invocation configuration and makes one request sampling decision. */
   constructor(
+    /** Application-owned service label, not caller input. */
     readonly service: string,
+    /** Current invocation bindings; do not retain the observation across requests. */
     readonly env: TelemetryEnv,
+    /** Classified operation name, never a raw URL. */
     readonly operation: string,
+    /** Normalized HTTP method supplied by the request boundary. */
     readonly method: string,
+    /** Validated or generated operation correlation ID. */
     readonly operationId: string,
   ) {
     const rate = Number(env.TELEMETRY_TRACE_SAMPLE_RATE ?? "1");
@@ -185,6 +201,7 @@ export class Observation {
     this.root.attribute("method", method);
   }
 
+  /** Buffers a classified event, filtering fields and reserving capacity for the request summary. */
   event(event: string, fields: Fields = {}) {
     const limit =
       event === "server_request"
@@ -213,43 +230,46 @@ export class Observation {
     });
   }
 
+  /** Creates a privacy-filtered tracer whose exporter is flushed by closing the supplied request scope. */
   async tracer(scope: Scope.Closeable): Promise<Tracer.Tracer> {
-    const configured = this.sampled && this.env.AXIOM_TOKEN && this.env.AXIOM_TRACES_DATASET;
+    const token = this.env.AXIOM_TOKEN;
+    const dataset = this.env.AXIOM_TRACES_DATASET;
 
-    const backend = configured
-      ? await Effect.runPromise(
-          OtlpTracer.make({
-            url: `${axiomBase(this.env)}/v1/traces`,
-            headers: {
-              Authorization: `Bearer ${this.env.AXIOM_TOKEN}`,
-              "X-Axiom-Dataset": this.env.AXIOM_TRACES_DATASET!,
-            },
-            resource: {
-              serviceName: this.service,
-              serviceVersion: this.env.TELEMETRY_VERSION ?? "development",
-              attributes: { "deployment.environment.name": this.env.TELEMETRY_ENVIRONMENT ?? "local" },
-            },
-            exportInterval: "1 hour",
-            maxBatchSize: 10000,
-            shutdownTimeout: "2 seconds",
-          }).pipe(
-            Effect.provideService(Scope.Scope, scope),
-            Effect.provideService(References.MinimumLogLevel, "Debug"),
-            Effect.provide(
-              Layer.mergeAll(
-                OtlpExporter.layerFlusher,
-                OtlpSerialization.layerJson,
-                traceClient,
-                Logger.layer([
-                  Logger.make(() =>
-                    console.warn(JSON.stringify({ event: "telemetry_export_failed", signal: "traces" })),
-                  ),
-                ]),
+    const backend =
+      this.sampled && token && dataset
+        ? await Effect.runPromise(
+            OtlpTracer.make({
+              url: `${axiomBase(this.env)}/v1/traces`,
+              headers: {
+                Authorization: `Bearer ${token}`,
+                "X-Axiom-Dataset": dataset,
+              },
+              resource: {
+                serviceName: this.service,
+                serviceVersion: this.env.TELEMETRY_VERSION ?? "development",
+                attributes: { "deployment.environment.name": this.env.TELEMETRY_ENVIRONMENT ?? "local" },
+              },
+              exportInterval: "1 hour",
+              maxBatchSize: 10000,
+              shutdownTimeout: "2 seconds",
+            }).pipe(
+              Effect.provideService(Scope.Scope, scope),
+              Effect.provideService(References.MinimumLogLevel, "Debug"),
+              Effect.provide(
+                Layer.mergeAll(
+                  OtlpExporter.layerFlusher,
+                  OtlpSerialization.layerJson,
+                  traceClient,
+                  Logger.layer([
+                    Logger.make(() =>
+                      console.warn(JSON.stringify({ event: "telemetry_export_failed", signal: "traces" })),
+                    ),
+                  ]),
+                ),
               ),
             ),
-          ),
-        )
-      : Tracer.nativeTracer;
+          )
+        : Tracer.nativeTracer;
 
     return Tracer.make({
       span: (options) => {
@@ -272,6 +292,7 @@ export class Observation {
     });
   }
 
+  /** Runs an Effect under this request's observation and root; preserves its failure channel. */
   run<A, E>(effect: Effect.Effect<A, E>, tracer: Tracer.Tracer, signal?: AbortSignal) {
     return Effect.runPromise(
       effect.pipe(
@@ -283,6 +304,7 @@ export class Observation {
     );
   }
 
+  /** Times a named dependency step without exporting its thrown error; rethrows to the caller. */
   async step<A>(name: string, run: () => Promise<A>, tracer: Tracer.Tracer): Promise<A> {
     const span = tracer.span({
       name,
@@ -306,6 +328,7 @@ export class Observation {
     }
   }
 
+  /** Ends the root and buffers the request summary; call once after handler completion. */
   finish(status: number) {
     this.root.attribute("status", status);
     this.root.attribute("outcome", status >= 500 ? "error" : status >= 400 ? "rejected" : "success");
@@ -323,6 +346,7 @@ export class Observation {
     });
   }
 
+  /** Best-effort exports the buffered events with a two-second deadline and sanitized failures. */
   async exportEvents() {
     if (!this.env.AXIOM_TOKEN || !this.env.AXIOM_EVENTS_DATASET) return;
 
@@ -359,16 +383,19 @@ export class Observation {
   }
 }
 
+/** Request-local Effect reference; absent outside an observed request. */
 export const CurrentObservation = Context.Reference<Observation | undefined>("hearth/Observation", {
   defaultValue: () => undefined,
 });
 
+/** Records application-owned measurements and annotates the active span without logging causes. */
 export const record = Effect.fnUntraced(function* (event: string, fields: Fields) {
   const observation = yield* CurrentObservation;
   observation?.event(event, fields);
   yield* Effect.annotateCurrentSpan(fields);
 });
 
+/** Wraps one request with correlation headers and bounded exports, using waitUntil when available. */
 export async function observedFetch(
   request: Request,
   env: TelemetryEnv,

@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { matchesRecipeSearch, type GroceryId, type Household } from "./domain";
 
+/** Reviews linked groceries from planned recipes before delegating additions to the caller. */
 export function ShoppingRecipeForm({
   recipes,
   meals,
@@ -35,8 +36,13 @@ export function ShoppingRecipeForm({
   }
 
   const plannedRecipes = recipes
-    .filter((recipe) => plannedDates.has(recipe.id))
-    .sort((a, b) => plannedDates.get(b.id)!.localeCompare(plannedDates.get(a.id)!));
+    .flatMap((recipe) => {
+      const date = plannedDates.get(recipe.id);
+
+      return date === undefined ? [] : [{ recipe, date }];
+    })
+    .sort((a, b) => b.date.localeCompare(a.date))
+    .map(({ recipe }) => recipe);
 
   const ingredients = recipes
     .filter((recipe) => selected.includes(recipe.id))

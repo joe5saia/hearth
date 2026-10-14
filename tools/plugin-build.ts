@@ -5,6 +5,7 @@ import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
 import { strToU8, zipSync } from "fflate";
+import { z } from "zod";
 
 const { values } = parseArgs({
   options: {
@@ -16,9 +17,29 @@ const { values } = parseArgs({
 });
 
 const root = "plugins/hearth";
-const manifest = JSON.parse(await readFile(`${root}/plugin.json`, "utf8"));
-const mcp = JSON.parse(await readFile(`${root}/mcp.json`, "utf8"));
-const apps = JSON.parse(await readFile(`${root}/.app.json`, "utf8"));
+// Preserve extension metadata verbatim while decoding the fields packaging consumes.
+const manifest = z.looseObject({
+  $schema: z.string(),
+  name: z.string(),
+  version: z.string(),
+  extensions: z.looseObject({
+    "com.openai": z.looseObject({
+      apps: z.string().optional(),
+      interface: z.looseObject({
+        displayName: z.string(), shortDescription: z.string(),
+        defaultPrompt: z.array(z.string()),
+        composerIcon: z.string(), composerIconDark: z.string(),
+        logo: z.string(), logoDark: z.string(),
+      }),
+    }),
+  }),
+}).parse(JSON.parse(await readFile(`${root}/plugin.json`, "utf8")));
+const mcp = z.looseObject({
+  $schema: z.string(),
+  mcpServers: z.record(z.string(), z.looseObject({ type: z.string(), url: z.string() })),
+}).parse(JSON.parse(await readFile(`${root}/mcp.json`, "utf8")));
+const apps = z.object({ apps: z.object({ hearth: z.object({ id: z.string() }) }) })
+  .parse(JSON.parse(await readFile(`${root}/.app.json`, "utf8")));
 const version = values.version ?? manifest.version;
 assert.match(version, /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/, "Use a numeric semantic version");
 const appId = (values["app-id"] ?? process.env.CHATGPT_APP_ID ?? apps.apps.hearth.id).trim().replace(/^plugin_/, "");
@@ -35,12 +56,12 @@ manifest.version = version;
 const presentation = manifest.extensions["com.openai"].interface;
 assert.ok(presentation.displayName.length <= 30 && presentation.shortDescription.length <= 30);
 assert.ok(presentation.defaultPrompt.length <= 3);
-assert.ok(presentation.defaultPrompt.every((prompt: string) => prompt.length <= 128));
+assert.ok(presentation.defaultPrompt.every((prompt) => prompt.length <= 128));
 
 const git = (...args: string[]) => execFileSync("git", args, { encoding: "utf8" }).trim();
 const commit = git("rev-parse", "HEAD");
 const dirty = git("status", "--porcelain", "--untracked-files=normal") !== "";
-const json = (value: object) => strToU8(JSON.stringify(value, null, 2) + "\n");
+const json = <Value>(value: Value) => strToU8(JSON.stringify(value, null, 2) + "\n");
 // Explicit allowlist: never recursively zip the checkout, credentials, or household data.
 const files: Record<string, Uint8Array> = {};
 for (const name of ["README.md", "EVALUATION.md"]) files[name] = await readFile(join(root, name));
@@ -54,7 +75,7 @@ for (const name of skills) {
 }
 files["assets/icon.png"] = await readFile("public/brand/icon.png");
 files["assets/icon-dark.png"] = await readFile("public/brand/icon-reversed.png");
-for (const key of ["composerIcon", "composerIconDark", "logo", "logoDark"]) {
+for (const key of ["composerIcon", "composerIconDark", "logo", "logoDark"] as const) {
   assert.ok(files[presentation[key].replace(/^\.\//, "")], `Missing ${key}`);
 }
 
@@ -64,7 +85,7 @@ const archive = (entries: Record<string, Uint8Array>) => zipSync(
   { level: 9, mtime: new Date("2000-01-01T00:00:00Z") },
 );
 const artifacts = new Map<string, Uint8Array>();
-const portable = { ...files, "plugin.json": json(manifest), "mcp.json": json(mcp),
+const portable: Record<string, Uint8Array> = { ...files, "plugin.json": json(manifest), "mcp.json": json(mcp),
   "BUILD.json": json({ version, commit, dirty, target: "portable" }) };
 for (const skill of skills) {
   portable[`skills/${skill}/agents/openai.yaml`] = strToU8(

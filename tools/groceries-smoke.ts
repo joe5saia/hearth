@@ -3,7 +3,7 @@ import { execFileSync } from "node:child_process";
 import { mkdir } from "node:fs/promises";
 import { resolve } from "node:path";
 import { Schema } from "effect";
-import { HouseholdSchema, type GroceryItem, type Recipe, type Meal, type ShoppingOrder } from "../src/domain.ts";
+import { HouseholdSchema, CheckSchema, type GroceryDraft, type RecipeDraft, type MealDraft, type ShoppingOrder } from "../src/domain.ts";
 
 // Exercises the real browser, Worker and local SQLite. Never writes a remote household.
 const url = process.argv[2] ?? "http://localhost:5173";
@@ -14,9 +14,9 @@ const check = (expression: string, message: string) => {
   browser("eval", `(() => { if (!(${expression})) throw new Error(${JSON.stringify(message)}); return true; })()`);
   console.log(`PASS ${message}`);
 };
-const request = async (path: string, method = "GET", value?: GroceryItem | Recipe | Meal | ShoppingOrder | { key: string; checked: number }) => {
+const request = async (path: string, method = "GET", value?: GroceryDraft | RecipeDraft | MealDraft | ShoppingOrder | typeof CheckSchema.Encoded) => {
   const response = await fetch(`${url}/api/${path}`, { method, headers: { "Content-Type": "application/json", Connection: "close" }, body: value ? JSON.stringify(value) : undefined });
-  assert(response.ok, `${method} ${path}: ${response.status} ${response.ok ? "" : await response.text()}`);
+  assert(response.ok, `${method} ${path}: ${response.status}`);
 
   return response;
 };
@@ -24,14 +24,14 @@ const household = async () => Schema.decodeUnknownSync(HouseholdSchema)(await (a
 const original = await household();
 assert(!original.recipes.length && !original.groceries.length && !original.meals.length && !original.extras.length, "Use an empty disposable local household for grocery browser smoke.");
 const prefix = `grocery-smoke-${crypto.randomUUID()}`;
-const products: GroceryItem[] = [
+const products: GroceryDraft[] = [
   { id: `${prefix}-rice`, name: "Long-grain rice", aliases: ["rice", "white rice"], quantity: 500, unit: "g", aisle: "10", url: "https://example.com/rice" },
   { id: `${prefix}-oil`, name: "Olive oil", aliases: ["oil"], quantity: 500, unit: "ml", aisle: "10", url: "https://example.com/oil" },
   { id: `${prefix}-bread`, name: "Whole-wheat bread", aliases: ["bread"], quantity: 20, unit: "slice", aisle: "Bakery", url: "https://example.com/bread" },
   { id: `${prefix}-limes`, name: "Fresh limes · 2 lb bag", aliases: ["lime"], quantity: 2, unit: "lb", aisle: "Produce", url: "https://www.shoprite.com/sm/pickup/rsid/3000/product/fresh-limes-2-lb-bag-id-00000000096867" },
   { id: `${prefix}-oats`, name: "Rolled oats", aliases: [], quantity: 500, unit: "g", aisle: "10", url: "" },
 ];
-const recipes: Recipe[] = [
+const recipes: RecipeDraft[] = [
   { id: `${prefix}-dinner`, title: "Lime rice bowls", description: "A simple weeknight dinner.", servings: 2, minutes: 30, category: "", photo: "", source: "", rating: "neutral", instructions: ["Cook the rice and serve with lime."], ingredients: [
     { name: "rice", quantity: 200, unit: "g" }, { name: "lime", quantity: 2, unit: "each" },
     { name: "oil", quantity: 1, unit: "tbsp" }, { name: "bread", quantity: 2, unit: "slice" },
@@ -270,7 +270,8 @@ try {
   formFill("Store product name", `${prefix}-picker`);
   submit('.grocery-form button[type="submit"]');
   finishSave();
-  const pickerProduct = (await household()).groceries.find(item => item.name === `${prefix}-picker`)!;
+  const pickerProduct = (await household()).groceries.find(item => item.name === `${prefix}-picker`);
+  assert(pickerProduct, "Saving the picker product must create a catalog item.");
   assert.equal(pickerProduct.aisle, "Pantry", "Confirmed new aisle persists with the product.");
   browser("find", "role", "button", "click", "--name", "Add grocery item", "--exact");
   browser("wait", ".grocery-form");
@@ -325,7 +326,7 @@ try {
   check("[...document.querySelectorAll('.grocery-item')].every(el => el.getBoundingClientRect().height <= 76)", "desktop catalog rows stay compact");
   check("[...document.querySelectorAll('.grocery-item')].find(el => el.textContent.includes('Long-grain rice')).textContent.includes('Linked: 2 ingredients')", "compact metadata retains ingredient counts");
   screenshot("grocery-catalog");
-  const longProduct: GroceryItem = { id: `${prefix}-long`, name: "Organic whole-grain breakfast crackers with rosemary and extra virgin olive oil", aliases: ["compact-fixture"], quantity: 1, unit: "each", aisle: "", url: "" };
+  const longProduct: GroceryDraft = { id: `${prefix}-long`, name: "Organic whole-grain breakfast crackers with rosemary and extra virgin olive oil", aliases: ["compact-fixture"], quantity: 1, unit: "each", aisle: "", url: "" };
   await request("groceries", "PUT", longProduct);
   browser("reload");
   browser("wait", ".grocery-item");
@@ -365,11 +366,11 @@ try {
   browser("eval", "new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)))");
   check("document.documentElement.scrollWidth <= innerWidth && [...document.querySelectorAll('.route-move button')].every(el => el.getBoundingClientRect().width >= 44 && el.getBoundingClientRect().height >= 44)", "narrow route editor fits and has 44px reorder controls");
   check("[...document.querySelectorAll('.route-drag')].every(el => el.getBoundingClientRect().width >= 44 && el.getBoundingClientRect().height >= 44)", "drag handles retain 44px targets");
-  const aisleOrder = () => JSON.parse(browser("eval", "[...document.querySelector('[aria-label=\"Arrange Aisle 10\"]').querySelectorAll('.route-product > span')].map(el => el.childNodes[0].textContent)"));
+  const aisleOrder = () => Schema.decodeUnknownSync(Schema.Array(Schema.String))(JSON.parse(browser("eval", "[...document.querySelector('[aria-label=\"Arrange Aisle 10\"]').querySelectorAll('.route-product > span')].map(el => el.childNodes[0].textContent)")));
   const dragPoints = () => {
     browser("eval", "document.querySelector('[aria-label=\"Arrange Aisle 10\"]').scrollIntoView({block:'center'})");
     browser("eval", "new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)))");
-    return JSON.parse(browser("eval", "(() => { const aisle = document.querySelector('[aria-label=\"Arrange Aisle 10\"]'); const source = aisle.querySelector('[aria-label=\"Drag Olive oil within Aisle 10\"]').getBoundingClientRect(); const target = [...aisle.querySelectorAll('.route-product')].find(el => !el.textContent.includes('Olive oil') && el === aisle.querySelector('.route-product:last-child')) ?? aisle.querySelector('.route-product'); const rect = target.getBoundingClientRect(); return { x: source.left + source.width / 2, y: source.top + source.height / 2, end: rect.top + rect.height / 2 + (source.top < rect.top ? 5 : -5) }; })()"));
+    return Schema.decodeUnknownSync(Schema.Struct({ x: Schema.Finite, y: Schema.Finite, end: Schema.Finite }))(JSON.parse(browser("eval", "(() => { const aisle = document.querySelector('[aria-label=\"Arrange Aisle 10\"]'); const source = aisle.querySelector('[aria-label=\"Drag Olive oil within Aisle 10\"]').getBoundingClientRect(); const target = [...aisle.querySelectorAll('.route-product')].find(el => !el.textContent.includes('Olive oil') && el === aisle.querySelector('.route-product:last-child')) ?? aisle.querySelector('.route-product'); const rect = target.getBoundingClientRect(); return { x: source.left + source.width / 2, y: source.top + source.height / 2, end: rect.top + rect.height / 2 + (source.top < rect.top ? 5 : -5) }; })()")));
   };
   assert.deepEqual(aisleOrder(), ["Olive oil", "Long-grain rice", "Rolled oats"]);
   const beforeDrag = (await household()).shoppingOrder;
@@ -392,14 +393,28 @@ try {
   await new Promise<void>((resolve, reject) => { socket.addEventListener("open", () => resolve(), { once: true }); socket.addEventListener("error", reject, { once: true }); });
   let sequence = 0;
   let sessionId: string | undefined;
-  const pending = new Map<number, { resolve: (value: any) => void; reject: (error: Error) => void }>();
-  socket.addEventListener("message", event => { const message = JSON.parse(String(event.data)); const request = pending.get(message.id); if (!request) return; pending.delete(message.id); message.error ? request.reject(new Error(message.error.message)) : request.resolve(message.result); });
-  const cdp = (method: string, params: object = {}) => new Promise<any>((resolve, reject) => { const id = ++sequence; pending.set(id, { resolve, reject }); socket.send(JSON.stringify({ id, method, params, sessionId })); });
+  const pending = new Map<number, { resolve: (value: unknown) => void; reject: (error: Error) => void }>();
+  const cdpMessage = Schema.Struct({ id: Schema.optional(Schema.Number), result: Schema.optional(Schema.Unknown), error: Schema.optional(Schema.Struct({ message: Schema.String })) });
+  socket.addEventListener("message", event => {
+    try {
+      const message = Schema.decodeUnknownSync(cdpMessage)(JSON.parse(String(event.data)));
+      if (message.id === undefined) return; // CDP events are not command responses.
+      const request = pending.get(message.id);
+      if (!request) return;
+      pending.delete(message.id);
+      message.error ? request.reject(new Error(message.error.message)) : request.resolve(message.result);
+    } catch (error) {
+      for (const request of pending.values()) request.reject(new Error("Invalid CDP response", { cause: error }));
+      pending.clear();
+    }
+  });
+  // Each command result is decoded by its caller; the transport cannot know its shape.
+  const cdp = (method: string, params: { targetId?: string; flatten?: boolean; enabled?: boolean; maxTouchPoints?: number; type?: string; touchPoints?: { x: number; y: number }[] } = {}) => new Promise<unknown>((resolve, reject) => { const id = ++sequence; pending.set(id, { resolve, reject }); socket.send(JSON.stringify({ id, method, params, sessionId })); });
   try {
-    const { targetInfos } = await cdp("Target.getTargets");
-    const target = targetInfos.find((entry: any) => entry.type === "page" && entry.url.startsWith(url));
+    const { targetInfos } = Schema.decodeUnknownSync(Schema.Struct({ targetInfos: Schema.Array(Schema.Struct({ type: Schema.String, url: Schema.String, targetId: Schema.String })) }))(await cdp("Target.getTargets"));
+    const target = targetInfos.find(entry => entry.type === "page" && entry.url.startsWith(url));
     assert(target, "Local smoke tab must exist.");
-    sessionId = (await cdp("Target.attachToTarget", { targetId: target.targetId, flatten: true })).sessionId;
+    sessionId = Schema.decodeUnknownSync(Schema.Struct({ sessionId: Schema.String }))(await cdp("Target.attachToTarget", { targetId: target.targetId, flatten: true })).sessionId;
     await cdp("Emulation.setTouchEmulationEnabled", { enabled: true, maxTouchPoints: 1 });
     browser("eval", "window.lastDragPointer = ''; document.addEventListener('pointerdown', event => {window.lastDragPointer = event.pointerType;}, {once:true})");
     point = dragPoints();
@@ -558,7 +573,7 @@ try {
   browser("click", '[aria-label="List Builder"]');
   browser("fill", '[aria-label="Search grocery items"]', "qa");
   browser("wait", "--fn", "document.querySelectorAll('.purchase-row').length === 3");
-  const sageHandle = JSON.parse(browser("eval", "(() => { const rect = document.querySelector('[aria-label=\"Drag qa qe Sage within Aisle Search drag\"]').getBoundingClientRect(); return { x: Math.round(rect.x + rect.width / 2), y: Math.round(rect.y + rect.height / 2) }; })()"));
+  const sageHandle = Schema.decodeUnknownSync(Schema.Struct({ x: Schema.Finite, y: Schema.Finite }))(JSON.parse(browser("eval", "(() => { const rect = document.querySelector('[aria-label=\"Drag qa qe Sage within Aisle Search drag\"]').getBoundingClientRect(); return { x: Math.round(rect.x + rect.width / 2), y: Math.round(rect.y + rect.height / 2) }; })()")));
   browser("mouse", "move", String(sageHandle.x), String(sageHandle.y));
   browser("mouse", "down", "left");
   check("!!document.querySelector('.is-dragging')", "search race starts with a real active drag");
@@ -583,15 +598,13 @@ try {
   check("document.querySelector('[aria-label=\"Aisle name\"]')?.value === 'Unsaved aisle draft'", "route rollback cancels stale drag state without discarding an unrelated aisle rename draft");
   assert.deepEqual((await household()).shoppingOrder, searchOrder, "Rejected order write must leave saved route unchanged.");
   console.log("Grocery browser smoke passed.");
-} catch (error) {
-  console.error(browser("eval", "({aisles: [...document.querySelectorAll('.route-aisle h3')].map(el=>el.textContent), animations:document.getAnimations().map(a=>a.playState), order: [...document.querySelectorAll('[aria-label=\"Arrange Aisle 10\"] .route-product > span')].map(el=>el.textContent), drag:document.querySelector('.is-dragging')?.outerHTML, error:document.querySelector('[role=alert]')?.textContent})"));
-  console.error(browser("eval", "({form: document.querySelector('.grocery-form')?.innerText, fields: [...document.querySelectorAll('.grocery-form input')].map(input => ({type:input.type,value:input.value,valid:input.validity.valid,message:input.validationMessage}))})"));
-  throw error;
 } finally {
-  browser("close");
-  const current = await household();
-  for (const item of current.meals.filter((item) => item.id.startsWith(prefix))) await request(`meals/${item.id}`, "DELETE");
-  for (const item of current.recipes.filter((item) => item.id.startsWith(prefix))) await request(`recipes/${item.id}`, "DELETE");
-  for (const item of (await household()).groceries.filter((item) => item.id.startsWith(prefix) || item.name.startsWith(prefix) || item.name === "Flat-leaf parsley")) await request(`groceries/${item.id}`, "DELETE");
-  await request("shopping-order", "PUT", original.shoppingOrder);
+  try { browser("close"); } finally {
+    const current = await household();
+    for (const item of current.meals.filter((item) => item.id.startsWith(prefix))) await request(`meals/${encodeURIComponent(item.id)}`, "DELETE");
+    for (const item of current.recipes.filter((item) => item.id.startsWith(prefix))) await request(`recipes/${encodeURIComponent(item.id)}`, "DELETE");
+    for (const item of (await household()).groceries.filter((item) => item.id.startsWith(prefix) || item.name.startsWith(prefix) || item.name === "Flat-leaf parsley")) await request(`groceries/${encodeURIComponent(item.id)}`, "DELETE");
+    await request("shopping-order", "PUT", original.shoppingOrder);
+    assert.deepEqual(await household(), original, "Fixture cleanup must restore the starting household.");
+  }
 }

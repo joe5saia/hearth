@@ -1,16 +1,27 @@
 import { randomUUID } from "node:crypto";
 import { chmod, mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
-import { DatabaseSync } from "node:sqlite";
+import { DatabaseSync, type SQLOutputValue } from "node:sqlite";
 import { pathToFileURL } from "node:url";
+import { z } from "zod";
 import { Cloudflare } from "./preview.ts";
 
 const root = resolve(".hearth-data");
 const manifestPath = resolve(root, "seed.json");
-type Seed = { owner: string; exportedAt: string; directory: string; files: string[]; counts: Record<string, number> };
+const seedSchema = z.object({
+  owner: z.string(), exportedAt: z.iso.datetime(), directory: z.uuid(),
+  files: z.array(z.string().regex(/^\d{4,}\.sql$/)),
+  counts: z.record(z.string(), z.number().int().nonnegative()),
+});
+type Seed = z.infer<typeof seedSchema>;
+const namedRowSchema = z.object({ name: z.string() });
+const queryResultSchema = z.array(z.object({ success: z.literal(true) })).min(1);
+const tableQuerySchema = z.array(z.object({ results: z.array(namedRowSchema) })).min(1);
+const statusQuerySchema = z.array(z.object({ results: z.array(z.object({ status: z.string() })) })).min(1);
 const quote = (name: string) => `"${name.replaceAll('"', '""')}"`;
 const internal = (name: string) => name.startsWith("sqlite_") || name.startsWith("_cf_") || ["__alchemy_migrations", "d1_migrations"].includes(name);
 
+/** Requires explicit production discovery/export credentials; never falls back to fixtures. */
 export function productionApi(): Cloudflare {
   const account = process.env.CLOUDFLARE_ACCOUNT_ID;
   const token = process.env.CLOUDFLARE_API_TOKEN;
@@ -18,24 +29,25 @@ export function productionApi(): Cloudflare {
   return new Cloudflare(account, token);
 }
 
+/** Discovers the unique production Website's DB binding without writing production resources. */
 export async function productionDatabase(api: Cloudflare): Promise<string> {
-  const workers = (await api.list<{ id: string; tags?: string[] }>("/workers/scripts")).filter((worker) =>
+  const workers = (await api.list("/workers/scripts", z.object({ id: z.string(), tags: z.array(z.string()).nullish() }))).filter((worker) =>
     ["alchemy:stack:hearth", "alchemy:stage:production", "alchemy:id:Website"].every((tag) => worker.tags?.includes(tag)),
   );
   if (workers.length !== 1) throw new Error("Expected exactly one production Hearth Website.");
-  const settings = await api.request<{ bindings: { type: string; name: string; id?: string; database_id?: string }[] }>(`/workers/scripts/${workers[0].id}/settings`);
+  const settings = await api.request(`/workers/scripts/${workers[0].id}/settings`, z.object({ bindings: z.array(z.object({ type: z.string(), name: z.string(), id: z.string().optional(), database_id: z.string().optional() })) }));
   const db = settings.bindings.filter((binding) => binding.type === "d1" && binding.name === "DB");
   const id = db[0]?.database_id ?? db[0]?.id;
   if (db.length !== 1 || !id) throw new Error("Production DB binding missing or ambiguous.");
   return id;
 }
 
-// This is the only production database operation: D1's read-only SQL export.
+/** Downloads a read-only production SQL export; signed URLs and household contents must stay private. */
 export async function exportProduction(api: Cloudflare): Promise<string> {
   const id = await productionDatabase(api);
   let bookmark: string | undefined;
   for (let poll = 0; poll < 120; poll++) {
-    const result = await api.request<{ status: string; at_bookmark?: string; result?: { signed_url?: string } }>(`/d1/database/${id}/export`, "POST", { output_format: "polling", ...(bookmark ? { current_bookmark: bookmark } : {}) });
+    const result = await api.request(`/d1/database/${id}/export`, z.object({ status: z.string(), at_bookmark: z.string().optional(), result: z.object({ signed_url: z.url().optional() }).optional() }), "POST", { output_format: "polling", ...(bookmark ? { current_bookmark: bookmark } : {}) });
     if (result.status === "complete" && result.result?.signed_url) {
       // Signed download URL is a credential: never log it or send the API token to it.
       const response = await fetch(result.result.signed_url, { signal: AbortSignal.timeout(120_000) });
@@ -49,24 +61,23 @@ export async function exportProduction(api: Cloudflare): Promise<string> {
   throw new Error("Production export timed out; no local data changed.");
 }
 
-// Decode the complete export in private memory. Generate a data-only replacement for the
-// checkout's migrated schema, disabling triggers during copying so no household values change.
+/** Validates an export privately and builds data-only replacement batches for the checkout's migrated schema, preserving cells and restoring triggers. */
 export async function seedSql(dump: string): Promise<{ batches: string[]; counts: Record<string, number> }> {
   const source = new DatabaseSync(":memory:");
   const target = new DatabaseSync(":memory:");
   try {
     source.exec(dump);
     const migrations = (await readdir("migrations")).filter((name) => name.endsWith(".sql")).sort();
-    const history = source.prepare("SELECT name FROM sqlite_schema WHERE type='table' AND name IN ('__alchemy_migrations','d1_migrations')").all();
+    const history = z.array(namedRowSchema).parse(source.prepare("SELECT name FROM sqlite_schema WHERE type='table' AND name IN ('__alchemy_migrations','d1_migrations')").all());
     if (history.length !== 1) throw new Error("Production migration history missing or ambiguous; refusing to guess schema compatibility.");
-    const applied = new Set(source.prepare(`SELECT name FROM ${quote(String(history[0].name))}`).all().map((row) => String(row.name)));
+    const applied = new Set(z.array(namedRowSchema).parse(source.prepare(`SELECT name FROM ${quote(history[0].name)}`).all()).map((row) => row.name));
     for (const migration of migrations) {
       const sql = await readFile(resolve("migrations", migration), "utf8");
       target.exec(sql);
       if (!applied.has(migration)) source.exec(sql);
     }
     if ([...applied].some((name) => !migrations.includes(name))) throw new Error("Production schema is ahead of this checkout; update the branch before seeding.");
-    const tables = (db: DatabaseSync) => db.prepare("SELECT name FROM sqlite_schema WHERE type='table' ORDER BY name").all().map((row) => String(row.name)).filter((name) => !internal(name));
+    const tables = (db: DatabaseSync) => z.array(namedRowSchema).parse(db.prepare("SELECT name FROM sqlite_schema WHERE type='table' ORDER BY name").all()).map((row) => row.name).filter((name) => !internal(name));
     const names = tables(target);
     if (JSON.stringify(tables(source)) !== JSON.stringify(names)) throw new Error("Production/checkout app tables differ; refusing partial copy.");
     const ordered: string[] = [];
@@ -74,29 +85,29 @@ export async function seedSql(dump: string): Promise<{ batches: string[]; counts
       if (ordered.includes(name)) return;
       if (visiting.has(name)) throw new Error("Cyclic foreign keys require a reviewed import strategy.");
       visiting.add(name);
-      for (const fk of target.prepare(`PRAGMA foreign_key_list(${quote(name)})`).all()) visit(String(fk.table), visiting);
+      for (const fk of z.array(z.object({ table: z.string() })).parse(target.prepare(`PRAGMA foreign_key_list(${quote(name)})`).all())) visit(fk.table, visiting);
       visiting.delete(name);
       ordered.push(name);
     };
     names.forEach((name) => visit(name));
-    const triggers = target.prepare("SELECT name, sql FROM sqlite_schema WHERE type='trigger' ORDER BY name").all();
+    const triggers = z.array(namedRowSchema.extend({ sql: z.string() })).parse(target.prepare("SELECT name, sql FROM sqlite_schema WHERE type='trigger' ORDER BY name").all());
     const lines = [`-- Fresh production export ${randomUUID()}; applied only to isolated databases.`,
-      ...triggers.map((row) => `DROP TRIGGER IF EXISTS ${quote(String(row.name))};`),
+      ...triggers.map((row) => `DROP TRIGGER IF EXISTS ${quote(row.name)};`),
       ...ordered.toReversed().map((name) => `DELETE FROM ${quote(name)};`),
       "DROP TABLE IF EXISTS __hearth_import_chunks;",
       "CREATE TABLE __hearth_import_chunks (cell INTEGER, position INTEGER, value TEXT NOT NULL, PRIMARY KEY(cell, position));",
     ];
-    const literal = (value: unknown): string => {
+    const literal = (value: SQLOutputValue): string => {
       if (value === null) return "NULL";
       if (typeof value === "bigint" || typeof value === "number") return String(value);
       if (value instanceof Uint8Array) return `X'${Buffer.from(value).toString("hex")}'`;
       // Hex literals preserve embedded NULs and Unicode exactly (SQLite quote() truncates at NUL).
-      return `CAST(X'${Buffer.from(String(value)).toString("hex")}' AS TEXT)`;
+      return `CAST(X'${Buffer.from(value).toString("hex")}' AS TEXT)`;
     };
     const counts: Record<string, number> = {};
     for (const name of ordered) {
-      const columns = source.prepare(`PRAGMA table_info(${quote(name)})`).all().map((row) => String(row.name));
-      const targetColumns = target.prepare(`PRAGMA table_info(${quote(name)})`).all().map((row) => String(row.name));
+      const columns = z.array(namedRowSchema).parse(source.prepare(`PRAGMA table_info(${quote(name)})`).all()).map((row) => row.name);
+      const targetColumns = z.array(namedRowSchema).parse(target.prepare(`PRAGMA table_info(${quote(name)})`).all()).map((row) => row.name);
       if (JSON.stringify(columns) !== JSON.stringify(targetColumns)) throw new Error(`Schema mismatch in ${name}; no import performed.`);
       const statement = source.prepare(`SELECT * FROM ${quote(name)}`);
       statement.setReadBigInts(true);
@@ -109,8 +120,8 @@ export async function seedSql(dump: string): Promise<{ batches: string[]; counts
         // constraints only see the complete value. No truncation or partial JSON updates.
         if (large.length) lines.push("DELETE FROM __hearth_import_chunks;");
         for (const index of large) {
-          if (typeof values[index] !== "string") throw new Error("Large non-text cells require a reviewed import strategy.");
-          const value = String(values[index]);
+          const value = values[index];
+          if (typeof value !== "string") throw new Error("Large non-text cells require a reviewed import strategy.");
           for (let offset = 0, position = 0; offset < value.length; position++) {
             let end = Math.min(offset + 4000, value.length);
             if (end < value.length && /[\uD800-\uDBFF]/.test(value[end - 1])) end--;
@@ -142,11 +153,16 @@ export async function seedSql(dump: string): Promise<{ batches: string[]; counts
   }
 }
 
+/** Reads and validates the private seed manifest; only a missing manifest means unseeded. */
 export async function localSeed(): Promise<Seed | undefined> {
-  try { return JSON.parse(await readFile(manifestPath, "utf8")); }
-  catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+  let manifest: string;
+  try { manifest = await readFile(manifestPath, "utf8"); }
+  catch (error) { if (error instanceof Error && "code" in error && error.code === "ENOENT") return; throw error; }
+  try { return seedSchema.parse(JSON.parse(manifest)); }
+  catch { throw new Error("Local seed manifest is invalid; inspect local seed metadata before preparing data. Private contents suppressed."); }
 }
 
+/** Preserves same-owner snapshots unless reseeding; empty mode bypasses all production access. */
 export async function prepareLocal(reseed = false): Promise<void> {
   if (process.env.HEARTH_EMPTY_DB === "1") return;
   await mkdir(resolve(".alchemy"), { recursive: true, mode: 0o700 });
@@ -178,6 +194,7 @@ export async function prepareLocal(reseed = false): Promise<void> {
   console.log(JSON.stringify({ owner, exportedAt: seed.exportedAt, counts, note: "Private seed prepared; Alchemy imports before serving requests. No production writes." }));
 }
 
+/** Returns only the current owner's validated seed paths; empty mode skips importing. */
 export async function localImportFiles(): Promise<string[] | undefined> {
   if (process.env.HEARTH_EMPTY_DB === "1") return;
   const seed = await localSeed();
@@ -185,13 +202,14 @@ export async function localImportFiles(): Promise<string[] | undefined> {
   return seed.files.map((file) => resolve(root, seed.directory, file));
 }
 
+/** Reads durable seed intent; unknown intent requires explicit preservation or reseeding. */
 export async function previewSeedPending(api: Cloudflare, id: string, allowUnmarked = false): Promise<boolean> {
-  const tables = await api.request<{ results: object[] }[]>(`/d1/database/${id}/query`, "POST", { sql: "SELECT name FROM sqlite_schema WHERE name='__hearth_seed'" });
+  const tables = await api.request(`/d1/database/${id}/query`, tableQuerySchema, "POST", { sql: "SELECT name FROM sqlite_schema WHERE name='__hearth_seed'" });
   if (!tables[0].results.length) {
     if (allowUnmarked) return false;
     throw new Error("Preview seed intent is unknown (legacy database or interrupted initialization). Use up --empty to preserve its data, or up --reseed to refresh explicitly.");
   }
-  const rows = await api.request<{ results: { status: string }[] }[]>(`/d1/database/${id}/query`, "POST", { sql: "SELECT status FROM __hearth_seed WHERE id=1" });
+  const rows = await api.request(`/d1/database/${id}/query`, statusQuerySchema, "POST", { sql: "SELECT status FROM __hearth_seed WHERE id=1" });
   const status = rows[0].results[0]?.status;
   if (!status || !["pending", "complete", "empty"].includes(status)) {
     if (allowUnmarked) return false;
@@ -200,24 +218,25 @@ export async function previewSeedPending(api: Cloudflare, id: string, allowUnmar
   return status === "pending";
 }
 
+/** Records intent before import; callers must supply a newly created disposable database ID. */
 export async function initializePreviewSeed(api: Cloudflare, id: string, empty: boolean): Promise<void> {
   // Call only with the ID returned by creating a NEW disposable database, never an existing binding.
   // Persist intent before export/migrations so failures cannot turn a later up into an empty fallback.
-  await api.request(`/d1/database/${id}/query`, "POST", { sql: `CREATE TABLE IF NOT EXISTS __hearth_seed (id INTEGER PRIMARY KEY, status TEXT NOT NULL); INSERT OR REPLACE INTO __hearth_seed VALUES(1,'${empty ? "empty" : "pending"}');` });
+  await api.request(`/d1/database/${id}/query`, queryResultSchema, "POST", { sql: `CREATE TABLE IF NOT EXISTS __hearth_seed (id INTEGER PRIMARY KEY, status TEXT NOT NULL); INSERT OR REPLACE INTO __hearth_seed VALUES(1,'${empty ? "empty" : "pending"}');` });
 }
 
-// Remote copying is guarded by both the production binding and the owning Preview name.
+/** Replaces only a name-verified disposable Preview, refusing the production binding as destination. */
 export async function seedPreview(api: Cloudflare, id: string, name: string): Promise<void> {
   const source = await productionDatabase(api);
   if (source === id) throw new Error("Refusing production database as seed destination.");
-  const database = await api.request<{ name: string }>(`/d1/database/${id}`);
+  const database = await api.request(`/d1/database/${id}`, z.object({ name: z.string() }));
   if (database.name !== name || !/^hearth-(?:preview-p\d{6}-[a-f0-9]{10}|p\d{6}-[a-f0-9]{10}-mcp)$/.test(name)) throw new Error("Refusing non-disposable seed destination.");
   const { batches, counts } = await seedSql(await exportProduction(api));
   // D1 query accepts multi-statement SQL; never print SQL or server errors that may quote it.
   try {
-    await api.request(`/d1/database/${id}/query`, "POST", { sql: "CREATE TABLE IF NOT EXISTS __hearth_seed (id INTEGER PRIMARY KEY, status TEXT NOT NULL); INSERT OR REPLACE INTO __hearth_seed VALUES(1,'pending');" });
-    for (const sql of batches) await api.request(`/d1/database/${id}/query`, "POST", { sql });
-    await api.request(`/d1/database/${id}/query`, "POST", { sql: "UPDATE __hearth_seed SET status='complete' WHERE id=1" });
+    await api.request(`/d1/database/${id}/query`, queryResultSchema, "POST", { sql: "CREATE TABLE IF NOT EXISTS __hearth_seed (id INTEGER PRIMARY KEY, status TEXT NOT NULL); INSERT OR REPLACE INTO __hearth_seed VALUES(1,'pending');" });
+    for (const sql of batches) await api.request(`/d1/database/${id}/query`, queryResultSchema, "POST", { sql });
+    await api.request(`/d1/database/${id}/query`, queryResultSchema, "POST", { sql: "UPDATE __hearth_seed SET status='complete' WHERE id=1" });
   }
   catch { throw new Error("Isolated Preview seed import failed; household SQL suppressed. Retry up or tear down the Preview."); }
   console.log(JSON.stringify({ seeded: name, exportedAt: new Date().toISOString(), counts }));

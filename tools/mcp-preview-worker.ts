@@ -11,7 +11,9 @@ interface PreviewEnv extends McpEnv {
 const issuer = "https://ampcode.com/api/workload-identity";
 const keys = createRemoteJWKSet(new URL(`${issuer}/jwks.json`));
 
+/** Disposable MCP entrypoint; eval access requires the owning project and user identity. */
 export default {
+  /** Enforces the Preview origin before eval identity checks or production-protocol delegation. */
   async fetch(request: Request, env: PreviewEnv, ctx: ExecutionContext) {
     const url = new URL(request.url);
     if (url.origin !== env.MCP_ORIGIN) return new Response("Unknown origin", { status: 421 });
@@ -28,10 +30,10 @@ export default {
           !env.AMP_EVAL_PROJECT_ID || !env.AMP_EVAL_USER_ID ||
           payload.project_id !== env.AMP_EVAL_PROJECT_ID || payload.user_id !== env.AMP_EVAL_USER_ID ||
           payload.token_use !== "exchanged" || typeof payload.thread_id !== "string" || !payload.thread_id ||
-          typeof payload.sub !== "string" || !payload.sub
+          typeof payload.sub !== "string" || !payload.sub || typeof payload.exp !== "number"
         ) throw new Error("Identity denied");
         return recipeMcp(env.DB, env.AI, undefined, undefined, ctx).fetch(request, {
-          authInfo: { token, clientId: payload.thread_id, scopes: ["recipes"], expiresAt: payload.exp!, resource: new URL(`${env.MCP_ORIGIN}/eval/mcp`) },
+          authInfo: { token, clientId: payload.thread_id, scopes: ["recipes"], expiresAt: payload.exp, resource: new URL(`${env.MCP_ORIGIN}/eval/mcp`) },
         });
       } catch {
         return Response.json({ error: "invalid_token" }, {

@@ -2,6 +2,38 @@ import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
 import { mkdir } from "node:fs/promises";
 import { resolve } from "node:path";
+import { Schema } from "effect";
+import { CheckSchema, HouseholdSchema, ShoppingOrderSchema } from "../src/domain.ts";
+
+// Owned by the injected callbacks below, not asserted onto arbitrary application state.
+interface SmokeWindow extends Window {
+  smokeGroup: HTMLElement;
+  smokeRow: Element;
+  keyboardRow: Element;
+  smokeFetch: typeof fetch;
+  saveDelay: number;
+  rejectSave: boolean;
+  rejectNextSave?: boolean;
+  rejectRefresh?: boolean;
+  holdNextRefresh?: boolean;
+  failNextRefresh?: boolean;
+  heldRefreshReady?: boolean;
+  releaseRefresh?: () => void;
+  smokeSaves: Set<Promise<Response>>;
+  writeHistory: { path: string; body: unknown }[];
+  stopping: boolean;
+  dragUp?: boolean;
+  pointerType: string;
+  dropTop: number;
+  motionFrames: { elapsed: number; top: number; scroll: number }[];
+  rollbackFrames: number[][];
+  checkFrames: boolean[];
+  originalAnimate: typeof Element.prototype.animate;
+}
+const RuntimeResultSchema = Schema.Struct({
+  result: Schema.Struct({ value: Schema.optional(Schema.Unknown) }),
+  exceptionDetails: Schema.optional(Schema.Unknown),
+});
 
 // Uses existing sample meals/products and restores their order; never writes a remote household.
 const url = process.argv.slice(2).find(argument => !argument.startsWith("--")) ?? "http://localhost:5173";
@@ -17,9 +49,8 @@ const toggleRoute = () => {
 const household = async () => {
   const response = await fetch(`${url}/api/household`);
   assert(response.ok);
-  const data = await response.json();
-  data.checks.sort((a: any, b: any) => a.key.localeCompare(b.key));
-  return data;
+  const data = Schema.decodeUnknownSync(HouseholdSchema, { onExcessProperty: "error" })(await response.json());
+  return { ...data, checks: [...data.checks].sort((a, b) => a.key.localeCompare(b.key)) };
 };
 const original = await household();
 if (process.argv.includes("--cleanup-check")) {
@@ -36,8 +67,8 @@ let recording = false;
 let baselineChecks = original.checks;
 
 try {
-  const aisle = original.groceries.find((item: any) => original.groceries.filter((other: any) => other.aisle === item.aisle).length >= 3)?.aisle;
-  const fixtures = original.groceries.filter((item: any) => item.aisle === aisle).slice(0, 2);
+  const aisle = original.groceries.find((item) => original.groceries.filter((other) => other.aisle === item.aisle).length >= 3)?.aisle;
+  const fixtures = original.groceries.filter((item) => item.aisle === aisle).slice(0, 2);
   assert.equal(fixtures.length, 2, "Load sample groceries with three products in an aisle.");
   for (const item of fixtures) {
     const response = await fetch(`${url}/api/checks`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ key: JSON.stringify(["shopping-list", item.id]), checked: 1 }) });
@@ -51,26 +82,45 @@ try {
   browser("click", '[aria-label="List Builder"]');
   browser("wait", ".purchase-row");
   browser("eval", "document.fonts.ready.then(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))))");
-  socket = new WebSocket(browser("get", "cdp-url"));
-  await new Promise<void>((resolve, reject) => { socket!.addEventListener("open", () => resolve(), { once: true }); socket!.addEventListener("error", reject, { once: true }); });
+  const connection = new WebSocket(browser("get", "cdp-url"));
+  socket = connection;
+  await new Promise<void>((resolve, reject) => { connection.addEventListener("open", () => resolve(), { once: true }); connection.addEventListener("error", reject, { once: true }); });
   let sequence = 0;
   let sessionId: string | undefined;
-  const pending = new Map<number, { resolve: (value: any) => void; reject: (error: Error) => void }>();
-  socket.addEventListener("message", event => { const message = JSON.parse(String(event.data)); const request = pending.get(message.id); if (!request) return; pending.delete(message.id); message.error ? request.reject(new Error(message.error.message)) : request.resolve(message.result); });
-  const cdp = (method: string, params: object = {}) => new Promise<any>((resolve, reject) => { const id = ++sequence; pending.set(id, { resolve, reject }); socket!.send(JSON.stringify({ id, method, params, sessionId })); });
-  const evaluate = async <T>(fn: () => T): Promise<Awaited<T>> => {
-    const result = await cdp("Runtime.evaluate", { expression: `(${fn.toString()})()`, awaitPromise: true, returnByValue: true });
+  const pending = new Map<number, { resolve: (value: unknown) => void; reject: (error: Error) => void }>();
+  connection.addEventListener("message", event => {
+    const message = Schema.decodeUnknownSync(Schema.Struct({
+      id: Schema.optional(Schema.Number),
+      error: Schema.optional(Schema.Struct({ message: Schema.String })),
+      result: Schema.optional(Schema.Unknown),
+    }))(JSON.parse(String(event.data)));
+    if (message.id === undefined) return;
+    const request = pending.get(message.id);
+    if (!request) return;
+    pending.delete(message.id);
+    if (message.error) request.reject(new Error(message.error.message));
+    else request.resolve(message.result);
+  });
+  const cdp = (method: string, params: object = {}) => new Promise<unknown>((resolve, reject) => { const id = ++sequence; pending.set(id, { resolve, reject }); connection.send(JSON.stringify({ id, method, params, sessionId })); });
+  const evaluateExpression = async (expression: string) => {
+    const result = Schema.decodeUnknownSync(RuntimeResultSchema)(await cdp("Runtime.evaluate", { expression, awaitPromise: true, returnByValue: true }));
     assert(!result.exceptionDetails, JSON.stringify(result.exceptionDetails));
     return result.result.value;
   };
-  const { targetInfos } = await cdp("Target.getTargets");
-  const target = targetInfos.find((entry: any) => entry.type === "page" && entry.url.startsWith(url));
+  const evaluate = (fn: (state: SmokeWindow) => unknown) => evaluateExpression(`(${fn.toString()})(window)`);
+  const selectGroup = (selector: string) => evaluateExpression(`(() => {
+    const group = document.querySelector(${JSON.stringify(selector)});
+    if (!(group instanceof HTMLElement)) throw new Error('Expected shopping group');
+    window.smokeGroup = group;
+  })()`);
+  const { targetInfos } = Schema.decodeUnknownSync(Schema.Struct({ targetInfos: Schema.Array(Schema.Struct({ type: Schema.String, url: Schema.String, targetId: Schema.String })) }))(await cdp("Target.getTargets"));
+  const target = targetInfos.find((entry) => entry.type === "page" && entry.url.startsWith(url));
   assert(target);
-  sessionId = (await cdp("Target.attachToTarget", { targetId: target.targetId, flatten: true })).sessionId;
-  await evaluate(() => {
-    const w = window as any;
-    w.smokeGroup = [...document.querySelectorAll(".purchase-group")].find(group => group.querySelectorAll(".route-drag:not(:disabled)").length >= 3);
-    if (!w.smokeGroup) throw new Error("Load sample meals with at least three linked products in one aisle.");
+  sessionId = Schema.decodeUnknownSync(Schema.Struct({ sessionId: Schema.String }))(await cdp("Target.attachToTarget", { targetId: target.targetId, flatten: true })).sessionId;
+  await evaluate((w) => {
+    const group = [...document.querySelectorAll(".purchase-group")].find(group => group.querySelectorAll(".route-drag:not(:disabled)").length >= 3);
+    if (!(group instanceof HTMLElement)) throw new Error("Load sample meals with at least three linked products in one aisle.");
+    w.smokeGroup = group;
     w.smokeFetch = window.fetch;
     w.saveDelay = 900;
     w.rejectSave = false;
@@ -83,7 +133,10 @@ try {
       if (hold) w.holdNextRefresh = false;
       const operation = (async () => {
         if (save) {
-          w.writeHistory.push({ path: String(args[0]), body: JSON.parse(args[1]!.body as string) });
+          const body = args[1]?.body;
+          if (typeof body !== "string") throw new Error("Expected a JSON shopping save body");
+          // Capture without inspecting; the host decodes each payload with the owning domain schema.
+          w.writeHistory.push({ path: String(args[0]), body: JSON.parse(body) });
           await new Promise(resolve => setTimeout(resolve, w.saveDelay));
           if (w.stopping) throw new Error("Browser smoke: cleanup canceled pending save");
           if (w.rejectSave || w.rejectNextSave) {
@@ -96,7 +149,7 @@ try {
           throw new Error("Browser smoke: simulated refresh failure");
         }
         const response = await w.smokeFetch(...args);
-        if (hold) await new Promise(resolve => { w.releaseRefresh = resolve; w.heldRefreshReady = true; });
+        if (hold) await new Promise<void>(resolve => { w.releaseRefresh = resolve; w.heldRefreshReady = true; });
         if (save && response.ok && w.rejectRefresh) w.failNextRefresh = true;
         return response;
       })();
@@ -107,31 +160,35 @@ try {
       return operation;
     };
   });
-  const names = () => evaluate(() => [...(window as any).smokeGroup.querySelectorAll(".item-info strong, .route-product > span")].map((el: any) => el.childNodes[0].textContent));
+  const names = async () => Schema.decodeUnknownSync(Schema.Array(Schema.String))(await evaluate((w) => [...w.smokeGroup.querySelectorAll(".item-info strong, .route-product > span")].map((el) => el.childNodes[0]?.textContent)));
   const before = await names();
   const pause = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
   const drag = async (touch: boolean, cancel = false, gesture: "hold" | "swipe" | "tap" | "drift" = "hold") => {
-    const point = await evaluate(async () => {
-      const w = window as any;
+    const point = Schema.decodeUnknownSync(Schema.Struct({ x: Schema.Number, y: Schema.Number, end: Schema.Number }))(await evaluate(async (w) => {
       w.smokeGroup.scrollIntoView({ block: "center" });
       await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
       const rows = [...w.smokeGroup.querySelectorAll("[data-reorder-row]")];
-      w.smokeRow = w.dragUp ? rows.at(-1) : rows[0];
-      const source = w.smokeRow.querySelector(".route-drag").getBoundingClientRect();
-      const destination = (w.dragUp ? rows[0] : rows.at(-1)).getBoundingClientRect();
+      const sourceRow = w.dragUp ? rows.at(-1) : rows[0];
+      const destinationRow = w.dragUp ? rows[0] : rows.at(-1);
+      if (!sourceRow || !destinationRow) throw new Error("Expected reorder rows");
+      w.smokeRow = sourceRow;
+      const grip = sourceRow.querySelector(".route-drag");
+      if (!(grip instanceof HTMLButtonElement)) throw new Error("Expected reorder grip");
+      const source = grip.getBoundingClientRect();
+      const destination = destinationRow.getBoundingClientRect();
       w.pointerType = "";
       document.addEventListener("pointerdown", event => { w.pointerType = event.pointerType; }, { once: true });
       return { x: source.left + source.width / 2, y: source.top + source.height / 2, end: destination.top + destination.height / 2 + (w.dragUp ? -5 : 5) };
-    });
+    }));
     await pause(100);
     await cdp("Emulation.setTouchEmulationEnabled", { enabled: false });
     await cdp("Emulation.setTouchEmulationEnabled", { enabled: touch, maxTouchPoints: 1 });
-    const hit = await cdp("Runtime.evaluate", { expression: `document.elementFromPoint(${point.x}, ${point.y})?.closest('.route-drag') === window.smokeRow.querySelector('.route-drag')`, returnByValue: true });
+    const hit = Schema.decodeUnknownSync(RuntimeResultSchema)(await cdp("Runtime.evaluate", { expression: `document.elementFromPoint(${point.x}, ${point.y})?.closest('.route-drag') === window.smokeRow.querySelector('.route-drag')`, returnByValue: true }));
     assert.equal(hit.result.value, true, "Drag must start on the actual grip after layout settles.");
     const input = (phase: "start" | "move" | "end" | "cancel", y: number) => touch
       ? cdp("Input.dispatchTouchEvent", { type: { start: "touchStart", move: "touchMove", end: "touchEnd", cancel: "touchCancel" }[phase], touchPoints: phase === "end" || phase === "cancel" ? [] : [{ x: point.x, y }] })
       : cdp("Input.dispatchMouseEvent", { type: { start: "mousePressed", move: "mouseMoved", end: "mouseReleased", cancel: "mouseReleased" }[phase], x: point.x, y, button: "left", buttons: phase === "end" ? 0 : 1, clickCount: 1 });
-    const scrollBefore = await evaluate(() => scrollY);
+    const scrollBefore = Schema.decodeUnknownSync(Schema.Number)(await evaluate(() => scrollY));
     const swipeOffset = scrollBefore > 20 ? 90 : -90;
     await input("start", point.y);
     if (touch) {
@@ -157,7 +214,7 @@ try {
         assert.equal(await evaluate(() => !!document.querySelector(".is-dragging")), false, "Released or moving touches must cancel the hold timer.");
         if (gesture !== "tap") await input("end", point.y + (gesture === "swipe" ? swipeOffset : -10));
         await pause(400);
-        if (gesture === "swipe") assert(Math.abs(await evaluate(() => scrollY) - scrollBefore) > 20, "Swiping from the handle must actually scroll the page.");
+        if (gesture === "swipe") assert(Math.abs(Schema.decodeUnknownSync(Schema.Number)(await evaluate(() => scrollY)) - scrollBefore) > 20, "Swiping from the handle must actually scroll the page.");
         return;
       }
       assert.equal(await evaluate(() => !!document.querySelector(".is-dragging")), true, "A held touch must activate dragging.");
@@ -167,17 +224,16 @@ try {
       await pause(16);
     }
     await evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
-    assert.equal(await evaluate(() => (window as any).pointerType), touch ? "touch" : "mouse");
+    assert.equal(await evaluate((w) => w.pointerType), touch ? "touch" : "mouse");
     assert.equal(await evaluate(() => !!document.querySelector(".drop-target")), true);
-    assert.equal(await evaluate(() => getSelection()!.toString()), "");
+    assert.equal(await evaluate(() => getSelection()?.toString()), "");
     assert.equal(await evaluate(() => scrollY), scrollBefore, "An activated drag must not scroll the page.");
-    await evaluate(() => {
-      const w = window as any;
+    await evaluate((w) => {
       w.dropTop = w.smokeRow.getBoundingClientRect().top;
-      w.frames = [];
+      w.motionFrames = [];
       const start = performance.now();
       const sample = () => {
-        w.frames.push({ elapsed: performance.now() - start, top: w.smokeRow.getBoundingClientRect().top, scroll: scrollY });
+        w.motionFrames.push({ elapsed: performance.now() - start, top: w.smokeRow.getBoundingClientRect().top, scroll: scrollY });
         if (performance.now() - start < 1400) requestAnimationFrame(sample);
       };
       requestAnimationFrame(sample);
@@ -188,7 +244,7 @@ try {
     await drag(true, false, gesture);
     assert.deepEqual(await names(), before);
     assert.deepEqual((await household()).shoppingOrder, original.shoppingOrder);
-    assert.equal(await evaluate(() => (window as any).writeHistory.length), 0, "Scrolling and short touches must not issue order writes.");
+    assert.equal(await evaluate((w) => w.writeHistory.length), 0, "Scrolling and short touches must not issue order writes.");
   }
   console.log("PASS native handle swipe scrolls; short tap and pre-hold movement cancel activation without saving");
   await drag(false);
@@ -197,14 +253,15 @@ try {
   assert.deepEqual(await names(), [...before.slice(1), before[0]], "Order must update before the delayed save.");
   assert.deepEqual((await household()).shoppingOrder, original.shoppingOrder, "The real Worker save is still pending.");
   await pause(1450);
-  const motion = await evaluate(() => {
-    const w = window as any;
-    return { dropTop: w.dropTop, frames: w.frames };
-  });
-  const finalTop = motion.frames.at(-1).top;
-  assert(motion.frames.every((frame: any) => frame.top >= Math.min(motion.dropTop, finalTop) - 2 && frame.top <= Math.max(motion.dropTop, finalTop) + 2), `Dropped item must settle directly, never snap back to its old slot: ${JSON.stringify({ dropTop: motion.dropTop, finalTop, minimum: Math.min(...motion.frames.map((frame: any) => frame.top)), maximum: Math.max(...motion.frames.map((frame: any) => frame.top)), scrolls: [...new Set(motion.frames.map((frame: any) => frame.scroll))] })}`);
-  assert(motion.frames.filter((frame: any) => frame.elapsed > 350).every((frame: any) => Math.abs(frame.top - finalTop) < 1), "Save acknowledgement must not restart the animation.");
-  assert.equal(new Set(motion.frames.map((frame: any) => frame.scroll)).size, 1, "Reordering must not jump the viewport.");
+  const motion = Schema.decodeUnknownSync(Schema.Struct({ dropTop: Schema.Number, frames: Schema.Array(Schema.Struct({ elapsed: Schema.Number, top: Schema.Number, scroll: Schema.Number })) }))(await evaluate((w) => {
+    return { dropTop: w.dropTop, frames: w.motionFrames };
+  }));
+  const finalFrame = motion.frames.at(-1);
+  assert(finalFrame, "Motion sampling must produce frames");
+  const finalTop = finalFrame.top;
+  assert(motion.frames.every((frame) => frame.top >= Math.min(motion.dropTop, finalTop) - 2 && frame.top <= Math.max(motion.dropTop, finalTop) + 2), `Dropped item must settle directly, never snap back to its old slot: ${JSON.stringify({ dropTop: motion.dropTop, finalTop, minimum: Math.min(...motion.frames.map((frame) => frame.top)), maximum: Math.max(...motion.frames.map((frame) => frame.top)), scrolls: [...new Set(motion.frames.map((frame) => frame.scroll))] })}`);
+  assert(motion.frames.filter((frame) => frame.elapsed > 350).every((frame) => Math.abs(frame.top - finalTop) < 1), "Save acknowledgement must not restart the animation.");
+  assert.equal(new Set(motion.frames.map((frame) => frame.scroll)).size, 1, "Reordering must not jump the viewport.");
   const saved = await household();
   assert.notDeepEqual(saved.shoppingOrder.items, original.shoppingOrder.items);
   assert.deepEqual(saved.shoppingOrder.aisles, original.shoppingOrder.aisles);
@@ -226,7 +283,7 @@ try {
   assert.equal(await evaluate(() => document.getAnimations().length), 0);
   console.log("PASS native touch cancellation smoothly restores rows without saving");
 
-  await evaluate(() => { (window as any).saveDelay = 0; });
+  await evaluate((w) => { w.saveDelay = 0; });
   await drag(true);
   await pause(1500);
   assert.deepEqual(await names(), [...beforeCancel.slice(1), beforeCancel[0]]);
@@ -237,22 +294,24 @@ try {
 
   const beforeFailure = await names();
   const persisted = (await household()).shoppingOrder;
-  await evaluate(() => { (window as any).rejectSave = true; (window as any).saveDelay = 80; });
+  await evaluate((w) => { w.rejectSave = true; w.saveDelay = 80; });
   await drag(true);
   await pause(1500);
   assert.deepEqual(await names(), beforeFailure);
   assert.deepEqual((await household()).shoppingOrder, persisted);
   assert.equal(await evaluate(() => document.getAnimations().length), 0);
-  assert.equal(await evaluate(() => document.body.textContent!.includes("simulated offline save")), true);
+  assert.equal(await evaluate(() => document.body.textContent?.includes("Your shopping change couldn’t be confirmed.")), true);
+  assert.equal(await evaluate(() => document.body.textContent?.includes("simulated offline save")), false, "Private dependency failures must not be rendered.");
   console.log("PASS failed save rolls back and leaves no lingering animations or disabled grips");
 
   // Exercise rollback after both geometry and viewport coordinates have changed.
-  await evaluate(() => { (window as any).saveDelay = 900; });
+  await evaluate((w) => { w.saveDelay = 900; });
   await drag(true);
   await pause(80);
-  await evaluate(async () => {
-    const w = window as any;
-    w.smokeGroup.querySelectorAll(".purchase-details")[1].open = true;
+  await evaluate(async (w) => {
+    const details = w.smokeGroup.querySelectorAll(".purchase-details")[1];
+    if (!(details instanceof HTMLDetailsElement)) throw new Error("Expected shopping disclosure");
+    details.open = true;
     scrollBy(0, 120);
     await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
     const rows = [...w.smokeGroup.querySelectorAll("[data-reorder-row]")];
@@ -267,27 +326,34 @@ try {
   });
   await pause(1500);
   assert.deepEqual(await names(), beforeFailure);
-  const rollbackFrames = await evaluate(() => (window as any).rollbackFrames);
-  rollbackFrames[0].forEach((start: number, index: number) => {
-    const end = rollbackFrames.at(-1)[index];
-    assert(rollbackFrames.every((frame: number[]) => frame[index] >= Math.min(start, end) - 2 && frame[index] <= Math.max(start, end) + 2), "Rollback after scrolling/disclosure must not overshoot or reuse viewport coordinates.");
+  const rollbackFrames = Schema.decodeUnknownSync(Schema.Array(Schema.Array(Schema.Number)))(await evaluate((w) => w.rollbackFrames));
+  const firstRollback = rollbackFrames[0];
+  const lastRollback = rollbackFrames.at(-1);
+  assert(firstRollback && lastRollback, "Rollback sampling must produce frames");
+  firstRollback.forEach((start, index) => {
+    const end = lastRollback[index];
+    assert(rollbackFrames.every((frame) => frame[index] >= Math.min(start, end) - 2 && frame[index] <= Math.max(start, end) + 2), "Rollback after scrolling/disclosure must not overshoot or reuse viewport coordinates.");
   });
   assert.equal(await evaluate(() => document.getAnimations().length), 0);
-  await evaluate(() => { (window as any).smokeGroup.querySelectorAll(".purchase-details")[1].open = false; });
+  await evaluate((w) => {
+    const details = w.smokeGroup.querySelectorAll(".purchase-details")[1];
+    if (!(details instanceof HTMLDetailsElement)) throw new Error("Expected shopping disclosure");
+    details.open = false;
+  });
   console.log("PASS delayed rollback after scrolling and variable-height disclosure remains bounded and settles cleanly");
 
-  await evaluate(() => { (window as any).rejectSave = false; (window as any).rejectRefresh = true; (window as any).saveDelay = 0; });
+  await evaluate((w) => { w.rejectSave = false; w.rejectRefresh = true; w.saveDelay = 0; });
   await drag(true);
   await pause(500);
   const afterRefreshFailure = [...beforeFailure.slice(1), beforeFailure[0]];
   assert.deepEqual(await names(), afterRefreshFailure, "An acknowledged write must not roll back when refresh fails.");
   assert.notDeepEqual((await household()).shoppingOrder, persisted);
-  assert.equal(await evaluate(() => document.body.textContent!.includes("was saved, but")), true);
-  await evaluate(() => { (window as any).rejectRefresh = false; });
+  assert.equal(await evaluate(() => document.body.textContent?.includes("was saved, but")), true);
+  await evaluate((w) => { w.rejectRefresh = false; });
   console.log("PASS successful PUT followed by failed household refresh retains the committed order");
 
   await cdp("Emulation.setEmulatedMedia", { features: [{ name: "prefers-reduced-motion", value: "reduce" }] });
-  await evaluate(() => { (window as any).rejectSave = false; (window as any).saveDelay = 900; });
+  await evaluate((w) => { w.rejectSave = false; w.saveDelay = 900; });
   await drag(true);
   await pause(100);
   assert.equal(await evaluate(() => matchMedia("(prefers-reduced-motion: reduce)").matches && document.getAnimations().length === 0), true);
@@ -299,70 +365,90 @@ try {
   browser("eval", "document.querySelector('[data-reorder-group]').scrollIntoView(); scrollBy(0,-70)");
   browser("screenshot", resolve(".amp/in/artifacts/shopping-reorder.png"));
 
-  const groupLabel = await evaluate(() => (window as any).smokeGroup.getAttribute("aria-label"));
+  const groupLabel = Schema.decodeUnknownSync(Schema.String)(await evaluate((w) => w.smokeGroup.getAttribute("aria-label")));
   await cdp("Emulation.setEmulatedMedia", { features: [] });
   browser("click", '[aria-label="Exit List Builder"]');
   toggleRoute();
   browser("set", "viewport", "1280", "900", "2");
-  await evaluate(() => {
-    const w = window as any;
+  await evaluate((w) => {
     const label = `Arrange ${w.smokeGroup.getAttribute("aria-label")}`;
-    w.smokeGroup = [...document.querySelectorAll(".route-aisle")].find(group => group.getAttribute("aria-label") === label);
+    const group = [...document.querySelectorAll(".route-aisle")].find(group => group.getAttribute("aria-label") === label);
+    if (!(group instanceof HTMLElement)) throw new Error("Expected route aisle");
+    w.smokeGroup = group;
     w.dragUp = true;
     w.saveDelay = 0;
   });
   const routeBefore = await names();
+  const lastRouteName = routeBefore.at(-1);
+  assert(lastRouteName !== undefined, "Route group must contain a product");
   await drag(true);
   await pause(1500);
-  const routeAfter = [routeBefore.at(-1), ...routeBefore.slice(0, -1)];
+  const routeAfter = [lastRouteName, ...routeBefore.slice(0, -1)];
   assert.deepEqual(await names(), routeAfter, "Upward route-editor drag must insert rather than swap.");
-  await evaluate(() => (window as any).smokeGroup.querySelector('.route-product [aria-label$="down"]').focus());
+  await evaluate((w) => {
+    const button = w.smokeGroup.querySelector('.route-product [aria-label$="down"]');
+    if (!(button instanceof HTMLButtonElement)) throw new Error("Expected route move button");
+    button.focus();
+  });
   browser("press", "Enter");
   await pause(1000);
   const afterKeyboard = [routeAfter[1], routeAfter[0], ...routeAfter.slice(2)];
   assert.deepEqual(await names(), afterKeyboard);
   assert.equal(await evaluate(() => document.getAnimations().length), 0);
   // Slow only playback so the active-animation interleaving is deterministic even on a slow Worker.
-  await evaluate(() => {
+  await evaluate((w) => {
     const animate = Element.prototype.animate;
     Element.prototype.animate = function (...args) {
       const animation = animate.apply(this, args);
       if (this.matches("[data-reorder-row]")) animation.playbackRate = 0.1;
       return animation;
     };
-    (window as any).originalAnimate = animate;
+    w.originalAnimate = animate;
   });
-  const keyMove = async (direction: string) => {
-    await cdp("Runtime.evaluate", { expression: `window.keyboardRow = window.smokeGroup.querySelectorAll('.route-product')[${direction === "down" ? 1 : 2}]; window.keyboardRow.querySelector('[aria-label$="${direction}"]').focus()`, returnByValue: true });
+  const keyMove = async (direction: "down" | "up") => {
+    await evaluateExpression(`(() => {
+      const row = window.smokeGroup.querySelectorAll('.route-product')[${direction === "down" ? 1 : 2}];
+      if (!(row instanceof HTMLElement)) throw new Error('Expected keyboard reorder row');
+      window.keyboardRow = row;
+      const button = row.querySelector('[aria-label$="${direction}"]');
+      if (!(button instanceof HTMLButtonElement)) throw new Error('Expected route move button');
+      button.focus();
+    })()`);
     browser("press", "Enter");
     for (let attempt = 0; attempt < 50; attempt++) {
-      if (await evaluate(() => !(window as any).smokeGroup.querySelector('.route-product .route-drag').disabled)) return;
+      if (Schema.decodeUnknownSync(Schema.Boolean)(await evaluate((w) => {
+        const grip = w.smokeGroup.querySelector('.route-product .route-drag');
+        if (!(grip instanceof HTMLButtonElement)) throw new Error("Expected route grip");
+        return !grip.disabled;
+      }))) return;
       await pause(5);
     }
     throw new Error("Rapid keyboard save did not finish");
   };
   await keyMove("down");
   assert.deepEqual(await names(), [afterKeyboard[0], afterKeyboard[2], afterKeyboard[1], ...afterKeyboard.slice(3)]);
-  assert(await evaluate(() => document.getAnimations().length > 0), "Second interaction must happen during settling, not after it.");
-  const grab = await evaluate(() => {
-    const row = (window as any).keyboardRow;
-    const grip = row.querySelector(".route-drag").getBoundingClientRect();
+  assert.equal(await evaluate(() => document.getAnimations().length > 0), true, "Second interaction must happen during settling, not after it.");
+  const grab = Schema.decodeUnknownSync(Schema.Struct({ top: Schema.Number, x: Schema.Number, y: Schema.Number }))(await evaluate((w) => {
+    const row = w.keyboardRow;
+    const button = row.querySelector(".route-drag");
+    if (!(button instanceof HTMLButtonElement)) throw new Error("Expected route grip");
+    const grip = button.getBoundingClientRect();
     return { top: row.getBoundingClientRect().top, x: grip.left + grip.width / 2, y: grip.top + grip.height / 2 };
-  });
+  }));
   await cdp("Emulation.setTouchEmulationEnabled", { enabled: false });
   await cdp("Input.dispatchMouseEvent", { type: "mousePressed", x: grab.x, y: grab.y, button: "left", buttons: 1, clickCount: 1 });
-  assert.equal(await evaluate(() => (window as any).keyboardRow.classList.contains("is-dragging")), true);
-  const grabbedTop = await evaluate(() => (window as any).keyboardRow.getBoundingClientRect().top);
+  assert.equal(await evaluate((w) => w.keyboardRow.classList.contains("is-dragging")), true);
+  const grabbedTop = Schema.decodeUnknownSync(Schema.Number)(await evaluate((w) => w.keyboardRow.getBoundingClientRect().top));
   assert(Math.abs(grabbedTop - grab.top) < 6, "Re-grabbing an animated row must not jump to its layout position.");
   await cdp("Input.dispatchMouseEvent", { type: "mouseReleased", x: grab.x, y: grab.y, button: "left", buttons: 0, clickCount: 1 });
   await keyMove("up");
   await pause(2500);
   assert.deepEqual(await names(), afterKeyboard, "Opposite rapid moves must restore the exact order.");
   assert.equal(await evaluate(() => document.getAnimations().length), 0);
-  await evaluate(() => { Element.prototype.animate = (window as any).originalAnimate; });
+  await evaluate((w) => { Element.prototype.animate = w.originalAnimate; });
   console.log("PASS animated-row re-grab continuity and opposite keyboard reorders during settling (slowed playback, real saves)");
 
-  await evaluate(() => { (window as any).saveDelay = 900; (window as any).writeHistory = []; });
+  await evaluate((w) => { w.saveDelay = 900; w.writeHistory = []; });
   const queuedBaseline = (await household()).shoppingOrder;
   await keyMove("down");
   await keyMove("up");
@@ -370,20 +456,26 @@ try {
   assert.deepEqual((await household()).shoppingOrder, queuedBaseline);
   assert.equal(await evaluate(() => { const event = new Event("beforeunload", { cancelable: true }); window.dispatchEvent(event); return event.defaultPrevented; }), true, "Pending changes must install an unsaved-exit warning.");
   toggleRoute();
-  await cdp("Runtime.evaluate", { expression: `window.smokeGroup = document.querySelector(${JSON.stringify(`[aria-label="${groupLabel}"]`)}); true;`, returnByValue: true });
-  const checkboxLabels = await evaluate(() => [...(window as any).smokeGroup.querySelectorAll('input[type="checkbox"]')].filter((box: any) => box.checked).slice(0, 2).map((box: any) => box.getAttribute("aria-label")));
+  await selectGroup(`[aria-label="${groupLabel}"]`);
+  const checkboxLabels = Schema.decodeUnknownSync(Schema.Array(Schema.String))(await evaluate((w) => [...w.smokeGroup.querySelectorAll('input[type="checkbox"]')].filter((box) => {
+    if (!(box instanceof HTMLInputElement)) throw new Error("Expected shopping checkbox");
+    return box.checked;
+  }).slice(0, 2).map((box) => box.getAttribute("aria-label"))));
   assert.equal(checkboxLabels.length, 2, "Use two off-list sample products.");
-  assert.equal(await evaluate(() => [...document.querySelectorAll('.purchase-row input, .route-drag')].every((control: any) => !control.disabled)), true, "Pending route saves must not lock checking or dragging.");
+  assert.equal(await evaluate(() => [...document.querySelectorAll('.purchase-row input, .route-drag')].every((control) => (control instanceof HTMLInputElement || control instanceof HTMLButtonElement) && !control.disabled)), true, "Pending route saves must not lock checking or dragging.");
   for (const label of [checkboxLabels[0], checkboxLabels[0], checkboxLabels[1]]) browser("click", `[aria-label=${JSON.stringify(label)}]`);
-  const immediateCheck = await cdp("Runtime.evaluate", { expression: `document.querySelector(${JSON.stringify(`[aria-label=${JSON.stringify(checkboxLabels[1])}]`)}).checked`, returnByValue: true });
+  const immediateCheck = Schema.decodeUnknownSync(RuntimeResultSchema)(await cdp("Runtime.evaluate", { expression: `(() => { const box = document.querySelector(${JSON.stringify(`[aria-label=${JSON.stringify(checkboxLabels[1])}]`)}); if (!(box instanceof HTMLInputElement)) throw new Error('Expected shopping checkbox'); return box.checked; })()`, returnByValue: true }));
   assert.equal(immediateCheck.result.value, false, "Membership must update before the queued write is sent.");
-  await evaluate(() => {
-    const w = window as any;
-    const boxes = [...w.smokeGroup.querySelectorAll('input[type="checkbox"]')].filter((box: any) => !box.checked);
-    w.pendingCheckbox = boxes.at(-1);
+  await evaluate((w) => {
+    const boxes = [...w.smokeGroup.querySelectorAll('input[type="checkbox"]')].filter((box) => {
+      if (!(box instanceof HTMLInputElement)) throw new Error("Expected shopping checkbox");
+      return !box.checked;
+    });
+    const pendingCheckbox = boxes.at(-1);
+    if (!(pendingCheckbox instanceof HTMLInputElement)) throw new Error("Expected pending shopping checkbox");
     w.checkFrames = [];
     const sample = () => {
-      w.checkFrames.push(w.pendingCheckbox.checked);
+      w.checkFrames.push(pendingCheckbox.checked);
       if (document.querySelector(".shopping-save-status")) requestAnimationFrame(sample);
     };
     sample();
@@ -392,20 +484,27 @@ try {
   assert.equal(await evaluate(() => document.querySelector('.shopping-save-status')?.textContent), "Saving…");
   browser("screenshot", resolve(".amp/in/artifacts/shopping-saving-desktop.png"));
   browser("wait", "--fn", "!document.querySelector('.shopping-save-status')");
-  const history = await evaluate(() => (window as any).writeHistory);
-  assert.deepEqual(history.map((write: any) => write.path.split("/").at(-1)), ["shopping-order", "shopping-order", "checks", "checks", "checks"]);
-  assert.deepEqual(history.slice(2).map((write: any) => write.body.checked), [0, 1, 0]);
-  assert.equal(await evaluate(() => (window as any).checkFrames.every((value: boolean) => !value)), true, "Older saves/refreshes must not flicker newer optimistic membership.");
+  const history = Schema.decodeUnknownSync(Schema.Array(Schema.Struct({ path: Schema.String, body: Schema.Union([ShoppingOrderSchema, CheckSchema]) })), { onExcessProperty: "error" })(await evaluate((w) => w.writeHistory));
+  assert.deepEqual(history.map((write) => write.path.split("/").at(-1)), ["shopping-order", "shopping-order", "checks", "checks", "checks"]);
+  assert.deepEqual(history.slice(2).map((write) => {
+    assert("checked" in write.body, "Expected membership write body");
+    return write.body.checked;
+  }), [0, 1, 0]);
+  assert.equal(await evaluate((w) => w.checkFrames.every((value) => !value)), true, "Older saves/refreshes must not flicker newer optimistic membership.");
   assert.deepEqual((await household()).shoppingOrder, history[1].body);
-  const pendingCheck = history.at(-1).body;
-  assert((await household()).checks.some((check: any) => check.key === pendingCheck.key && check.checked === 0));
+  const pendingWrite = history.at(-1);
+  assert(pendingWrite, "Expected final membership write");
+  assert("key" in pendingWrite.body, "Expected final membership write body");
+  const pendingCheck = pendingWrite.body;
+  assert((await household()).checks.some((check) => check.key === pendingCheck.key && check.checked === 0));
   browser("click", `[aria-label=${JSON.stringify(checkboxLabels[1])}]`);
   browser("wait", "--fn", "!document.querySelector('.shopping-save-status')");
   assert.deepEqual((await household()).checks, baselineChecks);
   console.log("PASS delayed saves allow consecutive reorders and rapid check/uncheck across products, preserve order, and do not flicker");
 
   toggleRoute();
-  await cdp("Runtime.evaluate", { expression: `window.smokeGroup = document.querySelector(${JSON.stringify(`[aria-label="Arrange ${groupLabel}"]`)}); window.saveDelay = 500; window.rejectNextSave = true;`, returnByValue: true });
+  await selectGroup(`[aria-label="Arrange ${groupLabel}"]`);
+  await evaluate((w) => { w.saveDelay = 500; w.rejectNextSave = true; });
   await keyMove("down"); await keyMove("up");
   browser("wait", "--fn", "!document.querySelector('.shopping-save-status')");
   assert.deepEqual(await names(), afterKeyboard);
@@ -413,12 +512,12 @@ try {
   assert.equal(await evaluate(() => !!document.querySelector('.error')), false, "A superseded failed write must not report failure for a successful later intent.");
   console.log("PASS a failed earlier queued write neither rolls back nor blocks a later successful route save");
 
-  await evaluate(() => { const w = window as any; w.saveDelay = 80; w.rejectSave = true; });
+  await evaluate((w) => { w.saveDelay = 80; w.rejectSave = true; });
   await keyMove("down");
   browser("wait", ".error");
   browser("wait", "--fn", "!document.querySelector('.shopping-save-status')");
   assert.deepEqual(await names(), afterKeyboard, "A failed last edit must restore the last acknowledged order.");
-  await evaluate(() => { const w = window as any; w.rejectSave = false; w.holdNextRefresh = true; });
+  await evaluate((w) => { w.rejectSave = false; w.holdNextRefresh = true; });
   browser("eval", "scrollTo(0,0)");
   browser("click", ".error button");
   browser("wait", "--fn", "window.heldRefreshReady");
@@ -426,7 +525,10 @@ try {
   browser("wait", "--fn", "!document.querySelector('.shopping-save-status')");
   const newerNames = [afterKeyboard[0], afterKeyboard[2], afterKeyboard[1], ...afterKeyboard.slice(3)];
   assert.deepEqual(await names(), newerNames);
-  await evaluate(() => { (window as any).releaseRefresh(); });
+  await evaluate((w) => {
+    if (!w.releaseRefresh) throw new Error("Expected held household refresh");
+    w.releaseRefresh();
+  });
   await pause(300);
   assert.deepEqual(await names(), newerNames, "An old household response must not replace a newer acknowledged route.");
   await keyMove("up");
@@ -435,13 +537,18 @@ try {
   console.log("PASS latest-write failure rolls back correctly, and stale refresh cannot overwrite a newer acknowledged save");
 
   toggleRoute();
-  await cdp("Runtime.evaluate", { expression: `window.smokeGroup = document.querySelector(${JSON.stringify(`[aria-label="${groupLabel}"]`)}); window.rejectNextSave = true; window.saveDelay = 500;`, returnByValue: true });
+  await selectGroup(`[aria-label="${groupLabel}"]`);
+  await evaluate((w) => { w.rejectNextSave = true; w.saveDelay = 500; });
   for (const label of checkboxLabels) browser("click", `[aria-label=${JSON.stringify(label)}]`);
   browser("wait", "--fn", "!document.querySelector('.shopping-save-status')");
-  const checkedAfterFailure = await evaluate(() => [...(window as any).smokeGroup.querySelectorAll('input[type="checkbox"]')].map((box: any) => ({ label: box.getAttribute("aria-label"), checked: box.checked })));
-  assert.equal(checkedAfterFailure.find((box: any) => box.label === checkboxLabels[0]).checked, true, "Only the failed membership change should roll back.");
-  assert.equal(checkedAfterFailure.find((box: any) => box.label === checkboxLabels[1]).checked, false, "An independent later membership change must remain saved.");
-  assert.equal(await evaluate(() => document.querySelector('.error')?.textContent?.includes("simulated offline save")), true, "Independent failures must not be hidden by a later success.");
+  const checkedAfterFailure = Schema.decodeUnknownSync(Schema.Array(Schema.Struct({ label: Schema.String, checked: Schema.Boolean })))(await evaluate((w) => [...w.smokeGroup.querySelectorAll('input[type="checkbox"]')].map((box) => {
+    if (!(box instanceof HTMLInputElement)) throw new Error("Expected shopping checkbox");
+    return { label: box.getAttribute("aria-label"), checked: box.checked };
+  })));
+  assert.equal(checkedAfterFailure.find((box) => box.label === checkboxLabels[0])?.checked, true, "Only the failed membership change should roll back.");
+  assert.equal(checkedAfterFailure.find((box) => box.label === checkboxLabels[1])?.checked, false, "An independent later membership change must remain saved.");
+  assert.equal(await evaluate(() => document.querySelector('.error')?.textContent?.includes("Your shopping change couldn’t be confirmed.")), true, "Independent failures must not be hidden by a later success.");
+  assert.equal(await evaluate(() => document.body.textContent?.includes("simulated offline save")), false, "Private dependency failures must not be rendered.");
   browser("click", `[aria-label=${JSON.stringify(checkboxLabels[1])}]`);
   browser("wait", "--fn", "!document.querySelector('.shopping-save-status')");
   assert.deepEqual((await household()).checks, baselineChecks);
@@ -452,7 +559,7 @@ try {
   browser("wait", ".shopping-summary");
   browser("click", '[aria-label="List Builder"]');
   browser("wait", ".purchase-row");
-  browser("eval", `(() => { window.smokeGroup = document.querySelector(${JSON.stringify(`[aria-label="${groupLabel}"]`)}); return true; })()`);
+  await selectGroup(`[aria-label="${groupLabel}"]`);
   assert.deepEqual(await names(), afterKeyboard.filter(name => before.includes(name)));
   assert.deepEqual((await household()).shoppingOrder, afterRoute);
   console.log("PASS desktop route-editor upward insertion, keyboard ordering and reload persistence");
@@ -470,10 +577,10 @@ try {
     const response = await fetch(`${url}/api/shopping-order`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(original.shoppingOrder) });
     assert(response.ok, "Restore the original shopping order.");
     const current = await household();
-    for (const key of new Set([...current.checks.map((check: any) => check.key), ...original.checks.map((check: any) => check.key)])) {
+    for (const key of new Set([...current.checks.map((check) => check.key), ...original.checks.map((check) => check.key)])) {
       const fallback = key.startsWith('["shopping-list",') ? 1 : 0;
-      const checked = original.checks.find((check: any) => check.key === key)?.checked ?? fallback;
-      if ((current.checks.find((check: any) => check.key === key)?.checked ?? fallback) !== checked) {
+      const checked = original.checks.find((check) => check.key === key)?.checked ?? fallback;
+      if ((current.checks.find((check) => check.key === key)?.checked ?? fallback) !== checked) {
         const response = await fetch(`${url}/api/checks`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ key, checked }) });
         assert(response.ok, "Restore the original checkmark.");
       }

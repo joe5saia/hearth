@@ -1,0 +1,5 @@
+{
+  "extends": "./tsconfig.json",
+  "include": ["tools/**/*.ts", ".amp/plugins/*.ts", "cloudflare.config.ts"],
+  "exclude": ["tools/oxlint"]
+}

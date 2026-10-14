@@ -10,22 +10,30 @@ import {
 } from "./domain";
 import { getGroceries, linkIngredients } from "./groceries";
 import { Conflict, MissingReference, NotFound, ValidationError, database, stored } from "./storage";
-import { importRecipe } from "./recipe-import";
+import { importRecipe, RecipeImportError } from "./recipe-import";
 import { record } from "./observability";
 
+/** SQL representation with JSON-encoded ingredient and instruction columns. */
 export type RecipeRow = Omit<RecipeDraft, "ingredients" | "instructions"> & {
   ingredients: string;
   instructions: string;
 };
 
-export function parseRecipe(row: RecipeRow): Recipe {
-  return Schema.decodeUnknownSync(RecipeSchema)({
-    ...row,
-    ingredients: JSON.parse(row.ingredients),
-    instructions: JSON.parse(row.instructions),
-  });
+const decodeRecipeRow = Schema.decodeUnknownSync(
+  Schema.Struct({
+    ...RecipeSchema.fields,
+    ingredients: Schema.fromJsonString(RecipeSchema.fields.ingredients),
+    instructions: Schema.fromJsonString(RecipeSchema.fields.instructions),
+  }),
+);
+
+/** Decodes an untrusted SQL row, including JSON columns, without write-only size limits. */
+// oxlint-disable-next-line anti-slop/no-unknown-parameters -- This is the SQL decoding boundary, not an inner operation.
+export function parseRecipe(row: unknown): Recipe {
+  return decodeRecipeRow(row);
 }
 
+/** Builds an upsert; null permits creation only, while ingredients guard an existing row. */
 export function recipeStatement(
   db: D1Database,
   recipe: Recipe,
@@ -53,6 +61,7 @@ export function recipeStatement(
     );
 }
 
+/** Reads recipes in requested ID order, reporting absent IDs separately. */
 export function getRecipes(db: D1Database, ids: readonly RecipeId[]) {
   return Effect.gen(function* () {
     if (!ids.length) return { recipes: [], missingIds: [] };
@@ -61,19 +70,24 @@ export function getRecipes(db: D1Database, ids: readonly RecipeId[]) {
       db
         .prepare(`SELECT * FROM recipes WHERE id IN (${ids.map(() => "?").join(",")})`)
         .bind(...ids)
-        .all<RecipeRow>(),
+        .all(),
     );
 
     const recipes = yield* stored(() => rows.results.map(parseRecipe));
     const byId = new Map(recipes.map((recipe) => [recipe.id, recipe]));
 
     return {
-      recipes: ids.flatMap((id) => (byId.has(id) ? [byId.get(id)!] : [])),
+      recipes: ids.flatMap((id) => {
+        const recipe = byId.get(id);
+
+        return recipe === undefined ? [] : [recipe];
+      }),
       missingIds: ids.filter((id) => !byId.has(id)),
     };
   });
 }
 
+/** Links omitted ingredient identities; explicit null keeps an ingredient unlinked. */
 export function matchRecipeIngredients(
   db: D1Database,
   recipes: readonly Recipe[],
@@ -97,11 +111,13 @@ function validateCollections(db: D1Database, names: readonly string[]) {
   return Effect.gen(function* () {
     if (!names.some((name) => name !== "")) return;
 
-    const collections = yield* database(() =>
-      db.prepare("SELECT name FROM collections").all<{ name: string }>(),
+    const collections = yield* database(() => db.prepare("SELECT name FROM collections").all());
+
+    const namesInStorage = yield* stored(() =>
+      Schema.decodeUnknownSync(Schema.Array(Schema.Struct({ name: Schema.String })))(collections.results),
     );
 
-    const existing = new Set(collections.results.map((collection) => collection.name));
+    const existing = new Set(namesInStorage.map((collection) => collection.name));
 
     if (names.some((name) => name !== "" && !existing.has(name)))
       return yield* new MissingReference({
@@ -112,10 +128,11 @@ function validateCollections(db: D1Database, names: readonly string[]) {
 }
 
 const decodeRecipe = (recipe: RecipeDraft, message: string) =>
-  Schema.decodeUnknownEffect(RecipeWriteSchema)(recipe).pipe(
+  Schema.decodeEffect(RecipeWriteSchema)(recipe).pipe(
     Effect.mapError(() => new ValidationError({ message })),
   );
 
+/** Validates and links all recipes before atomically creating them with fresh IDs. */
 export function createRecipes(db: D1Database, inputs: readonly Omit<Recipe, "id">[]) {
   return Effect.gen(function* () {
     if (!inputs.length) return { recipes: [] };
@@ -153,6 +170,7 @@ export function createRecipes(db: D1Database, inputs: readonly Omit<Recipe, "id"
   });
 }
 
+/** Patches supplied columns only; the batch guards against any requested recipe disappearing. */
 export function updateRecipes(
   db: D1Database,
   updates: readonly { id: RecipeId; changes: Partial<Omit<Recipe, "id">> }[],
@@ -241,6 +259,7 @@ export function updateRecipes(
   });
 }
 
+/** Saves a linked recipe with an optional optimistic ingredient guard; ratings stay unchanged. */
 export function saveRecipe(
   db: D1Database,
   recipe: Recipe,
@@ -283,9 +302,10 @@ export function saveRecipe(
   });
 }
 
+/** Changes only the rating, rejecting missing recipes. */
 export function rateRecipe(db: D1Database, id: RecipeId, rating: Rating) {
   return Effect.gen(function* () {
-    const decoded = yield* Schema.decodeUnknownEffect(RecipeSchema.fields.rating)(rating).pipe(
+    const decoded = yield* Schema.decodeEffect(RecipeSchema.fields.rating)(rating).pipe(
       Effect.mapError(() => new ValidationError({ message: "Choose a valid recipe rating." })),
     );
 
@@ -299,6 +319,7 @@ export function rateRecipe(db: D1Database, id: RecipeId, rating: Rating) {
   });
 }
 
+/** Deletes only unplanned recipes; missing and planned recipes both produce a conflict. */
 export function deleteRecipe(db: D1Database, id: RecipeId) {
   return Effect.gen(function* () {
     // The conditional delete and FK restriction both protect planned recipes.
@@ -316,6 +337,7 @@ export function deleteRecipe(db: D1Database, id: RecipeId) {
   });
 }
 
+/** Downloads and validates an import draft without persisting it. */
 export function importRecipeDraft(url: string) {
   return Effect.gen(function* () {
     if (url.length > 4000) return yield* new ValidationError({ message: "That URL is too long." });
@@ -325,11 +347,13 @@ export function importRecipeDraft(url: string) {
       catch: (error) =>
         new ValidationError({
           message:
-            error instanceof Error ? error.message : "The recipe couldn’t be imported. Please try again.",
+            error instanceof RecipeImportError
+              ? error.message
+              : "The recipe couldn’t be imported. Check the link or add the recipe manually.",
         }),
     }).pipe(Effect.withSpan("import.download_parse"));
 
-    const recipe = yield* Schema.decodeUnknownEffect(RecipeSchema)(result.recipe).pipe(
+    const recipe = yield* Schema.decodeEffect(RecipeSchema)(result.recipe).pipe(
       Effect.mapError(
         () =>
           new ValidationError({

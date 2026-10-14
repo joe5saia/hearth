@@ -118,9 +118,12 @@ const newGrocery = (name = "", unit: Unit = "each"): GroceryDraft => ({
 });
 
 const readableDate = (
-  date: string,
+  date: MealDraft["date"],
   options: Intl.DateTimeFormatOptions = { month: "long", day: "numeric" },
 ) => new Date(`${date}T12:00:00`).toLocaleDateString("en-US", options);
+
+// Only deliberately translated HTTP failures may contribute public exception text.
+class ApiError extends Error {}
 
 async function api(
   path: string,
@@ -133,8 +136,8 @@ async function api(
     | GroceryDraft
     | ShoppingOrder
     | { url: string }
-    | { id: string; name: string; checked: number }
-    | { key: string; checked: number }
+    | Household["extras"][number]
+    | Household["checks"][number]
     | { from: string; to: string }
     | { rating: Rating },
   operationId = crypto.randomUUID(),
@@ -177,9 +180,14 @@ async function api(
       await response.json().catch(() => null),
     );
 
-    throw new Error(Option.isSome(failure) ? failure.value.error : "We couldn’t connect. Please try again.", {
-      cause: response.status,
-    });
+    throw new ApiError(
+      Option.isSome(failure)
+        ? failure.value.error
+        : method === "GET"
+          ? "Household data couldn’t be loaded. Refresh to try loading it again."
+          : "The household request couldn’t be confirmed. Refresh to check the current state before making the change again.",
+      { cause: response.status },
+    );
   }
 
   return response;
@@ -277,6 +285,7 @@ function Dialog({
   );
 }
 
+/** Owns household browser state, queued shopping writes, API synchronization, and hash navigation. */
 export function App() {
   const [route, setRoute] = useState(readRoute);
   const routeRef = useRef(route);
@@ -310,7 +319,7 @@ export function App() {
   const [debouncedBuilderSearch, setDebouncedBuilderSearch] = useState("");
   const [shoppingPending, setShoppingPending] = useState(0);
   const shoppingEdits = useRef<ShoppingEdit[]>([]);
-  const shoppingWrites = useRef<Promise<unknown>>(Promise.resolve());
+  const shoppingWrites = useRef<Promise<boolean | void>>(Promise.resolve());
   const shoppingRevision = useRef(0);
   const confirmedShopping = useRef<Pick<Household, "shoppingOrder" | "checks">>(emptyHousehold);
   const [timerHeaderHost, setTimerHeaderHost] = useState<HTMLDivElement | null>(null);
@@ -611,9 +620,9 @@ export function App() {
             acknowledged
               ? current ||
                 "Your shopping change was saved, but the household could not be refreshed. Reload to retry."
-              : failure instanceof Error
+              : failure instanceof ApiError
                 ? failure.message
-                : "Please try again.",
+                : "Your shopping change couldn’t be confirmed. Refresh to check the current list before changing it again.",
           );
       } finally {
         browserEvent("browser_shopping_save", {
@@ -643,7 +652,13 @@ export function App() {
   };
 
   useEffect(() => {
-    refresh().catch((failure: Error) => setError(failure.message));
+    refresh().catch((failure) =>
+      setError(
+        failure instanceof ApiError
+          ? failure.message
+          : "Household data couldn’t be loaded. Refresh to try loading it again.",
+      ),
+    );
   }, [refresh]);
   useEffect(() => {
     const viewport = window.matchMedia(mobileViewport);
@@ -818,21 +833,27 @@ export function App() {
     } catch (failure) {
       outcome = acknowledged ? "saved_refresh_failed" : "error";
 
-      // Closing editors can report the committed write and expose the page's refresh Retry.
-      if (acknowledged && close) {
-        finishEditing(editingEntry);
+      // A refresh failure cannot undo an acknowledged write, even when no editor closes.
+      if (acknowledged) {
+        if (close) finishEditing(editingEntry);
 
         if (message) setToast(message);
         setError(
-          "Your change was saved, but the household could not be refreshed. Retry to refresh the list.",
+          close
+            ? "Your change was saved, but the household could not be refreshed. Retry to refresh the list."
+            : "Your change was saved, but the latest household data is unavailable. Refresh the list before making further changes.",
         );
 
-        return true;
+        return close;
       }
 
-      if (path === "recipes" && failure instanceof Error && failure.cause === 409)
+      if (path === "recipes" && failure instanceof ApiError && failure.cause === 409)
         await refresh(operationId).catch(() => {});
-      setError(failure instanceof Error ? failure.message : "Please try again.");
+      setError(
+        failure instanceof ApiError
+          ? failure.message
+          : "Your change couldn’t be confirmed. Refresh to check the current household before making it again.",
+      );
 
       return false;
     } finally {
@@ -1108,7 +1129,13 @@ export function App() {
             <button
               onClick={() => {
                 setError("");
-                refresh().catch((failure: Error) => setError(failure.message));
+                refresh().catch((failure) =>
+                  setError(
+                    failure instanceof ApiError
+                      ? failure.message
+                      : "Household data couldn’t be loaded. Refresh to try loading it again.",
+                  ),
+                );
               }}
             >
               Retry
@@ -1199,7 +1226,7 @@ export function App() {
                           const date = weekInput.current?.value;
 
                           if (date && validDate(date)) {
-                            setWeek(weekStart(Schema.decodeUnknownSync(DateSchema)(date)));
+                            setWeek(weekStart(Schema.decodeSync(DateSchema)(date)));
                             event.currentTarget.closest("details")?.removeAttribute("open");
                           }
                         }}
@@ -1490,9 +1517,9 @@ export function App() {
                       onClick={(event) => {
                         event.preventDefault();
                         document.getElementById("household-extras")?.scrollIntoView({ block: "start" });
-                        document
-                          .querySelector<HTMLInputElement>('[aria-label="New household item"]')
-                          ?.focus({ preventScroll: true });
+                        const input = document.querySelector('[aria-label="New household item"]');
+
+                        if (input instanceof HTMLInputElement) input.focus({ preventScroll: true });
                       }}
                     >
                       Extras
@@ -2537,7 +2564,12 @@ function RecipeImport({ imported }: { imported: (recipe: Recipe, warnings: reado
 
       if (active.current) imported(result.recipe, result.warnings);
     } catch (failure) {
-      if (active.current) setError(failure instanceof Error ? failure.message : "Please try again.");
+      if (active.current)
+        setError(
+          failure instanceof ApiError
+            ? failure.message
+            : "The recipe couldn’t be imported. Check the link or add the recipe manually.",
+        );
     } finally {
       if (active.current) setLoading(false);
     }
@@ -2751,7 +2783,11 @@ function RecipeForm({
       );
     } catch (failure) {
       setSyncFailed(true);
-      setSyncMessage(failure instanceof Error ? failure.message : "Could not sync ingredients. Try again.");
+      setSyncMessage(
+        failure instanceof ApiError
+          ? failure.message
+          : "Ingredient suggestions couldn’t be loaded. Try syncing again or choose groceries manually; save the recipe to keep your choices.",
+      );
     } finally {
       setSyncing(false);
     }

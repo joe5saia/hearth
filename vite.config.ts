@@ -2,6 +2,7 @@ import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import { cloudflare } from "@cloudflare/vite-plugin";
 
+/** Uses Cloudflare only for isolated Preview builds; MCP builds exclude website assets. */
 export default defineConfig(({ mode }) => ({
   plugins: [
     react(),
@@ -11,6 +12,7 @@ export default defineConfig(({ mode }) => ({
   builder:
     mode === "cf-mcp-preview"
       ? {
+          /** Builds only Worker environments so MCP packaging never uploads the React client. */
           async buildApp(builder) {
             // MCP has no website assets; do not upload the React client or public directory.
             for (const [name, environment] of Object.entries(builder.environments)) {

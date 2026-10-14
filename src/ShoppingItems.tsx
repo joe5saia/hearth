@@ -47,6 +47,7 @@ function MoveButtons({
   );
 }
 
+/** Delegates list writes to callers and preserves pointer and arrow-button store-route ordering. */
 export function ShoppingItems({
   items,
   groceries,
@@ -106,9 +107,12 @@ export function ShoppingItems({
   const layoutOrder = useRef(orderKey);
 
   const capturePositions = () => {
-    const top = rootRef.current!.getBoundingClientRect().top;
+    const root = rootRef.current;
+
+    if (!root) return;
+    const top = root.getBoundingClientRect().top;
     positions.current = new Map(
-      [...rootRef.current!.querySelectorAll("[data-reorder-row], [data-reorder-aisle]")].map((row) => [
+      [...root.querySelectorAll("[data-reorder-row], [data-reorder-aisle]")].map((row) => [
         row,
         row.getBoundingClientRect().top - top,
       ]),
@@ -116,9 +120,11 @@ export function ShoppingItems({
   };
 
   useLayoutEffect(() => {
-    if (isReordering) return;
+    const root = rootRef.current;
+
+    if (isReordering || !root) return;
     const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-    const rows = [...rootRef.current!.querySelectorAll("[data-reorder-row], [data-reorder-aisle]")];
+    const rows = [...root.querySelectorAll("[data-reorder-row], [data-reorder-aisle]")];
 
     const previous = positions.current.size
       ? positions.current
@@ -143,7 +149,7 @@ export function ShoppingItems({
 
     positions.current = new Map();
     rows.forEach((row) => row.getAnimations().forEach((animation) => animation.cancel()));
-    const top = rootRef.current!.getBoundingClientRect().top;
+    const top = root.getBoundingClientRect().top;
     layoutPositions.current = new Map(rows.map((row) => [row, row.getBoundingClientRect().top - top]));
     layoutOrder.current = orderKey;
 
@@ -152,8 +158,13 @@ export function ShoppingItems({
       const top = previous.get(row);
       const parent = row.parentElement?.closest("[data-reorder-aisle]");
       const parentTop = parent ? previous.get(parent) : undefined;
-      const parentOffset = parentTop === undefined ? 0 : parentTop - layoutPositions.current.get(parent!)!;
-      const offset = top === undefined ? 0 : top - layoutPositions.current.get(row)! - parentOffset;
+      const parentLayoutTop = parent ? layoutPositions.current.get(parent) : undefined;
+      const rowLayoutTop = layoutPositions.current.get(row);
+
+      const parentOffset =
+        parentTop === undefined || parentLayoutTop === undefined ? 0 : parentTop - parentLayoutTop;
+
+      const offset = top === undefined || rowLayoutTop === undefined ? 0 : top - rowLayoutTop - parentOffset;
 
       if (Math.abs(offset) < 1) return;
       row.animate([{ transform: `translateY(${offset}px)` }, { transform: "translateY(0)" }], {
@@ -164,7 +175,9 @@ export function ShoppingItems({
   }, [orderKey, isReordering]);
 
   useEffect(() => {
-    const root = rootRef.current!;
+    const root = rootRef.current;
+
+    if (!root) return;
     let width = root.offsetWidth;
     let height = root.offsetHeight;
 
@@ -281,14 +294,16 @@ export function ShoppingItems({
     void saveOrder({ ...order, items: next });
   };
 
-  const dragHandle = (id: string, aisle: string | null, ids: readonly string[], position: number) =>
-    ids.length < 2 ? null : (
+  const dragHandle = (id: string, aisle: string | null, ids: readonly string[], position: number) => {
+    const product = aisle === null ? undefined : groceries.find((item) => item.id === id);
+
+    if (ids.length < 2 || (aisle !== null && !product)) return null;
+
+    return (
       <button
         className="route-drag"
         aria-label={
-          aisle === null
-            ? `Drag ${aisleName(id)}`
-            : `Drag ${groceries.find((item) => item.id === id)!.name} within ${aisleName(aisle)}`
+          aisle === null ? `Drag ${aisleName(id)}` : `Drag ${product?.name} within ${aisleName(aisle)}`
         }
         disabled={busy || editingAisle !== null}
         onPointerDown={(event) => {
@@ -297,12 +312,13 @@ export function ShoppingItems({
           const { pointerId, pointerType, clientX, clientY } = event;
 
           const start = () => {
+            const group = aisle === null ? rootRef.current : handle.closest("[data-reorder-group]");
+
+            if (!group) return;
             touchDragging.current = pointerType === "touch";
 
             const rows = [
-              ...(aisle === null
-                ? rootRef.current!.querySelectorAll("[data-reorder-aisle]")
-                : handle.closest("[data-reorder-group]")!.querySelectorAll("[data-reorder-row]")),
+              ...group.querySelectorAll(aisle === null ? "[data-reorder-aisle]" : "[data-reorder-row]"),
             ];
 
             const visualRects = rows.map((row) => row.getBoundingClientRect());
@@ -377,11 +393,12 @@ export function ShoppingItems({
           if (drag?.id !== id || drag.aisle !== aisle || drag.target === position) return;
 
           if (aisle === null) moveAisle(position, drag.target);
-          else
-            moveItem(
-              groceries.find((item) => item.id === id)!,
-              groceries.find((item) => item.id === ids[drag.target])!,
-            );
+          else {
+            const item = groceries.find((entry) => entry.id === id);
+            const neighbor = groceries.find((entry) => entry.id === ids[drag.target]);
+
+            if (item && neighbor) moveItem(item, neighbor);
+          }
         }}
         onPointerCancel={() => setDrag(null)}
         onLostPointerCapture={(event) => {
@@ -392,6 +409,7 @@ export function ShoppingItems({
         <GripVertical size={18} />
       </button>
     );
+  };
 
   return (
     <div ref={rootRef} className={dragging?.moved ? "is-reordering" : undefined}>

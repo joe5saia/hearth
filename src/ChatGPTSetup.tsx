@@ -3,6 +3,7 @@ import hearthApps from "../plugins/hearth/.app.json";
 
 const releases = "https://github.com/joe5saia/hearth/releases/latest";
 
+/** Presents plugin installation links and guidance; installation does not authorize household access. */
 export function ChatGPTSetup() {
   return (
     <div className="chatgpt-setup">

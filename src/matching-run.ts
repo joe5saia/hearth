@@ -1,9 +1,9 @@
-import { Data, Effect } from "effect";
-import type { Recipe } from "./domain";
+import { Data, Effect, Schema } from "effect";
+import { GroceryItemSchema, RecipeSchema, type Recipe } from "./domain";
 import { database, stored } from "./storage";
 import { record } from "./observability";
-import { parseRecipe, type RecipeRow } from "./recipes";
-import { parseGrocery, type GroceryRow } from "./groceries";
+import { parseRecipe } from "./recipes";
+import { parseGrocery } from "./groceries";
 import {
   matchIngredients,
   matchingFailureReason,
@@ -11,10 +11,23 @@ import {
   selectionModel,
 } from "./ingredient-matching";
 
+const RecipeStorageRow = Schema.Struct({
+  ...RecipeSchema.fields,
+  ingredients: Schema.String,
+  instructions: Schema.String,
+});
+
+const GroceryStorageRow = Schema.Struct({ ...GroceryItemSchema.fields, aliases: Schema.String });
+
+const GroceryRevision = Schema.Struct({ version: Schema.Number });
+
+/** Missing AI binding; transports own rendering its established public message. */
 export class AiUnavailable extends Data.TaggedError("AiUnavailable")<{ message: string }> {}
 
-// Keep inference independent of the saving request's cancellation and response time.
-// This is best-effort work within Workers' waitUntil lifetime; the bulk action can retry it.
+/**
+ * Schedules best-effort matching within waitUntil, independently of the saving request's cancellation.
+ * Missing bindings or an empty scope are a no-op; matching failures never reject a successful save.
+ */
 export function matchNewRecipes(
   db: D1Database,
   ai: Ai | undefined,
@@ -30,6 +43,11 @@ export function matchNewRecipes(
   );
 }
 
+/**
+ * Matches a snapshot and persists only recipes whose context and grocery revision remain unchanged.
+ * Draft mode returns a matched draft without saving it; scoped background runs cap inference at 20 seconds.
+ * Storage failures do not prove that writes failed to commit and are never retried here.
+ */
 export const matchGroceries = (
   db: D1Database,
   ai?: Ai,
@@ -80,15 +98,25 @@ export const matchGroceries = (
         ]),
       );
 
-      // SAFETY: These fixed SELECTs return unbranded storage rows in this order.
-      const [rows, products, revision] = snapshot as [
-        D1Result<RecipeRow>,
-        D1Result<GroceryRow>,
-        D1Result<{ version: number }>,
-      ];
+      const { rows, originals, groceries, revision } = yield* stored(() => {
+        const [recipes, products, revisions] = snapshot;
 
-      const originals = yield* stored(() => rows.results.map(parseRecipe));
-      const groceries = yield* stored(() => products.results.map(parseGrocery));
+        if (!recipes || !products || !revisions) throw new Error("Incomplete matching snapshot");
+
+        // Decode SQL rows before passing them to the owning JSON/domain parsers. Keep the
+        // stored JSON strings intact: optimistic persistence compares their exact bytes.
+        const rows = Schema.decodeUnknownSync(Schema.Array(RecipeStorageRow))(recipes.results);
+        const groceryRows = Schema.decodeUnknownSync(Schema.Array(GroceryStorageRow))(products.results);
+        const revision = Schema.decodeUnknownSync(GroceryRevision)(revisions.results[0]);
+
+        return {
+          rows,
+          originals: rows.map(parseRecipe),
+          groceries: groceryRows.map(parseGrocery),
+          revision: revision.version,
+        };
+      });
+
       stage = "matching";
 
       // Reserve ten seconds of waitUntil's lifetime for cancellation and D1 persistence.
@@ -122,7 +150,7 @@ export const matchGroceries = (
             JSON.stringify(ingredient) !== JSON.stringify(originals[index].ingredients[position]),
         ).length;
 
-        return edits ? [{ recipe, before: rows.results[index], links, edits }] : [];
+        return edits ? [{ recipe, before: rows[index], links, edits }] : [];
       });
 
       console.info(
@@ -152,7 +180,7 @@ export const matchGroceries = (
                 before.description,
                 before.category,
                 before.instructions,
-                revision.results[0].version,
+                revision,
               ),
           ),
         ),

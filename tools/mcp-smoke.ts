@@ -1,12 +1,14 @@
 import assert from "node:assert/strict";
+import { z } from "zod";
 
+// Intentional read-only production probe: discovery and anonymous authentication only.
 const origin = "https://hearth-mcp.joesaia.trade";
 const request = (path: string) =>
   fetch(`${origin}${path}`, { redirect: "manual", signal: AbortSignal.timeout(30_000) });
 
 const discovery = await request("/.well-known/oauth-authorization-server");
 assert.equal(discovery.status, 200, "Public authorization-server discovery");
-const metadata = await discovery.json();
+const metadata = z.object({ issuer: z.string(), authorization_endpoint: z.string(), token_endpoint: z.string(), client_id_metadata_document_supported: z.boolean(), scopes_supported: z.array(z.string()) }).parse(await discovery.json());
 assert.equal(metadata.issuer, origin);
 assert.equal(metadata.authorization_endpoint, `${origin}/authorize`);
 assert.equal(metadata.token_endpoint, `${origin}/oauth/token`);
@@ -15,7 +17,7 @@ assert.deepEqual(metadata.scopes_supported, ["recipes"]);
 
 const resource = await request("/.well-known/oauth-protected-resource/mcp");
 assert.equal(resource.status, 200, "Public protected-resource discovery");
-const protectedResource = await resource.json();
+const protectedResource = z.object({ resource: z.string(), authorization_servers: z.array(z.string()), scopes_supported: z.array(z.string()) }).parse(await resource.json());
 assert.equal(protectedResource.resource, `${origin}/mcp`);
 assert.deepEqual(protectedResource.authorization_servers, [origin]);
 assert.deepEqual(protectedResource.scopes_supported, ["recipes"]);
@@ -27,7 +29,9 @@ await mcp.body?.cancel();
 
 const consent = await request("/authorize");
 assert.equal(consent.status, 302, "Anonymous consent must reach the Access sign-in gate");
-const login = new URL(consent.headers.get("location")!);
+const location = consent.headers.get("location");
+assert.ok(location, "Access redirect must include its sign-in location");
+const login = new URL(location);
 assert.equal(login.protocol, "https:");
 assert.equal(login.hostname, "saiaai.cloudflareaccess.com");
 await consent.body?.cancel();

@@ -59,7 +59,7 @@ function romanNumeral(number: number) {
     [5, "V"],
     [4, "IV"],
     [1, "I"],
-  ] as const) {
+  ] satisfies [number, string][]) {
     while (number >= value) {
       numeral += symbol;
       number -= value;
@@ -91,6 +91,7 @@ function chime(audio: AudioContext) {
   }
 }
 
+/** Owns browser-local timers and audio, rendering controls into the supplied header host. */
 export function KitchenTimers({
   host,
   recipeName,

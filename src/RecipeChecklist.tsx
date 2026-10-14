@@ -71,6 +71,7 @@ function ingredientTotals({ recipes, groceries }: Pick<Household, "recipes" | "g
     });
 }
 
+/** Keeps recipe selections and ingredient checks in component memory without changing household data. */
 export function RecipeChecklist({
   recipes,
   groceries,

@@ -2,9 +2,12 @@ import server from "../../src/server";
 import { recipeMcp } from "../../src/mcp";
 import type { WebsiteEnv } from "../../alchemy.run";
 
-// Integration-only upstream transport: the actual Worker/D1 pipeline consumes recorded wire formats.
-// Real model accuracy is exercised separately by matching:eval against Cloudflare.
+/**
+ * Runs the real Worker/D1 and MCP pipelines against recorded upstream wire responses.
+ * Real model accuracy belongs to matching:eval against Cloudflare, not this fixture.
+ */
 export default {
+  /** Enables background work and request-only cancellation solely via integration-test headers. */
   async fetch(request: Request, env: WebsiteEnv, ctx: ExecutionContext) {
     // Bulk-matching fixtures opt out of automatic work while seeding their inputs.
     const background = request.headers.has("X-Test-Background") ? ctx : undefined;
@@ -37,10 +40,15 @@ export default {
 
       if (!response.ok) throw new Error(`Model service returned ${response.status}`);
 
+      // Forward JSON without validating model semantics: malformed model contracts must
+      // reach the production decoder, and invalid JSON must retain its SyntaxError.
       return response.json();
     };
 
-    // SAFETY: The production matching pipeline only consumes AI.run; this fixture routes it through workerd's outbound service.
+    // SAFETY: Ai requires unrelated methods and model-specific overloads that a wire
+    // transport cannot implement. Only run is consumed by these real matching paths;
+    // its input, options, and abort signal are forwarded above. ingredient-matching.test.ts
+    // verifies HTTP/MCP matching, malformed output, upstream failures, and cancellation.
     const ai = { run } as Ai;
 
     try {

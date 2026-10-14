@@ -3,7 +3,7 @@ import { execFileSync } from "node:child_process";
 import { mkdir } from "node:fs/promises";
 import { resolve } from "node:path";
 import { Schema } from "effect";
-import { HouseholdSchema, type GroceryItem, type Recipe } from "../src/domain.ts";
+import { HouseholdSchema, GroceryItemSchema, RecipeSchema } from "../src/domain.ts";
 
 // Real browser -> local Worker -> SQLite. AI output is tested separately with matching:eval.
 const url = process.argv[2] ?? "http://localhost:5173";
@@ -14,7 +14,7 @@ const check = (expression: string, message: string) => {
   browser("eval", `(() => { if (!(${expression})) throw new Error(${JSON.stringify(message)}); return true; })()`);
   console.log(`PASS ${message}`);
 };
-const request = async (path: string, method = "GET", body?: unknown) => {
+const request = async (path: string, method = "GET", body?: typeof GroceryItemSchema.Encoded | typeof RecipeSchema.Encoded) => {
   const response = await fetch(`${url}/api/${path}`, { method, headers: { "Content-Type": "application/json", Connection: "close" }, body: body ? JSON.stringify(body) : undefined });
   assert(response.ok, `${method} ${path}: ${response.status}`);
   return response;
@@ -23,14 +23,14 @@ const household = async () => Schema.decodeUnknownSync(HouseholdSchema)(await (a
 const initial = await household();
 assert(!initial.recipes.length && !initial.groceries.length, "Use an empty local household.");
 const prefix = `suggest-${crypto.randomUUID()}`;
-const products: GroceryItem[] = [
+const products = Schema.decodeSync(Schema.Array(GroceryItemSchema))([
   { id: `${prefix}-fresh`, name: "BelGioioso Vegetarian Parmesan Cheese", aliases: [], quantity: 8, unit: "oz", aisle: "Dairy", url: "" },
   { id: `${prefix}-kraft`, name: "Kraft Finely Shredded Parmesan Cheese", aliases: [], quantity: 6, unit: "oz", aisle: "Dairy", url: "" },
   { id: `${prefix}-carrot`, name: "Fresh Shredded Carrots", aliases: [], quantity: 10, unit: "oz", aisle: "Produce", url: "" },
   { id: `${prefix}-chicken`, name: "Organic Chicken Breast", aliases: [], quantity: 1, unit: "lb", aisle: "Meat", url: "" },
   { id: `${prefix}-poultry`, name: "Boneless poultry portions", aliases: ["Chicken cutlets"], quantity: 2, unit: "lb", aisle: "Meat", url: "" },
-];
-const recipe: Recipe = {
+]);
+const recipe = Schema.decodeSync(RecipeSchema)({
   id: prefix, title: "Broccoli cheese bites", description: "A simple lunch with a choice of Parmesan.",
   category: "", servings: 2, minutes: 20, photo: "", source: "", rating: "neutral",
   instructions: ["Mix the ingredients, shape into small bites and bake until golden."],
@@ -38,7 +38,7 @@ const recipe: Recipe = {
     { name: "Grated Parmesan", quantity: 0.25, unit: "cup", grocerySuggestions: [products[1].id, products[0].id] },
     { name: "Matchstick carrots", quantity: 2, unit: "tbsp", grocerySuggestions: [products[2].id] },
   ],
-};
+});
 const openRecipe = () => {
   browser("open", `${url}/#recipes`);
   browser("reload");

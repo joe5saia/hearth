@@ -3,9 +3,21 @@ import { execFileSync } from "node:child_process";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve, join } from "node:path";
+import { Schema } from "effect";
+import { HouseholdSchema, type Household } from "../src/domain.ts";
+// @ts-ignore Browser declarations exist only after task ui:setup, outside the checkout.
+import type * as Playwright from "/tmp/hearth-ui/node_modules/playwright/index.d.ts";
+
+declare global {
+  interface Window {
+    /** Recording-owned in-flight writes, drained before household restoration. */
+    demoWrites: Set<Promise<Response>>;
+  }
+}
 
 // The pinned browser runtime is installed outside the checkout by task ui:setup.
-const { chromium, devices } = await import("/tmp/hearth-ui/node_modules/playwright/index.mjs");
+// @ts-expect-error task ui:setup supplies this external runtime.
+const { chromium, devices }: typeof Playwright = await import("/tmp/hearth-ui/node_modules/playwright/index.mjs");
 const root = new URL(process.argv[2] ?? "http://localhost:5173").origin;
 assert(["localhost", "127.0.0.1"].includes(new URL(root).hostname), "Demo refuses remote household writes");
 const output = resolve(".amp/in/artifacts/concept-a");
@@ -14,13 +26,22 @@ await mkdir(output, { recursive: true });
 const household = async () => {
   const response = await fetch(`${root}/api/household`);
   assert(response.ok);
-  return response.json();
+  const data: unknown = await response.json();
+  assert(Schema.is(HouseholdSchema)(data), "Expected a valid household snapshot");
+  return data;
 };
 const original = await household();
 assert(original.recipes.length && original.meals.length, "Load a disposable sample week first");
-const owned = new Map(
-  ["recipes", "groceries", "meals", "collections", "extras"].map((key) => [key, new Set<string>()]),
-);
+const owned = {
+  recipes: new Set<string>(),
+  groceries: new Set<string>(),
+  meals: new Set<string>(),
+  collections: new Set<string>(),
+  extras: new Set<string>(),
+};
+function isOwnedKind(kind: string | undefined): kind is keyof typeof owned {
+  return kind !== undefined && Object.hasOwn(owned, kind);
+}
 const stamp = crypto.randomUUID().slice(0, 6);
 const recipeName = `Lemon rice bowls · demo ${stamp}`;
 const productName = `Brown rice · demo ${stamp}`;
@@ -44,14 +65,15 @@ try {
   context.setDefaultTimeout(12_000);
   const page = await context.newPage();
   page.on("pageerror", (error: Error) => errors.push(error.message));
-  page.on("request", (request: any) => {
+  page.on("request", (request: Playwright.Request) => {
     const kind = new URL(request.url()).pathname.split("/")[2];
-    if (!["PUT", "POST"].includes(request.method()) || !owned.has(kind)) return;
-    const body = request.postDataJSON();
-    if (body?.id && !original[kind].some((item: any) => item.id === body.id)) owned.get(kind)!.add(body.id);
+    if (!["PUT", "POST"].includes(request.method()) || !isOwnedKind(kind)) return;
+    const body: unknown = request.postDataJSON();
+    if (typeof body === "object" && body !== null && "id" in body && typeof body.id === "string" &&
+      !original[kind].some((item) => item.id === body.id)) owned[kind].add(body.id);
   });
   await context.addInitScript(() => {
-    const w = window as any;
+    const w = window;
     const fetch = window.fetch;
     w.demoWrites = new Set();
     window.fetch = (...args) => {
@@ -69,7 +91,7 @@ try {
     document.addEventListener("pointerdown", (event) => {
       const dot = document.createElement("div");
       dot.style.cssText = `position:fixed;left:${event.clientX - 16}px;top:${event.clientY - 16}px;width:32px;height:32px;border:2px solid #ad7754;border-radius:50%;background:#ad775422;pointer-events:none;z-index:99999`;
-      document.body.append(dot);
+      document.body.appendChild(dot);
       setTimeout(() => dot.remove(), 500);
     });
   });
@@ -79,7 +101,7 @@ try {
     console.log(`DEMO ${title}`);
     await pause();
   }
-  async function click(locator: any) {
+  async function click(locator: Playwright.Locator) {
     await locator.click();
     await pause(450);
   }
@@ -95,7 +117,7 @@ try {
   async function close() {
     await click(dialog().getByRole("button", { name: "Close dialog" }));
   }
-  async function persisted(predicate: (data: any) => boolean) {
+  async function persisted(predicate: (data: Household) => boolean) {
     for (let i = 0; i < 80; i++) {
       const data = await household();
       if (predicate(data)) return data;
@@ -162,14 +184,15 @@ try {
     await dialog().getByLabel("Package unit").selectOption("g");
     await dialog().getByLabel("Alternate ingredient names").fill("brown rice");
     await click(dialog().getByRole("button", { name: "Save grocery item" }));
-    let data = await persisted((h) => h.groceries.some((g: any) => g.name === productName));
-    const product = data.groceries.find((g: any) => g.name === productName);
+    let data = await persisted((h) => h.groceries.some((g) => g.name === productName));
+    const product = data.groceries.find((g) => g.name === productName);
+    assert(product, "Saved demo grocery must exist");
     await page.getByLabel("Search grocery items").fill(productName);
     await click(page.getByRole("button", { name: `Edit grocery item ${productName}` }));
     await dialog().getByLabel("Product URL (optional)").fill("https://example.com/brown-rice");
     await click(dialog().getByRole("button", { name: "Save grocery item" }));
     await persisted(
-      (h) => h.groceries.find((g: any) => g.id === product.id)?.url === "https://example.com/brown-rice",
+      (h) => h.groceries.find((g) => g.id === product.id)?.url === "https://example.com/brown-rice",
     );
     await page.getByLabel("Search grocery items").fill("");
     await click(page.locator(".grocery-coverage > summary"));
@@ -188,8 +211,9 @@ try {
     await click(dialog().getByRole("button", { name: "Add collection", exact: true }));
     await dialog().getByLabel("Collection name").fill(collectionName);
     await click(dialog().getByRole("button", { name: "Save collection" }));
-    data = await persisted((h) => h.collections.some((c: any) => c.name === collectionName));
-    const collection = data.collections.find((c: any) => c.name === collectionName);
+    data = await persisted((h) => h.collections.some((c) => c.name === collectionName));
+    const collection = data.collections.find((c) => c.name === collectionName);
+    assert(collection, "Saved demo collection must exist");
     await close();
     await click(page.getByRole("button", { name: "Add a recipe", exact: true }));
     await saveVisible("Save recipe");
@@ -222,8 +246,9 @@ try {
     await click(dialog().getByRole("button", { name: "Add step", exact: true }));
     await dialog().getByLabel("Step 2", { exact: true }).fill("Divide between bowls and serve warm.");
     await click(dialog().getByRole("button", { name: "Save recipe", exact: true }));
-    data = await persisted((h) => h.recipes.some((r: any) => r.title === recipeName));
-    const recipe = data.recipes.find((r: any) => r.title === recipeName);
+    data = await persisted((h) => h.recipes.some((r) => r.title === recipeName));
+    const recipe = data.recipes.find((r) => r.title === recipeName);
+    assert(recipe, "Saved demo recipe must exist");
     assert.equal(recipe.ingredients[0].groceryItemId, product.id);
 
     await chapter(
@@ -237,14 +262,14 @@ try {
     await page.locator(".recipe-row").filter({ hasText: recipeName }).waitFor();
     await click(page.getByLabel(`Rate ${recipeName}`, { exact: true }));
     await click(page.getByRole("button", { name: `Thumbs up for ${recipeName}`, exact: true }));
-    await persisted((h) => h.recipes.find((r: any) => r.id === recipe.id)?.rating === "up");
+    await persisted((h) => h.recipes.find((r) => r.id === recipe.id)?.rating === "up");
     await click(page.locator(".recipe-row-main").filter({ hasText: recipeName }));
     await capture("mobile-detail");
     await page.getByLabel("Preview recipe scale").selectOption("2");
     await pause();
     assert.equal((await page.locator(".ingredient-list strong").first().innerText()).trim(), "300 g");
     assert.equal(
-      (await household()).recipes.find((r: any) => r.id === recipe.id).ingredients[0].quantity,
+      (await household()).recipes.find((r) => r.id === recipe.id)?.ingredients[0]?.quantity,
       150,
     );
     await click(page.getByRole("link", { name: "Steps", exact: true }));
@@ -255,7 +280,7 @@ try {
     await click(page.getByRole("button", { name: "Edit recipe", exact: true }));
     await dialog().getByLabel("Time (minutes)").fill("25");
     await click(dialog().getByRole("button", { name: "Save recipe", exact: true }));
-    await persisted((h) => h.recipes.find((r: any) => r.id === recipe.id)?.minutes === 25);
+    await persisted((h) => h.recipes.find((r) => r.id === recipe.id)?.minutes === 25);
 
     await chapter(
       "05 · Plan recipes and notes",
@@ -277,8 +302,9 @@ try {
       note,
     );
     await click(dialog().getByRole("button", { name: "Save to meal plan", exact: true }));
-    data = await persisted((h) => h.meals.some((m: any) => m.recipeId === recipe.id));
-    const meal = data.meals.find((m: any) => m.recipeId === recipe.id);
+    data = await persisted((h) => h.meals.some((m) => m.recipeId === recipe.id));
+    const meal = data.meals.find((m) => m.recipeId === recipe.id);
+    assert(meal, "Saved demo meal must exist");
     assert.equal(meal.scale, 1.5);
     await nav("plan");
     await click(page.getByLabel("Jump to date", { exact: true }));
@@ -290,17 +316,17 @@ try {
       .getByLabel(/note for this meal/i)
       .fill(`${note} — save leftovers`);
     await click(dialog().getByRole("button", { name: "Save to meal plan", exact: true }));
-    await persisted((h) => h.meals.find((m: any) => m.id === meal.id)?.note.endsWith("save leftovers"));
+    await persisted((h) => h.meals.find((m) => m.id === meal.id)?.note.endsWith("save leftovers") === true);
     await click(page.getByRole("button", { name: "Add a meal", exact: true }));
     await dialog().getByLabel("Plan type").selectOption("note");
     await dialog().getByLabel("Date", { exact: true }).fill(date);
     await dialog().getByLabel("Meal").selectOption("Lunch");
     await dialog().getByLabel("What’s the plan?").fill(`Leftovers · ${stamp}`);
     await click(dialog().getByRole("button", { name: "Save to meal plan", exact: true }));
-    await persisted((h) => h.meals.some((m: any) => m.note === `Leftovers · ${stamp}`));
+    await persisted((h) => h.meals.some((m) => m.note === `Leftovers · ${stamp}`));
     await click(page.locator(".meal-card").filter({ hasText: `Leftovers · ${stamp}` }));
     await click(dialog().getByRole("button", { name: "Remove meal", exact: true }));
-    await persisted((h) => !h.meals.some((m: any) => m.note === `Leftovers · ${stamp}`));
+    await persisted((h) => !h.meals.some((m) => m.note === `Leftovers · ${stamp}`));
 
     await chapter(
       "06 · Build a shopping list",
@@ -313,14 +339,14 @@ try {
     assert(await purchase.locator('input[type="checkbox"]').isChecked(), "New product must start off-list");
     const purchaseKey = JSON.stringify(["shopping-list", product.id]);
     await click(purchase.locator('input[type="checkbox"]'));
-    await persisted((h) => h.checks.some((entry: any) => entry.key === purchaseKey && entry.checked === 0));
+    await persisted((h) => h.checks.some((entry) => entry.key === purchaseKey && entry.checked === 0));
     await click(page.getByRole("button", { name: "Shopping mode", exact: true }));
     await click(purchase.locator('input[type="checkbox"]'));
-    await persisted((h) => !h.checks.some((entry: any) => entry.key === purchaseKey));
+    await persisted((h) => !h.checks.some((entry) => entry.key === purchaseKey));
     assert.equal(await purchase.count(), 0);
     await click(page.getByRole("button", { name: "List Builder", exact: true }));
     await click(purchase.locator('input[type="checkbox"]'));
-    await persisted((h) => h.checks.some((entry: any) => entry.key === purchaseKey && entry.checked === 0));
+    await persisted((h) => h.checks.some((entry) => entry.key === purchaseKey && entry.checked === 0));
     await capture("mobile-list-builder");
     await click(page.getByRole("button", { name: "Exit List Builder", exact: true }));
     await click(purchase.locator("summary"));
@@ -355,18 +381,20 @@ try {
     await click(page.getByRole("link", { name: "Extras", exact: true }));
     await page.getByLabel("New household item").fill(extraName);
     await click(page.getByRole("button", { name: "Add household item", exact: true }));
-    data = await persisted((h) => h.extras.some((e: any) => e.name === extraName));
-    const extraId = data.extras.find((e: any) => e.name === extraName).id;
-    owned.get("extras")!.add(extraId);
+    data = await persisted((h) => h.extras.some((e) => e.name === extraName));
+    const extra = data.extras.find((e) => e.name === extraName);
+    assert(extra, "Saved demo extra must exist");
+    const extraId = extra.id;
+    owned.extras.add(extraId);
     await click(page.locator(".extra-item").filter({ hasText: extraName }).locator('input[type="checkbox"]'));
-    await persisted((h) => h.extras.find((e: any) => e.id === extraId)?.checked === 1);
+    await persisted((h) => h.extras.find((e) => e.id === extraId)?.checked === 1);
     await click(page.getByRole("button", { name: "Shopping mode", exact: true }));
     await pause();
     assert(await page.locator(".shopping-mode").isVisible());
     await capture("mobile-focus");
     await click(page.getByRole("button", { name: "Exit shopping mode", exact: true }));
     await click(page.getByRole("button", { name: `Remove ${extraName}`, exact: true }));
-    await persisted((h) => !h.extras.some((e: any) => e.name === extraName));
+    await persisted((h) => !h.extras.some((e) => e.name === extraName));
 
     await nav("recipes");
     await chapter(
@@ -450,7 +478,7 @@ try {
     await click(page.locator(".meal-card").filter({ hasText: recipeName }));
     await click(page.getByRole("button", { name: "Edit meal", exact: true }));
     await click(dialog().getByRole("button", { name: "Remove meal", exact: true }));
-    await persisted((h) => !h.meals.some((m: any) => m.id === meal.id));
+    await persisted((h) => !h.meals.some((m) => m.id === meal.id));
     await nav("recipes");
     await menu("Manage collections");
     await click(dialog().getByRole("button", { name: `Edit ${collectionName}`, exact: true }));
@@ -458,8 +486,8 @@ try {
     await click(dialog().getByRole("button", { name: "Delete collection", exact: true }));
     await persisted(
       (h) =>
-        !h.collections.some((c: any) => c.id === collection.id) &&
-        h.recipes.find((r: any) => r.id === recipe.id)?.category === "",
+        !h.collections.some((c) => c.id === collection.id) &&
+        h.recipes.find((r) => r.id === recipe.id)?.category === "",
     );
     await close();
     await page.getByLabel("Filter by collection").selectOption("all");
@@ -468,11 +496,11 @@ try {
     await click(page.getByRole("button", { name: "Edit recipe", exact: true }));
     await click(dialog().getByRole("button", { name: "Delete recipe", exact: true }));
     await click(dialog().getByRole("button", { name: "Yes, delete recipe", exact: true }));
-    await persisted((h) => !h.recipes.some((r: any) => r.id === recipe.id));
+    await persisted((h) => !h.recipes.some((r) => r.id === recipe.id));
     await nav("groceries");
     await click(page.getByRole("button", { name: `Edit grocery item ${productName}`, exact: true }));
     await click(dialog().getByRole("button", { name: "Delete item", exact: true }));
-    await persisted((h) => !h.groceries.some((g: any) => g.id === product.id));
+    await persisted((h) => !h.groceries.some((g) => g.id === product.id));
     await nav("plan");
     await pause(2500);
     assert.deepEqual(errors, [], "No unhandled browser errors");
@@ -483,16 +511,15 @@ try {
   } finally {
     await page
       .evaluate(async () => {
-        await Promise.allSettled([...(window as any).demoWrites]);
+        await Promise.allSettled([...window.demoWrites]);
       })
       .catch(() => {});
     const teardown = await Promise.allSettled([
-      page
-        .video()
-        .path()
-        .then((path: string) => {
-          videoPath = path;
-        }),
+      (async () => {
+        const video = page.video();
+        assert(video, "Demo context must record a video");
+        videoPath = await video.path();
+      })(),
       context.close(),
     ]);
     teardown.push(...(await Promise.allSettled([browser.close()])));
@@ -513,18 +540,18 @@ try {
       assert(response.ok, `Cleanup ${method} ${path}: ${response.status}`);
     };
     const current = await household();
-    for (const kind of ["extras", "meals", "recipes", "groceries", "collections"]) {
+    for (const kind of ["extras", "meals", "recipes", "groceries", "collections"] as const) {
       for (const item of current[kind])
-        if (owned.get(kind)!.has(item.id) || (kind === "extras" && item.name === extraName))
+        if (owned[kind].has(item.id) || ("name" in item && kind === "extras" && item.name === extraName))
           await restore(`${kind}/${encodeURIComponent(item.id)}`, "DELETE");
     }
     const after = await household();
     if (JSON.stringify(after.shoppingOrder) !== JSON.stringify(original.shoppingOrder))
       await restore("shopping-order", "PUT", original.shoppingOrder);
-    for (const key of new Set([...after.checks, ...original.checks].map((check: any) => check.key))) {
+    for (const key of new Set([...after.checks, ...original.checks].map((check) => check.key))) {
       const fallback = key.startsWith('["shopping-list",') ? 1 : 0;
-      const wanted = original.checks.find((c: any) => c.key === key)?.checked ?? fallback;
-      const now = after.checks.find((c: any) => c.key === key)?.checked ?? fallback;
+      const wanted = original.checks.find((c) => c.key === key)?.checked ?? fallback;
+      const now = after.checks.find((c) => c.key === key)?.checked ?? fallback;
       if (wanted !== now) await restore("checks", "PUT", { key, checked: wanted });
     }
     assert.deepEqual(await household(), original, "Exact original household must be restored");
@@ -534,9 +561,9 @@ try {
   if (failure) throw failure;
   const wrap = (text: string) =>
     text
-      .match(/.{1,33}(?:\s|$)|\S+?(?:\s|$)/g)!
-      .map((line) => line.trim())
-      .join(String.raw`\N`);
+      .match(/.{1,33}(?:\s|$)|\S+?(?:\s|$)/g)
+      ?.map((line) => line.trim())
+      .join(String.raw`\N`) ?? "";
   const assTime = (seconds: number) => {
     const whole = Math.floor(seconds);
     return `${Math.floor(whole / 3600)}:${String(Math.floor(whole / 60) % 60).padStart(2, "0")}:${String(whole % 60).padStart(2, "0")}.${String(Math.floor((seconds % 1) * 100)).padStart(2, "0")}`;

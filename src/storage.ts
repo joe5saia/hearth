@@ -1,18 +1,25 @@
 import { Data, Effect, Option, Schema } from "effect";
 import { record } from "./observability";
 
+/** Caller input failed validation; message is safe for public responses. */
 export class ValidationError extends Data.TaggedError("ValidationError")<{ message: string }> {}
 
+/** A requested related household resource is absent. */
 export class MissingReference extends Data.TaggedError("MissingReference")<{ message: string }> {}
 
+/** A requested resource was not found; transports retain their existing status mapping. */
 export class NotFound extends Data.TaggedError("NotFound")<{ message: string }> {}
 
+/** Current household state prevents the operation; message describes the public conflict. */
 export class Conflict extends Data.TaggedError("Conflict")<{ message: string }> {}
 
+/** A database call rejected; its private cause does not prove a write failed to commit. */
 export class StorageError extends Data.TaggedError("StorageError")<{ cause: unknown }> {}
 
+/** Stored values could not be decoded; keep the underlying cause private. */
 export class StoredDataError extends Data.TaggedError("StoredDataError")<{ cause: unknown }> {}
 
+/** Expected shared-operation failures for explicit translation at each transport boundary. */
 export type HouseholdError =
   | ValidationError
   | MissingReference
@@ -21,7 +28,7 @@ export type HouseholdError =
   | StorageError
   | StoredDataError;
 
-// A rejected D1 call does not establish whether a write committed. Never retry it here.
+/** Runs one database call with telemetry and private failure capture, never retrying writes. */
 export const database = Effect.fn("db.call")(function* <A>(run: () => Promise<A>) {
   const started = performance.now();
 
@@ -76,6 +83,7 @@ const DatabaseResult = Schema.Struct({
   }),
 });
 
+/** Captures synchronous stored-data decoding failures separately from database I/O failures. */
 export const stored = <A>(decode: () => A) =>
   Effect.try({ try: decode, catch: (cause) => new StoredDataError({ cause }) }).pipe(
     Effect.withSpan("storage.decode", {}, { captureStackTrace: false }),

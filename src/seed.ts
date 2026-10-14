@@ -1,8 +1,8 @@
 import { Schema } from "effect";
 import { addDays, weekStart, RecipeSchema, MealSchema, GroceryItemSchema } from "./domain";
 
-// Product links are illustrative; sample data never represents a live store catalog.
-export const sampleGroceries = Schema.decodeUnknownSync(Schema.Array(GroceryItemSchema))([
+/** Illustrative catalog packages and links, not a live store catalog. */
+export const sampleGroceries = Schema.decodeSync(Schema.Array(GroceryItemSchema))([
   {
     id: "sample-avocados",
     name: "Fresh avocados",
@@ -77,7 +77,8 @@ export const sampleGroceries = Schema.decodeUnknownSync(Schema.Array(GroceryItem
   },
 ]);
 
-export const sampleRecipes = Schema.decodeUnknownSync(Schema.Array(RecipeSchema))([
+/** Validated starter recipes; ingredient links are omitted to allow household matching. */
+export const sampleRecipes = Schema.decodeSync(Schema.Array(RecipeSchema))([
   {
     id: "lemon-chicken",
     title: "Lemon & herb chicken",
@@ -231,10 +232,11 @@ export const sampleRecipes = Schema.decodeUnknownSync(Schema.Array(RecipeSchema)
   },
 ]);
 
+/** Creates starter meals relative to the Monday of the supplied local calendar date. */
 export function sampleMeals(today: string) {
   const monday = weekStart(today);
 
-  return Schema.decodeUnknownSync(Schema.Array(MealSchema))([
+  return Schema.decodeSync(Schema.Array(MealSchema))([
     {
       id: "sample-1",
       recipeId: "lemon-chicken",

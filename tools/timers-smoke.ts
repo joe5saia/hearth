@@ -22,8 +22,29 @@ const recipe = {
   instructions: ["Wait for the timer."],
 };
 let recipeCreated = false;
+// Evaluated in the page: storage is an external boundary even in a smoke session.
+const timerParser = `function readSmokeTimers() {
+  const raw = localStorage.getItem('hearth-kitchen-timers-v1');
+  if (raw === null) throw new Error('Expected persisted timers');
+  const timers = JSON.parse(raw);
+  if (!Array.isArray(timers) || !timers.every(timer =>
+    timer !== null && typeof timer === 'object' &&
+    typeof timer.id === 'string' && typeof timer.name === 'string' &&
+    typeof timer.startedAt === 'number' && Number.isFinite(timer.startedAt) &&
+    typeof timer.endsAt === 'number' && Number.isFinite(timer.endsAt))) {
+    throw new Error('Invalid persisted timer contract');
+  }
+  return timers;
+}
+function smokeElement(selector, constructor = HTMLElement) {
+  const element = document.querySelector(selector);
+  if (!(element instanceof constructor)) throw new Error('Expected timer control: ' + selector);
+  return element;
+}`;
 const browser = (...args: string[]) =>
-  execFileSync("agent-browser", ["--session", session, ...args], {
+  execFileSync("agent-browser", ["--session", session, ...(args[0] === "eval"
+    ? ["eval", `${timerParser}; ${args[1]}`]
+    : args)], {
     encoding: "utf8",
     timeout: 90_000,
     env: { ...process.env, AGENT_BROWSER_DEFAULT_TIMEOUT: "30000" },
@@ -33,7 +54,7 @@ const check = (expression: string, message: string) => {
   console.log(`PASS ${message}`);
 };
 const start = (name: string, hours: string, minutes: string) => {
-  if (browser("eval", "document.querySelector('.timer-create').open") === "false") {
+  if (browser("eval", "smokeElement('.timer-create', HTMLDetailsElement).open") === "false") {
     browser("click", ".timer-create > summary");
   }
   browser("fill", '[name="timerName"]', name);
@@ -62,19 +83,19 @@ try {
   browser("wait", '[name="timerName"]');
   browser("wait", "--fn", "getComputedStyle(document.querySelector('.timer-panel')).transform === 'matrix(1, 0, 0, 1, 0, 0)'");
   check("document.querySelector('.timer-empty') && document.activeElement.ariaLabel === 'Collapse timers'", "empty panel and opening focus");
-  check("document.querySelector('[name=timerName]').value === 'Timer I'", "first generic default is Timer I");
+  check("smokeElement('[name=timerName]', HTMLInputElement).value === 'Timer I'", "first generic default is Timer I");
   check("!document.querySelector('.timer-header-actions')", "empty header has no timer-specific actions");
 
   start("Invalid", "0", "0");
   check("!document.querySelector('.timer-card') && document.querySelector('.timer-error').textContent.includes('at least one minute')", "zero duration rejected");
   start("Invalid", "0", "60");
-  check("!document.querySelector('.timer-card') && !document.querySelector('[name=timerMinutes]').validity.valid", "minutes above 59 rejected");
+  check("!document.querySelector('.timer-card') && !smokeElement('[name=timerMinutes]', HTMLInputElement).validity.valid", "minutes above 59 rejected");
   start("Invalid", "1.5", "0");
-  check("!document.querySelector('.timer-card') && !document.querySelector('[name=timerHours]').validity.valid", "fractional hours rejected");
+  check("!document.querySelector('.timer-card') && !smokeElement('[name=timerHours]', HTMLInputElement).validity.valid", "fractional hours rejected");
   start("  Slow braise  ", "1", "7");
   start("Quick pasta", "0", "1");
   check(`(() => {
-    const timers = JSON.parse(localStorage.getItem('hearth-kitchen-timers-v1'));
+    const timers = readSmokeTimers();
     return timers.length === 2 && timers[0].name === 'Slow braise' &&
       timers[0].endsAt - timers[0].startedAt === 4020000 &&
       timers[1].endsAt - timers[1].startedAt === 60000 &&
@@ -84,6 +105,7 @@ try {
   })()`, "named hour/minute timers, trimming, HH:MM:SS and earliest-first order");
   check(`Array.from(document.querySelectorAll('.timer-card')).every(card => {
     const times = card.querySelectorAll('time');
+    if (times.length !== 2 || !(times[0] instanceof HTMLTimeElement) || !(times[1] instanceof HTMLTimeElement)) return false;
     const duration = Date.parse(times[1].dateTime) - Date.parse(times[0].dateTime);
     return times.length === 2 && times[0].textContent && times[1].textContent &&
       duration === (card.ariaLabel === 'Quick pasta' ? 60000 : 4020000);
@@ -97,7 +119,7 @@ try {
   check("Array.from(document.querySelectorAll('.timer-panel input, .timer-panel button')).every(el => el.getBoundingClientRect().height >= 44)", "44px timer touch targets");
   browser("click", ".timer-create > summary");
   browser("press", "Escape");
-  check("document.querySelector('.timer-panel').inert && document.activeElement.classList.contains('timer-toggle')", "Escape collapses inert drawer and restores focus");
+  check("smokeElement('.timer-panel').inert && document.activeElement instanceof HTMLElement && document.activeElement.classList.contains('timer-toggle')", "Escape collapses inert drawer and restores focus");
   browser("click", 'nav a[href="#recipes"]');
   check("document.querySelector('.timer-toggle-label > span').textContent === 'Quick pasta'", "timer stays in header across pages");
   browser("click", '[aria-label="Page options"]');
@@ -107,7 +129,7 @@ try {
   browser("click", ".timer-toggle");
   browser("wait", ".timer-create > summary");
   browser("press", "Escape");
-  check("document.querySelector('dialog[open]') && document.querySelector('.timer-panel').inert", "Escape collapses timers without closing the recipe dialog");
+  check("document.querySelector('dialog[open]') && smokeElement('.timer-panel').inert", "Escape collapses timers without closing the recipe dialog");
   browser("click", '[aria-label="Close dialog"]');
   check("document.querySelector('.topbar .timer-toggle').textContent.includes('Quick pasta')", "timer returns to app header after closing dialog");
   browser("reload");
@@ -141,12 +163,12 @@ try {
   browser("click", ".timer-toggle");
   browser("wait", '[aria-label="Dismiss Quick pasta"]');
   check("document.querySelector('[aria-label=\"Quick pasta\"] .timer-countdown').textContent === '00:00:00'", "expired timer remains dismissible after reload");
-  browser("eval", "window.extensionClickedAt = Date.now(); window.expiredStartedAt = JSON.parse(localStorage.getItem('hearth-kitchen-timers-v1')).find(t => t.name === 'Quick pasta').startedAt");
+  browser("eval", "window.extensionClickedAt = Date.now(); const timer = readSmokeTimers().find(t => t.name === 'Quick pasta'); if (!timer) throw new Error('Expected Quick pasta timer'); window.expiredStartedAt = timer.startedAt");
   browser("click", '[aria-label="Add 5 minutes to Quick pasta"]');
   browser("wait", "--fn", "!document.querySelector('.timer-due')");
   check(`(() => {
-    const timer = JSON.parse(localStorage.getItem('hearth-kitchen-timers-v1')).find(t => t.name === 'Quick pasta');
-    return timer.endsAt >= window.extensionClickedAt + 300000 && timer.endsAt <= Date.now() + 300000 &&
+    const timer = readSmokeTimers().find(t => t.name === 'Quick pasta');
+    return timer !== undefined && timer.endsAt >= window.extensionClickedAt + 300000 && timer.endsAt <= Date.now() + 300000 &&
       timer.startedAt === window.expiredStartedAt &&
       document.querySelector('[aria-label="Quick pasta"] .timer-card-heading > span').textContent === 'Running';
   })()`, "+5 restarts an overdue timer from now, clears flashing, and preserves its original start");
@@ -156,25 +178,25 @@ try {
   check("document.querySelector('.timer-empty') && localStorage.getItem('hearth-kitchen-timers-v1') === '[]'", "cancel removes persisted timer");
 
   for (const expected of ["Timer I", "Timer II", "Timer III", "Timer IV"]) {
-    if (browser("eval", "document.querySelector('.timer-create').open") === "false") {
+    if (browser("eval", "smokeElement('.timer-create', HTMLDetailsElement).open") === "false") {
       browser("click", ".timer-create > summary");
     }
-    check(`document.querySelector('[name=timerName]').value === ${JSON.stringify(expected)}`, `${expected} default uses Roman numerals`);
+    check(`smokeElement('[name=timerName]', HTMLInputElement).value === ${JSON.stringify(expected)}`, `${expected} default uses Roman numerals`);
     browser("click", '.timer-form button[type="submit"]');
     browser("wait", `[aria-label="Cancel ${expected}"]`);
   }
   browser("click", '[aria-label="Cancel Timer II"]');
   browser("click", ".timer-create > summary");
-  check("document.querySelector('[name=timerName]').value === 'Timer II'", "generic defaults avoid collisions after cancellation");
+  check("smokeElement('[name=timerName]', HTMLInputElement).value === 'Timer II'", "generic defaults avoid collisions after cancellation");
   for (const name of ["Timer I", "Timer III", "Timer IV"]) browser("click", `[aria-label="Cancel ${name}"]`);
 
   start("Extension first", "0", "1");
   start("Extension second", "0", "2");
-  browser("eval", "window.extensionTimers = JSON.parse(localStorage.getItem('hearth-kitchen-timers-v1'))");
+  browser("eval", "window.extensionTimers = readSmokeTimers()");
   browser("click", '[aria-label="Collapse timers"]');
   browser("click", '[aria-label="Add 1 minute to Extension first"]');
   check(`(() => {
-    const timers = JSON.parse(localStorage.getItem('hearth-kitchen-timers-v1'));
+    const timers = readSmokeTimers();
     return timers[0].endsAt === window.extensionTimers[0].endsAt + 60000 &&
       timers[0].startedAt === window.extensionTimers[0].startedAt &&
       timers[1].endsAt === window.extensionTimers[1].endsAt &&
@@ -182,20 +204,22 @@ try {
   })()`, "header +1 extends only the selected running timer without opening the drawer");
   browser("click", '[aria-label="Add 5 minutes to Extension first"]');
   check(`(() => {
-    const timers = JSON.parse(localStorage.getItem('hearth-kitchen-timers-v1'));
+    const timers = readSmokeTimers();
+    const times = smokeElement('[aria-label="Extension first"]').querySelectorAll('time');
+    if (times.length !== 2 || !(times[1] instanceof HTMLTimeElement)) return false;
     return timers[0].endsAt - timers[0].startedAt === 420000 &&
       timers[1].endsAt === window.extensionTimers[1].endsAt &&
       document.querySelector('.timer-toggle-label > span').textContent === 'Extension second' &&
-      Date.parse(document.querySelector('[aria-label="Extension first"]').querySelectorAll('time')[1].dateTime) === window.extensionTimers[0].startedAt + 420000;
+      Date.parse(times[1].dateTime) === window.extensionTimers[0].startedAt + 420000;
   })()`, "header +5 accumulates exactly five minutes and promotes the now-earliest timer");
   browser("reload");
   browser("wait", '[aria-label="Dismiss timer Extension second"]');
-  check("JSON.parse(localStorage.getItem('hearth-kitchen-timers-v1'))[0].endsAt - JSON.parse(localStorage.getItem('hearth-kitchen-timers-v1'))[0].startedAt === 420000", "extended deadline survives reload");
+  check("readSmokeTimers()[0].endsAt - readSmokeTimers()[0].startedAt === 420000", "extended deadline survives reload");
   browser("click", '[aria-label="Dismiss timer Extension second"]');
   browser("wait", '[aria-label="Dismiss timer Extension first"]');
-  check("document.querySelector('.timer-toggle-label > span').textContent === 'Extension first' && JSON.parse(localStorage.getItem('hearth-kitchen-timers-v1')).length === 1", "header dismiss removes only its timer and promotes the next");
+  check("document.querySelector('.timer-toggle-label > span').textContent === 'Extension first' && readSmokeTimers().length === 1", "header dismiss removes only its timer and promotes the next");
   browser("click", '[aria-label="Dismiss timer Extension first"]');
-  check("!document.querySelector('.timer-header-actions') && localStorage.getItem('hearth-kitchen-timers-v1') === '[]' && document.activeElement.classList.contains('timer-toggle')", "dismissing the last timer removes actions, saves removal, and restores focus");
+  check("!document.querySelector('.timer-header-actions') && localStorage.getItem('hearth-kitchen-timers-v1') === '[]' && document.activeElement instanceof HTMLElement && document.activeElement.classList.contains('timer-toggle')", "dismissing the last timer removes actions, saves removal, and restores focus");
 
   const saved = await fetch(new URL("/api/recipes", target), {
     method: "PUT",
@@ -212,7 +236,7 @@ try {
   browser("wait", "dialog.fullscreen[open] .timer-toggle");
   browser("click", ".timer-toggle");
   browser("wait", '[name="timerName"]');
-  check("document.querySelector('[name=timerName]').value === 'Timer smoke recipe abcdef' && document.querySelector('[name=timerName]').value.length === 25", "open recipe supplies its name truncated to 25 characters");
+  check("smokeElement('[name=timerName]', HTMLInputElement).value === 'Timer smoke recipe abcdef' && smokeElement('[name=timerName]', HTMLInputElement).value.length === 25", "open recipe supplies its name truncated to 25 characters");
   browser("click", '.timer-form button[type="submit"]');
   browser("wait", '[aria-label="Cancel Timer smoke recipe abcdef"]');
   check("document.querySelector('[aria-label=\"Timer smoke recipe abcdef\"]')", "recipe default is saved without typing a name");
@@ -225,7 +249,7 @@ try {
   browser("click", ".timer-toggle");
   browser("wait", ".timer-create > summary");
   browser("click", ".timer-create > summary");
-  check("document.querySelector('[name=timerName]').value === 'Timer I'", "closing the recipe restores a generic default");
+  check("smokeElement('[name=timerName]', HTMLInputElement).value === 'Timer I'", "closing the recipe restores a generic default");
   browser("click", '[aria-label="Cancel Timer smoke recipe abcdef"]');
   browser("click", `[aria-label="Cancel ${customName}"]`);
   console.log("Timer browser smoke passed (real elapsed time; landscape and narrow Chromium layouts, not physical iPad Safari).");

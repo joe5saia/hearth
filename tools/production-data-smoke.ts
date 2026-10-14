@@ -7,6 +7,9 @@ import { resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { Miniflare, convertV4MiniflareOptions } from "miniflare";
 import { rolldown } from "rolldown";
+import { Schema } from "effect";
+import { z } from "zod";
+import { HouseholdSchema } from "../src/domain.ts";
 import { exportProduction, productionApi, productionDatabase, seedPreview, seedSql } from "./production-data.ts";
 
 // Live production READ/export only. All writes go to throwaway local Worker/D1 or
@@ -32,7 +35,8 @@ try {
     assert(entry?.type === "chunk", "Worker bundle present");
     worker = new Miniflare(convertV4MiniflareOptions({ workers: [{ name: "production-copy-smoke", modules: true, script: entry.code, compatibilityDate: "2026-09-08", d1Databases: ["DB"], bindings: { LOCAL_DEV: "true" } }] }));
     const db = await worker.getD1Database("DB");
-    for (const row of schema.prepare("SELECT sql FROM sqlite_schema WHERE sql IS NOT NULL ORDER BY CASE type WHEN 'table' THEN 0 WHEN 'index' THEN 1 ELSE 2 END").all()) await db.prepare(String(row.sql)).run();
+    const statements = z.array(z.object({ sql: z.string() })).parse(schema.prepare("SELECT sql FROM sqlite_schema WHERE sql IS NOT NULL ORDER BY CASE type WHEN 'table' THEN 0 WHEN 'index' THEN 1 ELSE 2 END").all());
+    for (const row of statements) await db.prepare(row.sql).run();
     for (const batch of batches) await db.batch(batch.split(/;\n(?=DROP|CREATE|INSERT|DELETE)|;\s*$/).filter((sql) => sql.trim()).map((sql) => db.prepare(sql)));
     for (const table of Object.keys(counts)) {
       const expected = source.prepare(`SELECT * FROM "${table}" ORDER BY 1`).all();
@@ -41,7 +45,7 @@ try {
     }
     const response = await worker.dispatchFetch("http://localhost/api/household");
     assert.equal(response.status, 200);
-    const household = await response.json() as { recipes: unknown[]; groceries: unknown[]; meals: unknown[] };
+    const household = Schema.decodeUnknownSync(HouseholdSchema)(await response.json());
     assert.equal(household.recipes.length, counts.recipes);
     assert.equal(household.groceries.length, counts.groceries);
     assert.equal(household.meals.length, counts.meals);
@@ -65,7 +69,7 @@ try {
     try { execFileSync("npx", ["task", action], { cwd, env, stdio: "pipe", timeout: 180_000 }); return true; }
     catch { return false; } // Captured errors can contain private paths; do not print output.
   };
-  const manifest = async (cwd: string) => JSON.parse(await readFile(resolve(cwd, ".hearth-data/seed.json"), "utf8"));
+  const manifest = async (cwd: string) => z.object({ owner: z.string(), directory: z.uuid(), exportedAt: z.iso.datetime(), files: z.array(z.string()), counts: z.record(z.string(), z.number()) }).passthrough().parse(JSON.parse(await readFile(resolve(cwd, ".hearth-data/seed.json"), "utf8")));
   const first = await checkout("first");
   const ownerA = "T-11111111-1111-1111-1111-111111111111";
   const ownerB = "T-22222222-2222-2222-2222-222222222222";

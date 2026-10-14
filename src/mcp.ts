@@ -118,6 +118,7 @@ const readAnnotations = {
   openWorldHint: false,
 };
 
+/** Compose household tools for current bindings; authenticate callers at the Worker boundary. */
 export function recipeMcp(
   db: D1Database,
   ai?: Ai,
@@ -144,16 +145,21 @@ export function recipeMcp(
         record("mcp_tool_failure", { operation: name, reason: error._tag, outcome: "error" }),
       ),
       Effect.withSpan(`mcp.${name}`),
-      Effect.match({
-        onSuccess: (data) => ({
-          content: [{ type: "text" as const, text: JSON.stringify(data) }],
-          structuredContent: data,
-        }),
-        onFailure: (error) =>
-          failure(
-            error._tag === "StorageError" || error._tag === "StoredDataError" ? unavailable : error.message,
-          ),
+      // Map successes before recovering errors so failures never acquire structuredContent.
+      Effect.map((data) => ({
+        content: [{ type: "text" as const, text: JSON.stringify(data) }],
+        structuredContent: data,
+      })),
+      Effect.catchTags({
+        ValidationError: (error) => Effect.succeed(failure(error.message)),
+        MissingReference: (error) => Effect.succeed(failure(error.message)),
+        NotFound: (error) => Effect.succeed(failure(error.message)),
+        Conflict: (error) => Effect.succeed(failure(error.message)),
+        AiUnavailable: (error) => Effect.succeed(failure(error.message)),
+        StorageError: () => Effect.succeed(failure(unavailable)),
+        StoredDataError: () => Effect.succeed(failure(unavailable)),
       }),
+      Effect.satisfiesErrorType<never>(),
       Effect.catchCause(() =>
         record("mcp_tool_failure", {
           operation: name,
@@ -176,6 +182,7 @@ export function recipeMcp(
   }
 
   return createMcpHandler(
+    /** Build an independent server with shared schemas and text-only tool failures. */
     () => {
       const server = new McpServer(
         { name: "hearth", version: "2.0.0" },
@@ -242,19 +249,21 @@ export function recipeMcp(
             context,
             Effect.gen(function* () {
               const rows = yield* database(() =>
-                db
-                  .prepare("SELECT id,title,ingredients FROM recipes ORDER BY title,id")
-                  .all<{ id: string; title: string; ingredients: string }>(),
+                db.prepare("SELECT id,title,ingredients FROM recipes ORDER BY title,id").all(),
               );
 
               const matching = yield* stored(() =>
                 rows.results
-                  .map((row) => ({
-                    ...row,
-                    ingredients: Schema.decodeUnknownSync(Schema.Array(ingredient), {
-                      onExcessProperty: "error",
-                    })(JSON.parse(row.ingredients)),
-                  }))
+                  .map((row) =>
+                    Schema.decodeUnknownSync(
+                      Schema.Struct({
+                        id: recipe.fields.id,
+                        title: RecipeFields.fields.title,
+                        ingredients: Schema.fromJsonString(Schema.Array(ingredient)),
+                      }),
+                      { onExcessProperty: "error" },
+                    )(row),
+                  )
                   .filter((row) => matchesRecipeSearch(row, query)),
               );
 

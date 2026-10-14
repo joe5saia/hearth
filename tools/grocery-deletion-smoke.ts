@@ -3,7 +3,7 @@ import { execFileSync } from "node:child_process";
 import { mkdir } from "node:fs/promises";
 import { resolve } from "node:path";
 import { Schema } from "effect";
-import { HouseholdSchema, type GroceryItem, type Recipe } from "../src/domain.ts";
+import { HouseholdSchema, ExtraSchema, CheckSchema, type GroceryDraft, type RecipeDraft } from "../src/domain.ts";
 
 // Real browser, Worker and SQLite; fault injection only at the browser HTTP boundary.
 const url = process.argv[2] ?? "http://localhost:5173";
@@ -16,15 +16,20 @@ const check = (expression: string, message: string) => {
   browser("eval", `(() => { if (!(${expression})) throw new Error(${JSON.stringify(message)}); return true; })()`);
   console.log(`PASS ${message}`);
 };
-const request = async (path: string, method = "GET", value?: unknown) => {
+const request = async (path: string, method = "GET", value?: GroceryDraft | RecipeDraft | typeof ExtraSchema.Encoded | typeof CheckSchema.Encoded) => {
   const response = await fetch(`${url}/api/${path}`, { method, headers: { "Content-Type": "application/json" }, body: value === undefined ? undefined : JSON.stringify(value) });
-  assert(response.ok, `${method} ${path}: ${response.status} ${await response.clone().text()}`);
+  assert(response.ok, `${method} ${path}: ${response.status}`);
   return response;
 };
-const household = async () => Schema.decodeUnknownSync(HouseholdSchema)(await (await request("household")).json());
+const household = async () => {
+  const value: unknown = await (await request("household")).json();
+  assert.ok(Schema.is(HouseholdSchema)(value), "Household response must match its contract.");
+  return value;
+};
+const original = await household();
 const prefix = `delete-smoke-${crypto.randomUUID()}`;
-const products = ["rice", "oats", "oil"].map((name): GroceryItem => ({ id: `${prefix}-${name}`, name: `Deletion ${name}`, aliases: [], quantity: 500, unit: "g", aisle: "Deletion smoke", url: "" }));
-const recipe: Recipe = { id: `${prefix}-recipe`, title: "Deletion rice bowl", description: "Keep this description", servings: 2, minutes: 20, category: "", photo: "", source: "", rating: "neutral", instructions: ["Cook rice; keep these instructions."], ingredients: [
+const products = ["rice", "oats", "oil"].map((name): GroceryDraft => ({ id: `${prefix}-${name}`, name: `Deletion ${name}`, aliases: [], quantity: 500, unit: "g", aisle: "Deletion smoke", url: "" }));
+const recipe: RecipeDraft = { id: `${prefix}-recipe`, title: "Deletion rice bowl", description: "Keep this description", servings: 2, minutes: 20, category: "", photo: "", source: "", rating: "neutral", instructions: ["Cook rice; keep these instructions."], ingredients: [
   { name: "Rice", originalText: "1½ cups rice, rinsed", quantity: 1.5, unit: "cup", groceryItemId: products[0].id },
   { name: "Oil", quantity: 2, unit: "tbsp", groceryItemId: products[2].id },
 ] };
@@ -33,7 +38,7 @@ const openCatalog = () => {
   browser("reload");
   browser("wait", ".grocery-manager");
 };
-const edit = (product: GroceryItem) => {
+const edit = (product: GroceryDraft) => {
   browser("click", `[aria-label="Edit grocery item ${product.name}"]`);
   browser("wait", ".grocery-form");
 };
@@ -50,7 +55,7 @@ try {
   browser("open", `${url}/#shopping`);
   browser("set", "viewport", "1280", "900", "2");
   if (runs("extras")) {
-    const extras = [
+    const extras: (typeof ExtraSchema.Encoded)[] = [
       { id: `${prefix}?query`, name: "Deletion query extra", checked: 0 },
       { id: prefix, name: "Deletion plain extra", checked: 0 },
       { id: `${prefix}#fragment`, name: "Deletion fragment extra", checked: 1 },
@@ -143,5 +148,6 @@ try {
     for (const extra of current.extras.filter(item => item.id.startsWith(prefix))) await request(`extras/${encodeURIComponent(extra.id)}`, "DELETE");
     for (const recipe of current.recipes.filter(item => item.id.startsWith(prefix))) await request(`recipes/${encodeURIComponent(recipe.id)}`, "DELETE");
     for (const product of current.groceries.filter(item => item.id.startsWith(prefix))) await request(`groceries/${encodeURIComponent(product.id)}`, "DELETE");
+    assert.deepEqual(await household(), original, new Error("Fixture cleanup must restore the starting household."));
   }
 }

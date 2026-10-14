@@ -15,13 +15,13 @@ import {
   type CalendarDate,
 } from "./domain";
 import { database, stored, ValidationError, MissingReference, NotFound, Conflict } from "./storage";
-import { parseRecipe, recipeStatement, matchRecipeIngredients, type RecipeRow } from "./recipes";
-import { getGroceries, groceryStatement, matchGrocery, parseGrocery, type GroceryRow } from "./groceries";
+import { parseRecipe, recipeStatement, matchRecipeIngredients } from "./recipes";
+import { getGroceries, groceryStatement, matchGrocery, parseGrocery } from "./groceries";
 import { sampleRecipes, sampleMeals, sampleGroceries } from "./seed";
 import { record } from "./observability";
 
-const validate = <S extends Schema.Constraint>(schema: S, input: S["Type"], message: string) =>
-  Schema.decodeUnknownEffect(schema)(input).pipe(Effect.mapError(() => new ValidationError({ message })));
+const validate = <S extends Schema.Constraint>(schema: S, input: S["Encoded"], message: string) =>
+  Schema.decodeEffect(schema)(input).pipe(Effect.mapError(() => new ValidationError({ message })));
 
 const ok = { ok: true } as const;
 
@@ -32,6 +32,7 @@ function mealStatement(db: D1Database, meal: Meal) {
     .bind(meal.id, meal.recipeId, meal.date, meal.slot, meal.scale, meal.note);
 }
 
+/** Loads and decodes a single transaction snapshot, retaining each collection's SQL ordering. */
 export const getHousehold = (db: D1Database) =>
   Effect.gen(function* () {
     // One batch keeps all seven reads in the same transaction snapshot.
@@ -47,17 +48,7 @@ export const getHousehold = (db: D1Database) =>
       ]),
     );
 
-    // SAFETY: Fixed SELECT order identifies unbranded storage row shapes only.
-    // All values, including JSON columns, are decoded inside stored below.
-    const [recipes, meals, extras, checks, collections, groceries, shoppingOrder] = snapshot as [
-      D1Result<RecipeRow>,
-      D1Result,
-      D1Result,
-      D1Result,
-      D1Result,
-      D1Result<GroceryRow>,
-      D1Result<{ aisles: string; items: string }>,
-    ];
+    const [recipes, meals, extras, checks, collections, groceries, shoppingOrder] = snapshot;
 
     yield* record("household_snapshot", {
       recipes: recipes.results.length,
@@ -65,24 +56,31 @@ export const getHousehold = (db: D1Database) =>
       groceries: groceries.results.length,
     });
 
-    return yield* stored(() =>
-      Schema.decodeUnknownSync(HouseholdSchema)({
+    return yield* stored(() => {
+      const order = shoppingOrder.results[0];
+
+      const decodedOrder = order
+        ? Schema.decodeUnknownSync(
+            Schema.Struct({
+              aisles: Schema.fromJsonString(ShoppingOrderSchema.fields.aisles),
+              items: Schema.fromJsonString(ShoppingOrderSchema.fields.items),
+            }),
+          )(order)
+        : { aisles: [], items: [] };
+
+      return Schema.decodeUnknownSync(HouseholdSchema)({
         recipes: recipes.results.map(parseRecipe),
         meals: meals.results,
         extras: extras.results,
         checks: checks.results,
         collections: collections.results,
         groceries: groceries.results.map(parseGrocery),
-        shoppingOrder: shoppingOrder.results[0]
-          ? {
-              aisles: JSON.parse(shoppingOrder.results[0].aisles),
-              items: JSON.parse(shoppingOrder.results[0].items),
-            }
-          : { aisles: [], items: [] },
-      }),
-    );
+        shoppingOrder: decodedOrder,
+      });
+    });
   }).pipe(Effect.withSpan("household.load"));
 
+/** Lists decoded collections by name then ID, including legacy collection IDs. */
 export const listCollections = (db: D1Database) =>
   Effect.gen(function* () {
     const rows = yield* database(() => db.prepare("SELECT * FROM collections ORDER BY name,id").all());
@@ -94,6 +92,7 @@ export const listCollections = (db: D1Database) =>
     return { collections };
   });
 
+/** Upserts a trimmed collection name, enforcing new-write ID and unique-name constraints. */
 export const saveCollection = (db: D1Database, input: Collection) =>
   Effect.gen(function* () {
     const message = "Add a collection name of 100 characters or less.";
@@ -115,6 +114,7 @@ export const saveCollection = (db: D1Database, input: Collection) =>
     return { collection };
   });
 
+/** Deletes a collection; database triggers leave its recipes uncollected. */
 export const deleteCollection = (db: D1Database, id: string) =>
   Effect.gen(function* () {
     const result = yield* database(() => db.prepare("DELETE FROM collections WHERE id=?").bind(id).run());
@@ -124,6 +124,7 @@ export const deleteCollection = (db: D1Database, id: string) =>
     return ok;
   });
 
+/** Saves a planned recipe or a recipe-free meal with a nonblank note. */
 export const saveMeal = (db: D1Database, input: Meal) =>
   Effect.gen(function* () {
     const meal = yield* validate(
@@ -150,9 +151,11 @@ export const saveMeal = (db: D1Database, input: Meal) =>
     return { meal };
   });
 
+/** Deletes a meal idempotently, including when the ID no longer exists. */
 export const deleteMeal = (db: D1Database, id: string) =>
   database(() => db.prepare("DELETE FROM meals WHERE id=?").bind(id).run()).pipe(Effect.as(ok));
 
+/** Validates and upserts an independent shopping extra with a trimmed name. */
 export const saveExtra = (db: D1Database, input: Extra) =>
   Effect.gen(function* () {
     const extra = yield* validate(ExtraSchema, input, "Add an item name of 200 characters or less.");
@@ -169,9 +172,11 @@ export const saveExtra = (db: D1Database, input: Extra) =>
     return { extra: saved };
   });
 
+/** Deletes only the requested shopping extra; missing IDs also succeed. */
 export const deleteExtra = (db: D1Database, id: string) =>
   database(() => db.prepare("DELETE FROM extras WHERE id=?").bind(id).run()).pipe(Effect.as(ok));
 
+/** Stores only nondefault checks, guarding catalog membership against grocery deletion. */
 export const setShoppingChecked = (db: D1Database, input: typeof CheckSchema.Type) =>
   Effect.gen(function* () {
     const check = yield* validate(CheckSchema, input, "Invalid shopping item.");
@@ -199,6 +204,7 @@ export const setShoppingChecked = (db: D1Database, input: typeof CheckSchema.Typ
     return ok;
   });
 
+/** Replaces both saved shopping sequences after validating uniqueness and size. */
 export const setShoppingOrder = (db: D1Database, input: ShoppingOrder) =>
   Effect.gen(function* () {
     const order = yield* validate(ShoppingOrderSchema, input, "Shopping order must contain unique strings.");
@@ -214,6 +220,7 @@ export const setShoppingOrder = (db: D1Database, input: ShoppingOrder) =>
     return ok;
   });
 
+/** Atomically adds sample content only after observing an empty recipe catalog. */
 export const addDemoData = (db: D1Database, today: CalendarDate) =>
   Effect.gen(function* () {
     yield* validate(DateSchema, today, "Choose a valid sample week.");
@@ -222,8 +229,10 @@ export const addDemoData = (db: D1Database, today: CalendarDate) =>
     if (existing)
       return yield* new Conflict({ message: "Sample recipes are only added to an empty household." });
 
-    const collections = yield* database(() =>
-      db.prepare("SELECT name FROM collections").all<{ name: string }>(),
+    const collections = yield* database(() => db.prepare("SELECT name FROM collections").all());
+
+    const namesInStorage = yield* stored(() =>
+      Schema.decodeUnknownSync(Schema.Array(Schema.Struct({ name: Schema.String })))(collections.results),
     );
 
     const groceries = yield* getGroceries(db);
@@ -243,7 +252,7 @@ export const addDemoData = (db: D1Database, today: CalendarDate) =>
         ...linkedSamples.map((recipe) =>
           recipeStatement(db, {
             ...recipe,
-            category: collections.results.some((collection) => collection.name === recipe.category)
+            category: namesInStorage.some((collection) => collection.name === recipe.category)
               ? recipe.category
               : "",
           }),

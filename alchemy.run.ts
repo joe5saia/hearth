@@ -2,9 +2,7 @@ import * as Alchemy from "alchemy";
 import * as Cloudflare from "alchemy/Cloudflare";
 import { AlchemyContext } from "alchemy/AlchemyContext";
 import * as Namespace from "alchemy/Namespace";
-import * as Effect from "effect/Effect";
-import * as Layer from "effect/Layer";
-import * as Redacted from "effect/Redacted";
+import { Effect, Layer, Redacted } from "effect";
 import { workerRuntime } from "./cloudflare.config";
 import { publicInstallPaths } from "./src/install-assets";
 import { localImportFiles } from "./tools/production-data";
@@ -20,6 +18,7 @@ const telemetry = {
   TELEMETRY_TRACE_SAMPLE_RATE: process.env.TELEMETRY_TRACE_SAMPLE_RATE || "1",
 };
 
+/** Owns production migrations and imports private seed files only into isolated development D1. */
 export const Database = Cloudflare.D1.Database(
   "Database",
   Effect.gen(function* () {
@@ -48,6 +47,7 @@ const Google = Effect.gen(function* () {
   });
 });
 
+/** Composes local bindings or the production website with its existing household Access gate. */
 export const Website = Cloudflare.Worker(
   "Website",
   Effect.gen(function* () {
@@ -120,11 +120,13 @@ export const Website = Cloudflare.Worker(
   }),
 );
 
-// InferEnv keeps common bindings across the local/cloud union; AI exists only in cloud deployments.
+/** InferEnv retains common local/cloud bindings; AI is available only in cloud deployments. */
 export type WebsiteEnv = Cloudflare.InferEnv<typeof Website> & { AI?: Ai };
 
+/** OAuth persistence shared by the production MCP Worker, not by disposable Previews. */
 export const McpOAuth = Cloudflare.KV.Namespace("McpOAuth");
 
+/** Composes the MCP Worker with Access on /authorize only, preserving public protocol routes. */
 export const Mcp = Cloudflare.Worker(
   "Mcp",
   Effect.gen(function* () {
@@ -170,6 +172,7 @@ export const Mcp = Cloudflare.Worker(
   }),
 );
 
+/** Owns production resources and remote state; dev uses local state and omits MCP provisioning. */
 export default Alchemy.Stack(
   "hearth",
   {
