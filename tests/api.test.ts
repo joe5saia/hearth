@@ -143,6 +143,7 @@ beforeAll(async () => {
       .filter((s) => s.trim())
       .map((s) => db.prepare(s)),
   );
+  await db.prepare(await readFile("migrations/0007_shopping_membership.sql", "utf8")).run();
   const unlinkSql = await readFile("migrations/0008_grocery_delete_unlink.sql", "utf8");
   await db.batch(
     unlinkSql
@@ -648,6 +649,10 @@ describe("real Worker with disposable SQLite D1", () => {
     expect(await state()).toEqual(after);
     // A stale editor cannot resurrect dangling links or overwrite the unlinked recipe.
     expect((await put("recipes", before.recipes[0])).status).toBe(400);
+    expect(await state()).toEqual(after);
+    expect(
+      (await put("checks", { key: JSON.stringify(["shopping-list", removed.id]), checked: 0 })).status,
+    ).toBe(400);
     expect(await state()).toEqual(after);
     // Recreating an identical name/ID does not silently re-match explicitly unlinked ingredients.
     expect((await put("groceries", removed)).status).toBe(200);
