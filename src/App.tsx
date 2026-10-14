@@ -1590,7 +1590,14 @@ export function App() {
             save={(meal) => mutate("meals", "PUT", meal, "Meal plan updated", true)}
             remove={
               data.meals.some((meal) => meal.id === modal.meal.id)
-                ? () => mutate(`meals/${modal.meal.id}`, "DELETE", undefined, "Meal removed", true)
+                ? () =>
+                    mutate(
+                      `meals/${encodeURIComponent(modal.meal.id)}`,
+                      "DELETE",
+                      undefined,
+                      "Meal removed",
+                      true,
+                    )
                 : undefined
             }
             viewRecipe={(recipe, meal) => setModal({ kind: "recipe", recipe, meal, returnToMeal: true })}
@@ -1707,7 +1714,14 @@ export function App() {
             }
             remove={
               data.recipes.some((recipe) => recipe.id === modal.recipe.id)
-                ? () => mutate(`recipes/${modal.recipe.id}`, "DELETE", undefined, "Recipe deleted", true)
+                ? () =>
+                    mutate(
+                      `recipes/${encodeURIComponent(modal.recipe.id)}`,
+                      "DELETE",
+                      undefined,
+                      "Recipe deleted",
+                      true,
+                    )
                 : undefined
             }
           />

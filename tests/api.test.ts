@@ -992,19 +992,42 @@ describe("real Worker with disposable SQLite D1", () => {
     expect(await db.prepare("SELECT count(*) AS count FROM checks").first()).toEqual({ count: 2 });
   });
   it("rejects malformed encoded IDs as client errors and decodes valid IDs once", async () => {
-    for (const resource of ["recipes", "meals", "extras"]) {
+    const db = await worker.getD1Database("DB");
+
+    for (const resource of ["recipes", "meals", "extras", "groceries", "collections"]) {
       for (const id of ["%", "%E0%A4%A"]) {
         const response = await send(`${resource}/${id}`, "DELETE", "{}");
         expect(response.status).toBe(400);
         expect(await response.json()).toEqual({ error: "Invalid item ID." });
       }
-    }
 
-    const id = "extra/%20?";
-    expect((await send("extras", "PUT", JSON.stringify({ id, name: "Milk", checked: 0 }))).status).toBe(200);
-    expect((await send(`extras/${encodeURIComponent(id)}`, "DELETE", "{}")).status).toBe(200);
-    const db = await worker.getD1Database("DB");
-    expect(await db.prepare("SELECT id FROM extras WHERE id=?").bind(id).first()).toBeNull();
+      const base = `delete-${resource}-base`;
+
+      for (const suffix of ["?variant", "#variant", "/%20 space 食"]) {
+        const id = base + suffix;
+
+        for (const itemId of [base, id]) {
+          const item =
+            resource === "recipes"
+              ? { ...sampleRecipes[0], id: itemId }
+              : resource === "meals"
+                ? { ...meal, id: itemId, recipeId: null, note: "Disposable note" }
+                : resource === "extras"
+                  ? { id: itemId, name: "Milk", checked: 0 }
+                  : resource === "groceries"
+                    ? { id: itemId, name: "Milk", aliases: [], quantity: 1, unit: "l", aisle: "", url: "" }
+                    : { id: itemId, name: itemId };
+
+          expect((await send(resource, "PUT", JSON.stringify(item))).status).toBe(200);
+        }
+
+        expect((await send(`${resource}/${encodeURIComponent(id)}`, "DELETE", "{}")).status).toBe(200);
+        expect(await db.prepare(`SELECT id FROM ${resource} WHERE id=?`).bind(id).first()).toBeNull();
+        expect(await db.prepare(`SELECT id FROM ${resource} WHERE id=?`).bind(base).first()).toEqual({
+          id: base,
+        });
+      }
+    }
   });
   it("rejects cross-site writes and non-JSON requests", async () => {
     expect(
