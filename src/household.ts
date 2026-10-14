@@ -178,16 +178,23 @@ export const setShoppingChecked = (db: D1Database, input: typeof CheckSchema.Typ
     // Catalog checks default to 1; retain only the unchecked/on-list exception.
     // Legacy recipe check identities defaulted to 0 and remain readable without a migration.
     const defaultChecked = check.key.startsWith('["shopping-list",') ? 1 : 0;
-    yield* database(() =>
+
+    // Test existence in the write itself: a separate read races with product deletion.
+    const result = yield* database(() =>
       check.checked === defaultChecked
         ? db.prepare("DELETE FROM checks WHERE key=?").bind(check.key).run()
         : db
             .prepare(
-              "INSERT INTO checks(key,checked) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET checked=excluded.checked",
+              `INSERT INTO checks(key,checked) SELECT ?,? WHERE ?=0 OR EXISTS
+                (SELECT 1 FROM groceries WHERE json_array('shopping-list',id)=?)
+                ON CONFLICT(key) DO UPDATE SET checked=excluded.checked`,
             )
-            .bind(check.key, check.checked)
+            .bind(check.key, check.checked, defaultChecked, check.key)
             .run(),
     );
+
+    if (check.checked !== defaultChecked && !result.meta.changes)
+      return yield* new MissingReference({ message: "That grocery item no longer exists." });
 
     return ok;
   });

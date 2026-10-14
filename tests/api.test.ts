@@ -367,6 +367,110 @@ describe("real Worker with disposable SQLite D1", () => {
     expect(household.shoppingOrder).toEqual(order);
   });
 
+  it("does not revive membership after a late check write and same-ID product recreation", async () => {
+    const put = (path: string, value: typeof Schema.Json.Type) => send(path, "PUT", JSON.stringify(value));
+
+    const product = {
+      id: 'late-"rice\\雪',
+      name: "Rice",
+      url: "",
+      aisle: "Pantry",
+      quantity: 500,
+      unit: "g",
+      aliases: [],
+    };
+
+    const key = JSON.stringify(["shopping-list", product.id]);
+    const db = await worker.getD1Database("DB");
+    const membership = () => db.prepare("SELECT * FROM checks WHERE key=?").bind(key).first();
+
+    expect((await put("groceries", product)).status).toBe(200);
+    expect((await put("checks", { key, checked: 0 })).status).toBe(200);
+    expect((await put("checks", { key, checked: 0 })).status).toBe(200);
+    expect(await membership()).toEqual({ key, checked: 0 });
+    expect((await put("groceries", { ...product, name: "Renamed rice", quantity: 750 })).status).toBe(200);
+    expect(await membership()).toEqual({ key, checked: 0 });
+
+    // Force the harmful ordering: deletion commits before the delayed list-add reaches D1.
+    expect((await send(`groceries/${encodeURIComponent(product.id)}`, "DELETE", "")).status).toBe(200);
+    expect(await membership()).toBeNull();
+    const late = await put("checks", { key, checked: 0 });
+    const orphan = await membership();
+    expect((await put("groceries", product)).status).toBe(200);
+    const revived = await membership();
+    expect(orphan).toBeNull();
+    expect(revived).toBeNull();
+    expect(late.status).toBe(400);
+    expect(await late.json()).toEqual({ error: "That grocery item no longer exists." });
+
+    // A genuine addition to the recreated product must still work; removal is idempotent.
+    expect((await put("checks", { key, checked: 0 })).status).toBe(200);
+    expect(await membership()).toEqual({ key, checked: 0 });
+    expect((await put("checks", { key, checked: 1 })).status).toBe(200);
+    expect((await put("checks", { key, checked: 1 })).status).toBe(200);
+    expect(await membership()).toBeNull();
+
+    // Either database ordering of overlapping DELETE/add requests must leave no orphan.
+    for (let attempt = 0; attempt < 12; attempt++) {
+      expect((await put("groceries", product)).status).toBe(200);
+      const remove = () => send(`groceries/${encodeURIComponent(product.id)}`, "DELETE", "");
+      const add = () => put("checks", { key, checked: 0 });
+
+      const [deleted, added] =
+        attempt % 2
+          ? await Promise.all([add(), remove()]).then(([a, d]) => [d, a])
+          : await Promise.all([remove(), add()]);
+
+      expect(deleted.status).toBe(200);
+      expect([200, 400]).toContain(added.status);
+      expect(await db.prepare("SELECT id FROM groceries WHERE id=?").bind(product.id).first()).toBeNull();
+      expect(await membership()).toBeNull();
+    }
+
+    expect((await put("checks", { key, checked: 1 })).status).toBe(200);
+
+    // SQL canonical key construction must agree with returned keys for valid Unicode/control IDs.
+    for (const id of ["line\nfeed\t\u0000", "emoji-🛒/rice"]) {
+      const key = JSON.stringify(["shopping-list", id]);
+      expect((await put("groceries", { ...product, id })).status).toBe(200);
+      expect((await put("checks", { key, checked: 0 })).status).toBe(200);
+      expect(await db.prepare("SELECT * FROM checks WHERE key=?").bind(key).first()).toEqual({
+        key,
+        checked: 0,
+      });
+      expect((await send(`groceries/${encodeURIComponent(id)}`, "DELETE", "")).status).toBe(200);
+      expect((await put("checks", { key, checked: 0 })).status).toBe(400);
+    }
+  });
+
+  it("cleans historical orphan memberships without changing live memberships or legacy checks", async () => {
+    const db = await worker.getD1Database("DB");
+    expect((await send("demo?today=2026-09-21", "POST", "{}")).status).toBe(200);
+
+    const state = Schema.decodeUnknownSync(HouseholdSchema)(
+      await (await worker.dispatchFetch("http://localhost/api/household")).json(),
+    );
+
+    const live = { key: JSON.stringify(["shopping-list", state.groceries[0].id]), checked: 0 };
+    const orphan = { key: '["shopping-list","deleted-product"]', checked: 0 };
+    const legacy = { key: "range-ingredient-total", checked: 1 };
+    const legacyCatalog = { key: '["Shopping-list","deleted-product"]', checked: 1 };
+
+    for (const check of [live, orphan, legacy, legacyCatalog])
+      await db.prepare("INSERT INTO checks(key,checked) VALUES(?,?)").bind(check.key, check.checked).run();
+
+    const sql = await readFile("migrations/0007_shopping_membership.sql", "utf8");
+
+    for (let attempt = 0; attempt < 2; attempt++) {
+      await db.prepare(sql).run();
+      expect((await db.prepare("SELECT * FROM checks ORDER BY key").all()).results).toEqual([
+        legacyCatalog,
+        live,
+        legacy,
+      ]);
+    }
+  });
+
   it("persists groceries, exact links, backfill, ordering and deletion guards", async () => {
     const put = (path: string, value: typeof Schema.Json.Type) => send(path, "PUT", JSON.stringify(value));
 

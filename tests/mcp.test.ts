@@ -1080,6 +1080,17 @@ it("manages a collection, matched products, inclusive meal plan and shopping lif
 
   for (const grocery of [rice, milk]) await success("delete_grocery", { id: grocery.id });
 
+  const lateCheck = await call("set_shopping_checked", { key: riceItem.checkKey, checked: false });
+  expect(lateCheck.isError).toBe(true);
+  expect(lateCheck.content).toEqual([{ type: "text", text: "That grocery item no longer exists." }]);
+  await success("set_shopping_checked", { key: riceItem.checkKey, checked: true });
+  expect(await db.prepare("SELECT * FROM checks WHERE key=?").bind(riceItem.checkKey).first()).toBeNull();
+  await success("save_grocery", rice);
+  expect((await shopping()).items.find((i: any) => i.key === riceItem.key).checked).toBe(true);
+  await success("set_shopping_checked", { key: riceItem.checkKey, checked: false });
+  expect((await shopping()).items.find((i: any) => i.key === riceItem.key).checked).toBe(false);
+  await success("delete_grocery", { id: rice.id });
+
   for (const recipe of linked) await success("delete_recipe", { id: recipe.id });
   expect((await success("get_recipes", { ids: [a.id, b.id] })).missingIds).toEqual([a.id, b.id]);
   expect((await shopping()).items).toEqual([]);
