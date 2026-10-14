@@ -424,9 +424,10 @@ export function App() {
           );
 
         if (!superseded)
-          setError(
+          setError((current) =>
             acknowledged
-              ? "Your shopping change was saved, but the household could not be refreshed. Reload to retry."
+              ? current ||
+                "Your shopping change was saved, but the household could not be refreshed. Reload to retry."
               : failure instanceof Error
                 ? failure.message
                 : "Please try again.",
@@ -1427,7 +1428,10 @@ export function App() {
             checks={data.checks}
             busy={busy}
             error={error}
-            cancel={() => setModal(null)}
+            cancel={() => {
+              setModal(null);
+              setError("");
+            }}
             save={async (ids) => {
               setBusy(true);
 
