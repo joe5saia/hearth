@@ -143,18 +143,15 @@ export function deleteGrocery(db: D1Database, id: GroceryId) {
   return Effect.gen(function* () {
     const [result] = yield* database(() =>
       db.batch([
-        db
-          .prepare(`DELETE FROM groceries WHERE id=? AND NOT EXISTS
-        (SELECT 1 FROM recipes,json_each(recipes.ingredients) AS ingredient WHERE json_extract(ingredient.value,'$.groceryItemId')=?)`)
-          .bind(id, id),
+        // The database trigger unlinks ingredients in the same atomic deletion.
+        db.prepare("DELETE FROM groceries WHERE id=?").bind(id),
         db
           .prepare("DELETE FROM checks WHERE key=? AND NOT EXISTS (SELECT 1 FROM groceries WHERE id=?)")
           .bind(JSON.stringify(["shopping-list", id]), id),
       ]),
     );
 
-    if (!result.meta.changes)
-      return yield* new Conflict({ message: "This grocery is used by a recipe or no longer exists." });
+    if (!result.meta.changes) return yield* new Conflict({ message: "This grocery no longer exists." });
 
     return { ok: true as const };
   });

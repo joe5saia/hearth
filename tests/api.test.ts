@@ -143,6 +143,13 @@ beforeAll(async () => {
       .filter((s) => s.trim())
       .map((s) => db.prepare(s)),
   );
+  const unlinkSql = await readFile("migrations/0008_grocery_delete_unlink.sql", "utf8");
+  await db.batch(
+    unlinkSql
+      .split(/;\n(?=CREATE)|;\s*$/)
+      .filter((s) => s.trim())
+      .map((s) => db.prepare(s)),
+  );
   expect(await db.prepare("SELECT * FROM meals").first()).toEqual(meal);
   await expect(db.prepare("DELETE FROM recipes WHERE id=?").bind(meal.recipeId).run()).rejects.toThrow();
 }, 30000);
@@ -518,9 +525,14 @@ describe("real Worker with disposable SQLite D1", () => {
         })
       ).status,
     ).toBe(400);
-    expect((await send("groceries/rice", "DELETE", "")).status).toBe(409);
+    expect((await send("groceries/rice", "DELETE", "")).status).toBe(200);
+    expect((await state()).recipes[0].ingredients[0].groceryItemId).toBeNull();
+    await put("groceries", item);
+    await put("recipes", recipe);
     const db = await worker.getD1Database("DB");
-    await expect(db.prepare("DELETE FROM groceries WHERE id='rice'").run()).rejects.toThrow();
+    await db.prepare("DELETE FROM groceries WHERE id='rice'").run();
+    expect((await state()).recipes[0].ingredients[0].groceryItemId).toBeNull();
+    await put("groceries", item);
     await expect(
       recipeStatement(
         db,
@@ -563,6 +575,100 @@ describe("real Worker with disposable SQLite D1", () => {
     expect((await put("shopping-order", { ...order, items: ["rice", "rice"] })).status).toBe(400);
     expect((await send("groceries/other", "DELETE", "")).status).toBe(200);
     expect((await state()).groceries).toHaveLength(1);
+  });
+  it("deletes linked products atomically without losing recipe data or unrelated list membership", async () => {
+    const put = (path: string, value: typeof Schema.Json.Type) => send(path, "PUT", JSON.stringify(value));
+
+    const state = async () =>
+      Schema.decodeUnknownSync(HouseholdSchema)(
+        await (await worker.dispatchFetch("http://localhost/api/household")).json(),
+      );
+
+    const removed = {
+      id: "rice/?#%20",
+      name: "Rice",
+      aliases: [],
+      quantity: 500,
+      unit: "g",
+      aisle: "Dry",
+      url: "",
+    };
+
+    const keep = { ...removed, id: "keep", name: "Oil" };
+
+    for (const product of [removed, keep]) expect((await put("groceries", product)).status).toBe(200);
+
+    const ingredients = Schema.decodeUnknownSync(RecipeSchema.fields.ingredients)([
+      {
+        name: "Rice",
+        originalText: "1½ cups rice, rinsed\nthen drained",
+        quantity: 1.5,
+        unit: "cup",
+        groceryItemId: removed.id,
+      },
+      { name: "Oil", quantity: 2, unit: "tbsp", groceryItemId: keep.id },
+      { name: "Rice", quantity: 75, unit: "g", groceryItemId: removed.id },
+      { name: "Unmatched herb", quantity: 1, unit: "bunch", groceryItemId: null },
+      ...Array.from({ length: 9 }, (_, index) => ({
+        name: `Unmatched seed ${index}`,
+        quantity: index + 1,
+        unit: "g",
+        grocerySuggestions: [keep.id],
+      })),
+    ]);
+
+    for (const [index, recipe] of sampleRecipes.slice(0, 2).entries())
+      expect(
+        (await put("recipes", { ...recipe, ingredients: index ? ingredients.slice(2) : ingredients })).status,
+      ).toBe(200);
+    expect((await put("meals", { ...meal, recipeId: sampleRecipes[0].id })).status).toBe(200);
+
+    for (const product of [removed, keep])
+      expect(
+        (await put("checks", { key: JSON.stringify(["shopping-list", product.id]), checked: 0 })).status,
+      ).toBe(200);
+    const before = await state();
+
+    const expectedRecipes = before.recipes.map((recipe) => ({
+      ...recipe,
+      ingredients: recipe.ingredients.map((ingredient) =>
+        ingredient.groceryItemId === removed.id ? { ...ingredient, groceryItemId: null } : ingredient,
+      ),
+    }));
+
+    expect((await send(`groceries/${encodeURIComponent(removed.id)}`, "DELETE", "")).status).toBe(200);
+    const after = await state();
+    expect(after).toEqual({
+      ...before,
+      recipes: expectedRecipes,
+      groceries: before.groceries.filter((product) => product.id !== removed.id),
+      checks: before.checks.filter((check) => check.key !== JSON.stringify(["shopping-list", removed.id])),
+    });
+    expect((await send(`groceries/${encodeURIComponent(removed.id)}`, "DELETE", "")).status).toBe(409);
+    expect(await state()).toEqual(after);
+    // A stale editor cannot resurrect dangling links or overwrite the unlinked recipe.
+    expect((await put("recipes", before.recipes[0])).status).toBe(400);
+    expect(await state()).toEqual(after);
+    // Recreating an identical name/ID does not silently re-match explicitly unlinked ingredients.
+    expect((await put("groceries", removed)).status).toBe(200);
+
+    for (const recipe of expectedRecipes) expect((await put("recipes", recipe)).status).toBe(200);
+    expect((await state()).recipes).toEqual(expectedRecipes);
+    // Failure of the second batch statement rolls back the product deletion and recipe unlinking.
+    const db = await worker.getD1Database("DB");
+    await db
+      .prepare(
+        "CREATE TRIGGER reject_product_delete BEFORE DELETE ON checks BEGIN SELECT RAISE(ABORT, 'Delete rejected'); END",
+      )
+      .run();
+    const beforeFailure = await state();
+
+    try {
+      expect((await send("groceries/keep", "DELETE", "")).status).toBe(500);
+      expect(await state()).toEqual(beforeFailure);
+    } finally {
+      await db.prepare("DROP TRIGGER reject_product_delete").run();
+    }
   });
   it("renames whole aisles atomically while preserving route and list membership", async () => {
     const put = (path: string, value: typeof Schema.Json.Type) => send(path, "PUT", JSON.stringify(value));

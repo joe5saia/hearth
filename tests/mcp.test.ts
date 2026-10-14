@@ -335,6 +335,7 @@ beforeAll(async () => {
     "0003_collections.sql",
     "0004_groceries.sql",
     "0006_meal_notes.sql",
+    "0008_grocery_delete_unlink.sql",
   ]) {
     const sql = await readFile(`migrations/${file}`, "utf8");
     await db.batch(
@@ -1054,7 +1055,7 @@ it("manages a collection, matched products, inclusive meal plan and shopping lif
     ["set_shopping_order", { aisles: ["Dry", "Dry"], items: [] }],
     ["save_shopping_extra", { name: "No mutation", checked: 0, unknown: 1 }],
     ["delete_recipe", { id: a.id }],
-    ["delete_grocery", { id: rice.id }],
+    ["delete_grocery", { id: "missing-grocery" }],
   ] as const) {
     expect((await call(name, args)).isError, name).toBe(true);
     expect(await snapshot(), name).toEqual(before);
@@ -1068,17 +1069,15 @@ it("manages a collection, matched products, inclusive meal plan and shopping lif
 
   for (const meal of meals) await success("delete_meal", { id: meal.id });
 
-  for (const recipe of linked)
-    await success("update_recipes", {
-      updates: [
-        {
-          id: recipe.id,
-          changes: { ingredients: recipe.ingredients.map((i: any) => ({ ...i, groceryItemId: null })) },
-        },
-      ],
-    });
-
   for (const grocery of [rice, milk]) await success("delete_grocery", { id: grocery.id });
+  const unlinked = (await success("get_recipes", { ids: linked.map((recipe: any) => recipe.id) })).recipes;
+  expect(unlinked).toEqual(
+    linked.map((recipe: any) => ({
+      ...recipe,
+      category: "",
+      ingredients: recipe.ingredients.map((ingredient: any) => ({ ...ingredient, groceryItemId: null })),
+    })),
+  );
 
   const lateCheck = await call("set_shopping_checked", { key: riceItem.checkKey, checked: false });
   expect(lateCheck.isError).toBe(true);

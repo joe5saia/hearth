@@ -646,7 +646,7 @@ export function recipeMcp(
         [
           "delete_grocery",
           "groceries",
-          "Delete a grocery product. Fails if used by any recipe or already missing. First explicitly unlink affected ingredients with update_recipes (groceryItemId=null); read complete ingredient arrays before replacing them.",
+          "Delete a grocery product and unlink it from recipe ingredients (groceryItemId=null). Keeps ingredient text, quantities and all other recipe data. Fails if already missing.",
         ],
         [
           "delete_meal",

@@ -326,10 +326,9 @@ try {
     await click(purchase.locator("summary"));
     await pause();
     await click(purchase.getByRole("button", { name: "Edit product", exact: true }));
-    assert.equal(
-      await dialog().getByRole("button", { name: "Delete unused item" }).count(),
-      0,
-      "Linked products must not be deletable",
+    assert(
+      await dialog().getByRole("button", { name: "Delete item", exact: true }).isEnabled(),
+      "Saved linked products must be deletable",
     );
     await click(dialog().getByRole("button", { name: "Cancel", exact: true }));
     await menu("Arrange route");
@@ -472,8 +471,7 @@ try {
     await persisted((h) => !h.recipes.some((r: any) => r.id === recipe.id));
     await nav("groceries");
     await click(page.getByRole("button", { name: `Edit grocery item ${productName}`, exact: true }));
-    await click(dialog().getByRole("button", { name: "Delete unused item", exact: true }));
-    await click(dialog().getByRole("button", { name: "Confirm deletion", exact: true }));
+    await click(dialog().getByRole("button", { name: "Delete item", exact: true }));
     await persisted((h) => !h.groceries.some((g: any) => g.id === product.id));
     await nav("plan");
     await pause(2500);

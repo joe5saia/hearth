@@ -565,6 +565,18 @@ export function App() {
     } catch (failure) {
       outcome = acknowledged ? "saved_refresh_failed" : "error";
 
+      // Closing editors can report the committed write and expose the page's refresh Retry.
+      if (acknowledged && close) {
+        setModal(null);
+
+        if (message) setToast(message);
+        setError(
+          "Your change was saved, but the household could not be refreshed. Retry to refresh the list.",
+        );
+
+        return true;
+      }
+
       if (path === "recipes" && failure instanceof Error && failure.cause === 409)
         await refresh(operationId).catch(() => {});
       setError(failure instanceof Error ? failure.message : "Please try again.");
@@ -1382,7 +1394,9 @@ export function App() {
                                 className="icon-button"
                                 aria-label={`Remove ${item.name}`}
                                 disabled={busy}
-                                onClick={() => mutate(`extras/${item.id}`, "DELETE", undefined)}
+                                onClick={() =>
+                                  mutate(`extras/${encodeURIComponent(item.id)}`, "DELETE", undefined)
+                                }
                               >
                                 <X size={15} />
                               </button>
@@ -1455,6 +1469,7 @@ export function App() {
         <Dialog
           title="Grocery item"
           close={() => {
+            if (busy) return;
             setModal(null);
             setError("");
           }}
@@ -1471,10 +1486,7 @@ export function App() {
             }}
             save={(item) => mutate("groceries", "PUT", item, "Grocery item saved", true)}
             remove={
-              data.groceries.some((item) => item.id === modal.item.id) &&
-              !data.recipes.some((recipe) =>
-                recipe.ingredients.some((ingredient) => ingredient.groceryItemId === modal.item.id),
-              )
+              data.groceries.some((item) => item.id === modal.item.id)
                 ? () =>
                     mutate(
                       `groceries/${encodeURIComponent(modal.item.id)}`,
