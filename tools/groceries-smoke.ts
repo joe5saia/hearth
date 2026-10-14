@@ -296,16 +296,17 @@ try {
   browser("click", '[aria-label="Exit List Builder"]');
   browser("click", '[aria-label="Page options"]');
   browser("find", "role", "button", "click", "--name", "Arrange route", "--exact");
-  browser("click", '[aria-label="Move Aisle Bakery up"]');
+  submit('[aria-label="Move Aisle Bakery up"]');
   browser("wait", "--fn", "!document.querySelector('[aria-label=\"Move Aisle Bakery up\"]').disabled");
   // Acknowledgment can precede the row's settling animation; wait before clicking its moving button.
   browser("wait", "--fn", "document.querySelectorAll('.route-aisle')[1].querySelector('h3').textContent.trim() === 'Aisle Bakery' && document.querySelector('.route-editor').getAnimations({subtree:true}).every(animation => animation.playState !== 'running')");
-  browser("click", '[aria-label="Move Aisle Bakery up"]');
+  submit('[aria-label="Move Aisle Bakery up"]');
   browser("wait", "--fn", "document.querySelector('.route-aisle h3').textContent.trim() === 'Aisle Bakery'");
   browser("wait", "--fn", "!document.querySelector('[aria-label=\"Move Olive oil up\"]').disabled");
   submit('[aria-label="Move Olive oil up"]');
   browser("wait", "--fn", "!document.querySelector('[aria-label=\"Move Olive oil down\"]').disabled");
   browser("set", "viewport", "390", "844", "2");
+  browser("eval", "new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)))");
   check("document.documentElement.scrollWidth <= innerWidth && [...document.querySelectorAll('.route-move button')].every(el => el.getBoundingClientRect().width >= 44 && el.getBoundingClientRect().height >= 44)", "narrow route editor fits and has 44px reorder controls");
   check("[...document.querySelectorAll('.route-drag')].every(el => el.getBoundingClientRect().width >= 44 && el.getBoundingClientRect().height >= 44)", "drag handles retain 44px targets");
   const aisleOrder = () => JSON.parse(browser("eval", "[...document.querySelector('[aria-label=\"Arrange Aisle 10\"]').querySelectorAll('.route-product > span')].map(el => el.childNodes[0].textContent)"));
@@ -377,7 +378,74 @@ try {
   browser("click", '[aria-label="List Builder"]');
   check("document.querySelectorAll('.purchase-row').length === 6 && [...document.querySelectorAll('.purchase-row input')].every(box => box.checked)", "List Builder includes all groceries, including unused oats, initially checked and off-list");
   check("document.querySelector('.purchase-group h3').textContent === 'Aisle Bakery' && document.querySelector('[aria-label=\"Aisle 10\"] .item-info strong').textContent === 'Olive oil'", "aisle and within-aisle ordering survive reload");
+  // Check both debounce boundaries in one browser call, without CLI latency masking an immediate filter.
+  browser("eval", `(async () => {
+    const input = document.querySelector('[aria-label="Search grocery items"]');
+    const fill = value => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(input, value);
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    };
+    fill('rolled');
+    await new Promise(resolve => setTimeout(resolve, 100));
+    if (document.querySelectorAll('.purchase-row').length !== 6) throw new Error('Search filtered before debounce');
+    fill('  RAIN  ');
+    await new Promise(resolve => setTimeout(resolve, 220));
+    if (document.querySelectorAll('.purchase-row').length !== 6) throw new Error('Superseded search was not canceled');
+  })()`);
+  browser("wait", "--fn", "document.querySelectorAll('.purchase-row').length === 1 && document.querySelector('.item-info strong').textContent === 'Long-grain rice'");
+  console.log("PASS builder search debounces rapid edits and matches mixed-case substrings inside product names");
+  screenshot("list-builder-search-desktop");
+  browser("set", "viewport", "390", "844", "2");
+  check("document.documentElement.scrollWidth <= innerWidth && document.querySelector('[aria-label=\"Search grocery items\"]').getBoundingClientRect().width > 250", "narrow builder search fits with a usable input width");
+  screenshot("list-builder-search-narrow");
   browser("uncheck", '[aria-label="Off list Long-grain rice"]');
+  browser("wait", "--fn", "!document.querySelector('.shopping-save-status')");
+  browser("fill", '[aria-label="Search grocery items"]', "no such item");
+  browser("wait", "--fn", "!document.querySelector('.purchase-row') && document.querySelector('.shopping-panel').textContent.includes('No grocery items found')");
+  check("document.querySelector('.shopping-summary').textContent.includes('1 left') && !document.querySelector('.shopping-panel').textContent.includes('Nothing to shop for')", "no-match search keeps list totals and has a dedicated empty state");
+  screenshot("list-builder-search-empty");
+  browser("click", '[aria-label="Search grocery items"]');
+  browser("press", "Control+a");
+  browser("press", "Backspace");
+  browser("wait", "--fn", "document.querySelectorAll('.purchase-row').length === 6");
+  check("!document.querySelector('[aria-label=\"Off list Long-grain rice\"]').checked && document.querySelector('[aria-label=\"Aisle 10\"] .item-info strong').textContent === 'Olive oil'", "clearing search restores catalog route order and preserves filtered selection");
+  const beforeSearch = await household();
+  for (const query of ["white rice", "Bakery", "[", ".", "Long  grain"]) {
+    browser("fill", '[aria-label="Search grocery items"]', query);
+    browser("eval", "new Promise(resolve => setTimeout(resolve, 400)).then(() => { if (document.querySelector('.purchase-row')) throw new Error('Search matched outside literal product name'); })");
+  }
+  browser("fill", '[aria-label="Search grocery items"]', "i");
+  browser("wait", "--fn", "document.querySelectorAll('.purchase-row').length === 3");
+  check("[...document.querySelectorAll('.item-info strong')].map(el => el.textContent).join('|') === 'Olive oil|Long-grain rice|Fresh limes · 2 lb bag'", "multiple name matches preserve saved order across aisles without matching aliases, aisles or regex punctuation");
+  browser("fill", '[aria-label="Search grocery items"]', "   ");
+  browser("wait", "--fn", "document.querySelectorAll('.purchase-row').length === 6");
+  const afterSearch = await household();
+  assert.deepEqual(afterSearch.checks, beforeSearch.checks, "Searching must not change hidden or visible shopping membership.");
+  assert.deepEqual(afterSearch.shoppingOrder, beforeSearch.shoppingOrder, "Searching must not change route order.");
+  // Change mode/page in the same turn as input so a still-pending timer is definitely exercised.
+  browser("eval", `(async () => {
+    const fill = () => {
+      const input = document.querySelector('[aria-label="Search grocery items"]');
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(input, 'rice');
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    };
+    const settle = () => new Promise(resolve => setTimeout(resolve, 400));
+    for (const label of ['Exit List Builder', 'Shopping mode']) {
+      fill();
+      document.querySelector('[aria-label="' + label + '"]').click();
+      await settle();
+      document.querySelector('[aria-label="List Builder"]').click();
+      await settle();
+      if (document.querySelector('[aria-label="Search grocery items"]').value || document.querySelectorAll('.purchase-row').length !== 6) throw new Error('Pending search survived mode change');
+    }
+    fill();
+    location.hash = '#recipes';
+    await settle();
+    location.hash = '#shopping';
+    await settle();
+    if (document.querySelector('[aria-label="Search grocery items"]').value || document.querySelectorAll('.purchase-row').length !== 6) throw new Error('Pending search survived navigation');
+  })()`);
+  console.log("PASS blank search restores all items; pending debounce is canceled on Exit, Focus and page navigation");
   browser("uncheck", '[aria-label="Off list Rolled oats"]');
   browser("wait", "--fn", "!document.querySelector('.shopping-save-status')");
   const riceKey = JSON.stringify(["shopping-list", products[0].id]);
@@ -390,12 +458,15 @@ try {
   screenshot("list-builder-narrow");
   browser("set", "viewport", "1280", "1000", "2");
   screenshot("list-builder-desktop");
+  browser("fill", '[aria-label="Search grocery items"]', "rice");
+  browser("wait", "--fn", "document.querySelectorAll('.purchase-row').length === 1");
   browser("click", '[aria-label="Shopping mode"]');
-  check("document.querySelectorAll('.purchase-row').length === 2 && [...document.querySelectorAll('.purchase-row input')].every(box => !box.checked)", "Focus shows only the manually selected groceries");
+  check("!document.querySelector('[aria-label=\"Search grocery items\"]') && document.querySelectorAll('.purchase-row').length === 2 && [...document.querySelectorAll('.purchase-row input')].every(box => !box.checked)", "Focus ignores builder search and shows only the manually selected groceries");
   browser("click", '[aria-label="Picked up Long-grain rice"]');
   browser("wait", "--fn", "!document.querySelector('.shopping-save-status')");
   check("!document.querySelector('[aria-label=\"Picked up Long-grain rice\"]')", "picking up an item removes it from the active list");
   browser("click", '[aria-label="List Builder"]');
+  check("document.querySelector('[aria-label=\"Search grocery items\"]').value === '' && document.querySelectorAll('.purchase-row').length === 6", "reopening builder starts with an unfiltered catalog");
   check("document.querySelector('[aria-label=\"Off list Long-grain rice\"]').checked", "removed grocery is checked when revisiting List Builder");
   browser("uncheck", '[aria-label="Off list Long-grain rice"]');
   browser("wait", "--fn", "!document.querySelector('.shopping-save-status')");
@@ -423,6 +494,38 @@ try {
   browser("find", "role", "button", "click", "--name", "Exit shopping mode", "--exact");
   check("!document.querySelector('.shopping-mode') && document.querySelector('.topbar').getClientRects().length > 0 && !document.querySelector('.shopping-range')", "exit restores normal page headers without recipe date controls");
   screenshot("shopping-list-default");
+  const dragProducts = ["qa Basil", "qa Garlic", "qa qe Sage", "qe Pepper", "qe Leek"].map((name, index) => ({ ...products[0], id: `${prefix}-search-drag-${index}`, name, aliases: [], aisle: "Search drag" }));
+  for (const item of dragProducts) await request("groceries", "PUT", item);
+  const searchOrder = { ...(await household()).shoppingOrder, items: dragProducts.map(item => JSON.stringify(["grocery", item.id])) };
+  await request("shopping-order", "PUT", searchOrder);
+  shopping();
+  browser("click", '[aria-label="List Builder"]');
+  browser("fill", '[aria-label="Search grocery items"]', "qa");
+  browser("wait", "--fn", "document.querySelectorAll('.purchase-row').length === 3");
+  const sageHandle = JSON.parse(browser("eval", "(() => { const rect = document.querySelector('[aria-label=\"Drag qa qe Sage within Aisle Search drag\"]').getBoundingClientRect(); return { x: Math.round(rect.x + rect.width / 2), y: Math.round(rect.y + rect.height / 2) }; })()"));
+  browser("mouse", "move", String(sageHandle.x), String(sageHandle.y));
+  browser("mouse", "down", "left");
+  check("!!document.querySelector('.is-dragging')", "search race starts with a real active drag");
+  browser("eval", "(() => { const input = document.querySelector('[aria-label=\"Search grocery items\"]'); Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(input, 'qe'); input.dispatchEvent(new Event('input', { bubbles: true })); })()");
+  browser("wait", "--fn", "document.querySelectorAll('.purchase-row').length === 3 && document.querySelector('.item-info strong').textContent === 'qa qe Sage'");
+  browser("mouse", "up", "left");
+  browser("wait", "--fn", "!document.querySelector('.shopping-save-status')");
+  assert.deepEqual((await household()).shoppingOrder, searchOrder, "An equal-height search result replacement during drag must not persist an unintended reorder.");
+  console.log("PASS search result changes safely cancel an active drag without changing saved route order");
+  await request("checks", "PUT", { key: JSON.stringify(["shopping-list", products[1].id]), checked: 0 });
+  shopping();
+  browser("click", '[aria-label="Page options"]');
+  browser("find", "role", "button", "click", "--name", "Arrange route", "--exact");
+  // Hold one failed order write so a rename draft is entered before the optimistic order rolls back.
+  browser("eval", "(() => { const originalFetch = window.fetch; window.fetch = (input, init) => { if (String(input).endsWith('/api/shopping-order')) { window.fetch = originalFetch; return new Promise(resolve => { window.rejectOrder = () => resolve(new Response(JSON.stringify({error:'Order rollback smoke'}), {status:503,headers:{'Content-Type':'application/json'}})); }); } return originalFetch(input, init); }; })()");
+  submit('[aria-label="Move Olive oil up"]');
+  browser("wait", "--fn", "!!window.rejectOrder && document.querySelector('.route-editor').getAnimations({subtree:true}).every(animation => animation.playState !== 'running')");
+  submit('[aria-label="Rename Aisle 10"]');
+  browser("fill", '[aria-label="Aisle name"]', "Unsaved aisle draft");
+  browser("eval", "window.rejectOrder()");
+  browser("wait", "--fn", "!document.querySelector('.shopping-save-status')");
+  check("document.querySelector('[aria-label=\"Aisle name\"]')?.value === 'Unsaved aisle draft'", "route rollback cancels stale drag state without discarding an unrelated aisle rename draft");
+  assert.deepEqual((await household()).shoppingOrder, searchOrder, "Rejected order write must leave saved route unchanged.");
   console.log("Grocery browser smoke passed.");
 } catch (error) {
   console.error(browser("eval", "({order: [...document.querySelectorAll('[aria-label=\"Arrange Aisle 10\"] .route-product > span')].map(el=>el.textContent), drag:document.querySelector('.is-dragging')?.outerHTML, error:document.querySelector('[role=alert]')?.textContent})"));

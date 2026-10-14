@@ -312,6 +312,8 @@ export function App() {
   const [hideChecked, setHideChecked] = useState(false);
   const [shoppingMode, setShoppingMode] = useState(false);
   const [listBuilder, setListBuilder] = useState(false);
+  const [builderSearch, setBuilderSearch] = useState("");
+  const [debouncedBuilderSearch, setDebouncedBuilderSearch] = useState("");
   const [arranging, setArranging] = useState(false);
   const [shoppingPending, setShoppingPending] = useState(0);
   const shoppingEdits = useRef<ShoppingEdit[]>([]);
@@ -513,6 +515,21 @@ export function App() {
 
     return () => clearTimeout(timer);
   }, [toast]);
+  useEffect(() => {
+    if (!listBuilder || page !== "shopping") {
+      setBuilderSearch("");
+      setDebouncedBuilderSearch("");
+
+      return;
+    }
+
+    const timeout = window.setTimeout(
+      () => setDebouncedBuilderSearch(builderSearch.trim().toLowerCase()),
+      300,
+    );
+
+    return () => window.clearTimeout(timeout);
+  }, [builderSearch, listBuilder, page]);
 
   const navigate = (next: Page) => {
     location.hash = next;
@@ -643,6 +660,11 @@ export function App() {
 
   const isChecked = (key: string) => (data.checks.find((entry) => entry.key === key)?.checked ?? 1) === 1;
   const items = listBuilder ? catalog : catalog.filter((item) => !isChecked(checkKey(item)));
+
+  const visibleItems = listBuilder
+    ? items.filter((item) => item.name.toLowerCase().includes(debouncedBuilderSearch))
+    : items;
+
   const completed = items.filter((item) => isChecked(checkKey(item))).length;
   const totalItems = items.length + data.extras.length;
   const totalCompleted = completed + data.extras.filter((item) => item.checked).length;
@@ -1231,14 +1253,27 @@ export function App() {
                   </div>
                 </div>
                 {listBuilder && (
-                  <p className="field-hint builder-hint">
-                    Uncheck an item to add it to your list. Checked items are off the list.
-                  </p>
+                  <div className="builder-toolbar">
+                    <p className="field-hint builder-hint" id="builder-hint">
+                      Uncheck an item to add it to your list. Checked items are off the list.
+                    </p>
+                    <label className="search-box">
+                      <Search size={18} aria-hidden="true" />
+                      <input
+                        type="search"
+                        aria-label="Search grocery items"
+                        aria-describedby="builder-hint"
+                        placeholder="Search grocery items"
+                        value={builderSearch}
+                        onChange={(event) => setBuilderSearch(event.target.value)}
+                      />
+                    </label>
+                  </div>
                 )}
                 <div className="shopping-layout">
                   <section className="shopping-panel" aria-label="Grocery shopping list">
                     <ShoppingItems
-                      items={items}
+                      items={visibleItems}
                       groceries={data.groceries}
                       order={data.shoppingOrder}
                       busy={busy}
@@ -1266,6 +1301,13 @@ export function App() {
                       }}
                       edit={(item) => setModal({ kind: "grocery", item })}
                     />
+                    {listBuilder && items.length > 0 && visibleItems.length === 0 && (
+                      <div className="empty-state" role="status">
+                        <Search size={32} />
+                        <h2>No grocery items found</h2>
+                        <p>Try another item name or clear your search.</p>
+                      </div>
+                    )}
                     {items.length === 0 && (
                       <div className="empty-state">
                         <ShoppingBasket size={32} />

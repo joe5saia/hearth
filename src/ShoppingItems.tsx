@@ -102,6 +102,7 @@ export function ShoppingItems({
   const frame = useRef<number | null>(null);
   const isReordering = dragging !== null;
   const orderKey = JSON.stringify(order);
+  const itemKeys = JSON.stringify(items.map((item) => item.key));
   const layoutOrder = useRef(orderKey);
 
   const capturePositions = () => {
@@ -205,9 +206,11 @@ export function ShoppingItems({
 
   useEffect(() => {
     setEditingAisle(null);
-
-    setDrag(null);
   }, [shoppingMode, arranging]);
+
+  useLayoutEffect(() => {
+    setDrag(null);
+  }, [shoppingMode, arranging, itemKeys]);
 
   const setDrag = (drag: typeof dragging) => {
     if (pendingTouch.current) {

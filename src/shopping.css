@@ -292,9 +292,15 @@
   grid-template-columns: 1fr;
   gap: 20px;
 }
-.builder-hint {
+.builder-toolbar {
   max-width: 850px;
   margin: 8px auto 16px;
+}
+.builder-hint {
+  margin: 0 0 12px;
+}
+.builder-toolbar .search-box {
+  width: 100%;
 }
 .shopping-mode .shopping-summary {
   position: sticky;
