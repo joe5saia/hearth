@@ -74,6 +74,17 @@ tasks:
   plugin:smoke:
     desc: Browser E2E for plugin installation UI (requires local dev and agent-browser; optional -- local URL)
     cmds: ["node tools/plugin-smoke.ts {{.CLI_ARGS}}"]
+  feedback:demo:
+    desc: Disposable built-SPA/Worker/D1 demo on 8790 (optional -- --live-intake uses private owner configuration and creates real Amp tasks)
+    cmds:
+      - task: build
+      - node tools/feedback/demo.ts {{.CLI_ARGS}}
+  feedback:smoke:
+    desc: Feedback desktop and touch WebKit E2E (run ui:setup and feedback:demo first; optional -- --live-intake sends one isolated Amp ticket)
+    cmds: ["node tools/feedback/smoke.ts {{.CLI_ARGS}}"]
+  feedback:probe:
+    desc: Replay the isolated feedback smoke ticket and send invalid authentication/schema controls to its private Amp webhook
+    cmds: [node tools/feedback/probe.ts]
   benchmark:
     desc: Measure local API, shopping CPU, and production bundle sizes (optional -- report.json)
     cmds:

@@ -33,6 +33,7 @@ import {
   addDemoData,
 } from "./household";
 import { matchGroceries, matchNewRecipes } from "./matching-run";
+import { submitFeedback, type FeedbackEnv } from "./feedback";
 
 const invalid = (message: string) => new ValidationError({ message });
 
@@ -277,7 +278,7 @@ export default {
   /** Allow only exact public install reads without Access; protect API writes against cross-site requests. */
   async fetch(
     request: Request,
-    env: WebsiteEnv & TelemetryEnv & { PREVIEW_CLIENT_ID?: string },
+    env: WebsiteEnv & TelemetryEnv & FeedbackEnv & { PREVIEW_CLIENT_ID?: string },
     ctx?: ExecutionContext,
   ): Promise<Response> {
     return observedFetch(
@@ -381,6 +382,8 @@ export default {
 
         if (new URL(request.url).pathname === "/api/telemetry")
           return browserTelemetry(request, observation, env.LOCAL_DEV === "true");
+
+        if (new URL(request.url).pathname === "/api/feedback") return submitFeedback(request, env);
 
         return householdApi(request, env.DB, env.AI, observation, tracer, ctx);
       },

@@ -115,8 +115,62 @@ It creates no Amp threads, writes no production/remote SQL, logs only counts/che
 deletes temporary copies in `finally`. The regular integration suite covers large photos/JSON,
 Unicode/NUL text, fractional values, complete table replacement, and restored constraints/triggers.
 
+## Feedback intake in Amp
+
+The supported integration is an **orb plugin webhook**, not a direct Puck webhook.
+`.amp/plugins/hearth-feedback.ts` opts in only when a private
+`.amp/feedback-state/owner.json` names the current intake thread and supplies a
+random signing key of at least 32 characters. Keep the state directory mode 700
+and files mode 600; this entire directory is gitignored. Load the plugin in the
+dedicated, **unarchived** Hearth intake owner. It writes the capability URL to
+`webhook-url`, never to messages or logs. Keep the owner, its private state and
+ledger available; archive pauses delivery. Orb pause/resume retains the ledger,
+but replacing a lost orb requires restoring that ledger before accepting tickets.
+
+Provision `FEEDBACK_WEBHOOK_URL` and `FEEDBACK_SIGNING_KEY` through private server
+secret settings for the Worker when deployment is separately authorized. Alchemy
+binds both as redacted server-only values. Missing configuration returns an honest
+503 and leaves the user's draft intact. Never place these values in `VITE_*`,
+committed files, normal logs, thread messages, or browser assets. Production still
+uses its existing household Access authentication and cross-site write guards.
+The server validates bounded payloads, limits new tickets to ten per ten minutes,
+persists immutable tickets in D1, signs exact bytes, and retries with a stable ID.
+It does not silently retry an unconfirmed submission in the background; the user
+can retry the preserved draft. Only sample data belongs in test submissions.
+
+The intake authenticates HMAC-SHA256 before interpreting any data, validates the
+same contract, and exclusively persists the ticket/event claim before creating
+an isolated Hearth execution thread. Its fixed project and trusted
+[`WORKFLOW.md`](tools/feedback/WORKFLOW.md) require implementation, real-stack
+tests, self-review and a review demo, **never shipping**. Ticket text cannot select
+a project, agent, credential, callback or authorization. Results are reported in
+the execution thread and back to the intake, with original ask, interpretation,
+built result, demo link and test/review evidence.
+
+Amp's documented thread-create API has no idempotency/transaction parameter.
+Ordinary event replays do not create more threads; an uncertain create/start is
+held in `reconcile`, not blindly retried. `hearth_feedback_status` exposes only
+ticket IDs, event IDs, phases, thread IDs and fixed failure categories, never raw
+errors or credentials. Inspect the actual children and resolve such outcomes
+before any recovery. A crash after claiming but before
+recording a remote result may likewise require reconciliation; exactly-once
+completion across all crash cases is not claimed.
+
+For local review, `npx task feedback:demo` serves a disposable built SPA, real
+Worker and in-memory D1 on port 8790, with an honest disconnected state. The
+explicit `-- --live-intake` flag reads the private owner configuration and sends
+real Amp events. Run it as a supervised orb service, then create the review link
+with `amp orb portal 8790`. `npx task feedback:smoke -- --live-intake` exercises
+desktop Chromium and touch WebKit iPhone/iPad profiles, reusing one isolated
+ticket, plus rejection/reload recovery. Run `npx task ui:setup` first.
+`npx task feedback:probe` sends duplicate, invalid-signature and invalid-schema
+controls; verify the owner's ledger afterwards, since queue HTTP 200 is not a
+handler-result acknowledgement. Local smoke coverage uses signed Access assertions
+and disposable D1 through `npx task test`. No command here deploys production.
+
 ## Daily use
 
+- **Feedback:** choose **Page options → File a ticket**, type one request, then press Enter or tap **Send ticket** (Shift + Enter adds a line). Hearth includes the page, selected week/collection/search or shopping mode and installed/browser display mode, without cookies, identity claims or URL query strings. Drafts and the retry identity survive dialog dismissal and reload in this tab. A queued acknowledgement means Amp stored the event, not that implementation has finished. After an uncertain delivery, Retry sends the same immutable ticket; starting a new ticket is explicitly separate work.
 - **Aisle layout:** exit Focus/List Builder and choose **Page options → Arrange route**. Drag an aisle heading's handle to move the entire aisle, or use its arrow buttons. Click the aisle name/pencil to rename it, then Save; Cancel or Escape discards the draft. Renaming updates every product in that aisle and retains the saved route position and list membership. Names already used by another aisle are rejected rather than merging products.
 - **Import:** the **Import recipe** button is available on every page. Paste an HTTPS NYT Cooking recipe URL (including unlocked share links), review the filled-out draft, then save. Imports retain the original URL, description, photo, servings, timing, ingredients, and instructions. Fractions and common units become editable shopping quantities; ambiguous ingredient wording is preserved with a review warning. Choose a collection before saving. Timing follows NYT's structured data, so marinating/resting may be additional. Blocked pages or missing recipe data show an error rather than saving a partial recipe. Other recipe sites are not yet supported.
 - **Recipes:** create, edit, search by title or ingredient, filter collections, and delete unplanned recipes. Store a source URL, instructions, servings, cooking time, and a photo URL or upload. Uploaded JPG, PNG, and WebP photos up to 1.2 MB are stored in SQLite; no external object storage is needed. Bundled photos and fonts also work offline. External photo URLs naturally require a network connection.

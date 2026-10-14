@@ -106,6 +106,8 @@ export const Website = Cloudflare.Worker(
       LOCAL_DEV: dev ? "true" : "false",
       ACCESS_AUD: access?.aud ?? "",
       SMOKE_CLIENT_ID: smoke?.clientId ?? "",
+      FEEDBACK_WEBHOOK_URL: Redacted.make(process.env.FEEDBACK_WEBHOOK_URL ?? ""),
+      FEEDBACK_SIGNING_KEY: Redacted.make(process.env.FEEDBACK_SIGNING_KEY ?? ""),
     } as const;
 
     return {

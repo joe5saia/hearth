@@ -8,6 +8,8 @@ import { RecipeChecklist } from "./RecipeChecklist";
 import { ChatGPTSetup } from "./ChatGPTSetup";
 import { readRoute, routeHash, type Page, type Route } from "./navigation";
 import { ShareLink } from "./ShareLink";
+import { FeedbackForm } from "./FeedbackForm";
+import type { Feedback } from "./feedback-contract";
 import { browserEvent, browserOperation, browserResponse } from "./browser-observability";
 import { matchGrocery } from "./groceries";
 import { MatchReportSchema } from "./domain";
@@ -90,6 +92,7 @@ type Modal =
   | { kind: "collections" }
   | { kind: "shopping-recipes" }
   | { kind: "chatgpt" }
+  | { kind: "feedback"; context: Feedback["context"] }
   | { kind: "grocery"; item: GroceryDraft }
   | { kind: "collection"; collection: Collection }
   | { kind: "meal"; meal: MealDraft }
@@ -1068,6 +1071,32 @@ export function App() {
               <MoreHorizontal size={20} />
             </summary>
             <div className="page-options-menu">
+              <button
+                onClick={(event) => {
+                  event.currentTarget.closest("details")?.removeAttribute("open");
+                  setModal({
+                    kind: "feedback",
+                    context: {
+                      page,
+                      location: `/#${page}`,
+                      detail:
+                        page === "plan"
+                          ? `Meal plan · week of ${readableDate(week)}`
+                          : page === "recipes"
+                            ? `Recipes${selectedCollection ? ` · ${selectedCollection.name}` : ""}${search ? ` · search: ${search}` : ""}`.slice(
+                                0,
+                                300,
+                              )
+                            : page === "shopping"
+                              ? `Shopping list · ${listBuilder ? "Build list" : shoppingMode ? "Shopping mode" : "My list"}`
+                              : "Groceries",
+                      display: matchMedia("(display-mode: standalone)").matches ? "standalone" : "browser",
+                    },
+                  });
+                }}
+              >
+                <Pencil size={16} /> File a ticket
+              </button>
               {page === "shopping" && (
                 <>
                   <button
@@ -1985,6 +2014,23 @@ export function App() {
           }}
         >
           <ChatGPTSetup />
+        </Dialog>
+      )}
+      {modal?.kind === "feedback" && (
+        <Dialog
+          title="File a ticket"
+          close={() => {
+            setModal(null);
+            requestAnimationFrame(() => pageOptions.current?.focus());
+          }}
+        >
+          <FeedbackForm
+            context={modal.context}
+            close={() => {
+              setModal(null);
+              requestAnimationFrame(() => pageOptions.current?.focus());
+            }}
+          />
         </Dialog>
       )}
       {modal?.kind === "editor" && (

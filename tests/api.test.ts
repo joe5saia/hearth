@@ -2,6 +2,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, expectTypeOf, it } f
 import { Miniflare, convertV4MiniflareOptions } from "miniflare";
 import { rolldown } from "rolldown";
 import { readFile } from "node:fs/promises";
+import { createHmac } from "node:crypto";
 import { exportJWK, generateKeyPair, SignJWT, type JSONWebKeySet, type JWTPayload } from "jose";
 import { sampleRecipes } from "../src/seed";
 import { Schema } from "effect";
@@ -29,6 +30,10 @@ let script = "";
 let signingKey: CryptoKey;
 
 let publicKeys: JSONWebKeySet;
+
+const feedbackDeliveries: { body: string; id: string | null; signature: string | null }[] = [];
+
+let feedbackStatus = 200;
 
 const defaultCollections = [
   { id: "comfort", name: "Comfort food" },
@@ -58,6 +63,7 @@ function options(
   smokeClientId = "smoke-test.access",
   previewClientId = "",
   jwksResponse = () => Response.json(publicKeys),
+  feedbackConnected = true,
 ) {
   return convertV4MiniflareOptions({
     workers: [
@@ -72,9 +78,21 @@ function options(
           ACCESS_AUD: audience,
           SMOKE_CLIENT_ID: smokeClientId,
           PREVIEW_CLIENT_ID: previewClientId,
+          FEEDBACK_WEBHOOK_URL: feedbackConnected ? "https://intake.example.test/tickets" : "",
+          FEEDBACK_SIGNING_KEY: "disposable-feedback-signing-key-for-smoke",
         },
         outboundService: async (request) => {
           const url = new URL(request.url);
+
+          if (url.hostname === "intake.example.test") {
+            feedbackDeliveries.push({
+              body: await request.text(),
+              id: request.headers.get("Idempotency-Key"),
+              signature: request.headers.get("X-Hearth-Signature"),
+            });
+
+            return new Response(null, { status: feedbackStatus });
+          }
 
           if (url.hostname === "cooking.nytimes.com") {
             if (url.pathname === "/recipes/2") return new Response("Denied", { status: 403 });
@@ -152,14 +170,24 @@ beforeAll(async () => {
       .filter((s) => s.trim())
       .map((s) => db.prepare(s)),
   );
+  const feedbackSql = await readFile("migrations/0009_feedback.sql", "utf8");
+  await db.batch(
+    feedbackSql
+      .split(";")
+      .filter((s) => s.trim())
+      .map((s) => db.prepare(s)),
+  );
   expect(await db.prepare("SELECT * FROM meals").first()).toEqual(meal);
   await expect(db.prepare("DELETE FROM recipes WHERE id=?").bind(meal.recipeId).run()).rejects.toThrow();
 }, 30000);
 
 beforeEach(async () => {
   await worker.setOptions(options("true"));
+  feedbackDeliveries.length = 0;
+  feedbackStatus = 200;
   const db = await worker.getD1Database("DB");
   await db.batch([
+    db.prepare("DELETE FROM feedback"),
     db.prepare("DELETE FROM meals"),
     db.prepare("DELETE FROM recipes"),
     db.prepare("DELETE FROM groceries"),
@@ -185,6 +213,142 @@ const send = (path: string, method: string, body: string) =>
   });
 
 describe("real Worker with disposable SQLite D1", () => {
+  it("authenticates feedback, signs its preserved context and deduplicates safe retries without household writes", async () => {
+    const ticket = {
+      id: crypto.randomUUID(),
+      request: "Add a clearer shopping empty state",
+      context: {
+        page: "shopping",
+        location: "/#shopping",
+        detail: "Shopping list · My list",
+        display: "standalone",
+      },
+    };
+
+    const body = JSON.stringify(ticket);
+
+    const sign = (common_name?: string) =>
+      new SignJWT({
+        iss: "https://saiaai.cloudflareaccess.com",
+        aud: ["test-hearth"],
+        sub: common_name ? "" : "household-user",
+        common_name,
+        exp: Math.floor(Date.now() / 1000) + 300,
+      })
+        .setProtectedHeader({ alg: "RS256", kid: "test-key" })
+        .sign(signingKey);
+
+    await worker.setOptions(options("false"));
+    expect((await send("feedback", "POST", body)).status).toBe(403);
+
+    const smoke = await worker.dispatchFetch("http://localhost/api/feedback", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Cf-Access-Jwt-Assertion": await sign("smoke-test.access"),
+      },
+      body,
+    });
+
+    expect(smoke.status).toBe(403);
+    const headers = { "Content-Type": "application/json", "Cf-Access-Jwt-Assertion": await sign() };
+    expect(
+      (
+        await worker.dispatchFetch("http://localhost/api/feedback", {
+          method: "POST",
+          headers: { ...headers, "Sec-Fetch-Site": "cross-site" },
+          body,
+        })
+      ).status,
+    ).toBe(403);
+    expect(feedbackDeliveries).toHaveLength(0);
+    feedbackStatus = 503;
+
+    const submit = () =>
+      worker.dispatchFetch("http://localhost/api/feedback", { method: "POST", headers, body });
+
+    expect((await submit()).status).toBe(503);
+    const db = await worker.getD1Database("DB");
+    expect(await db.prepare("SELECT queued FROM feedback WHERE id=?").bind(ticket.id).first()).toEqual({
+      queued: 0,
+    });
+    feedbackStatus = 200;
+    const result = await submit();
+    expect(result.status).toBe(202);
+    expect(result.headers.get("Cache-Control")).toBe("no-store");
+    expect(await result.json()).toEqual({ id: ticket.id, status: "queued" });
+    expect((await submit()).status).toBe(202);
+    expect(await db.prepare("SELECT COUNT(*) AS count FROM feedback").first()).toEqual({ count: 1 });
+    expect(await db.prepare("SELECT queued FROM feedback WHERE id=?").bind(ticket.id).first()).toEqual({
+      queued: 1,
+    });
+    expect(feedbackDeliveries).toHaveLength(2);
+
+    for (const delivery of feedbackDeliveries) {
+      expect(JSON.parse(delivery.body)).toEqual(ticket);
+      expect(delivery.id).toBe(ticket.id);
+      expect(delivery.signature).toBe(
+        createHmac("sha256", "disposable-feedback-signing-key-for-smoke").update(delivery.body).digest("hex"),
+      );
+    }
+
+    expect(
+      (
+        await worker.dispatchFetch("http://localhost/api/feedback", {
+          method: "POST",
+          headers,
+          body: JSON.stringify({ ...ticket, request: "A different ask" }),
+        })
+      ).status,
+    ).toBe(409);
+    const household = await worker.dispatchFetch("http://localhost/api/household", { headers });
+    expect(await household.json()).toMatchObject({ recipes: [], meals: [], groceries: [], extras: [] });
+  });
+
+  it("bounds feedback input and quota, rejects extra authority fields, and fails honestly when disconnected", async () => {
+    const ticket = {
+      id: crypto.randomUUID(),
+      request: "Keep context",
+      context: {
+        page: "recipes",
+        location: "/#recipes",
+        detail: "Recipes · Weeknight favorites",
+        display: "browser",
+      },
+    };
+
+    for (const invalid of [
+      { ...ticket, request: " " },
+      { ...ticket, request: "x".repeat(4001) },
+      { ...ticket, project: "another/repo" },
+      { ...ticket, context: { ...ticket.context, location: "https://evil.test/?secret=token" } },
+    ])
+      expect((await send("feedback", "POST", JSON.stringify(invalid))).status).toBe(400);
+    expect((await send("feedback", "POST", "x".repeat(20001))).status).toBe(413);
+    expect((await send("feedback", "PUT", JSON.stringify(ticket))).status).toBe(405);
+    expect(feedbackDeliveries).toHaveLength(0);
+
+    for (let i = 0; i < 10; i++)
+      expect(
+        (await send("feedback", "POST", JSON.stringify({ ...ticket, id: crypto.randomUUID() }))).status,
+      ).toBe(202);
+    expect((await send("feedback", "POST", JSON.stringify(ticket))).status).toBe(429);
+    const db = await worker.getD1Database("DB");
+    expect(await db.prepare("SELECT COUNT(*) AS count FROM feedback").first()).toEqual({ count: 10 });
+
+    const disconnected = options(
+      "true",
+      "test-hearth",
+      "smoke-test.access",
+      "",
+      () => Response.json(publicKeys),
+      false,
+    );
+
+    await worker.setOptions(disconnected);
+    expect((await send("feedback", "POST", JSON.stringify(ticket))).status).toBe(503);
+  });
+
   it("distinguishes malformed JSON from schema failures and never caches API responses", async () => {
     const routes = [
       ["groceries", "PUT", "Invalid grocery item."],

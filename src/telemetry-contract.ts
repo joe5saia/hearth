@@ -14,6 +14,7 @@ const operations = [
   "extras",
   "checks",
   "demo",
+  "feedback",
   "unknown",
 ] as const;
 

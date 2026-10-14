@@ -8,6 +8,7 @@ dist/
 .amp/in/
 .amp/portals/
 .amp/deploy-state/
+.amp/feedback-state/
 .amp/plugin-dist/
 .env*
 !.env.example
