@@ -138,6 +138,34 @@ persists immutable tickets in D1, signs exact bytes, and retries with a stable I
 It does not silently retry an unconfirmed submission in the background; the user
 can retry the preserved draft. Only sample data belongs in test submissions.
 
+For GitHub's production deployment, both values must be **environment secrets**
+in `joe5saia/hearth` → Settings → Environments → `production`, not browser variables.
+The minimum fine-grained repository token permission is **Environments: Read and
+write**, scoped to this repository (public-key read uses Environments: Read).
+Repository **Secrets** permission alone is not the environment-secrets permission.
+An owner/admin can instead authorize the GitHub CLI's browser login with its
+standard `repo` OAuth scope. Do not reuse an integration credential that returned
+403, paste either feedback value into chat, or transfer it through public artifacts.
+
+In the orb holding the private intake source files, authenticate interactively
+using an isolated CLI profile, with injected integration tokens removed:
+
+```sh
+mkdir -p .amp/feedback-state/github-auth
+chmod 700 .amp/feedback-state/github-auth
+env -u GH_TOKEN -u GITHUB_TOKEN GH_CONFIG_DIR="$PWD/.amp/feedback-state/github-auth" \
+  gh auth login --hostname github.com --git-protocol https --web
+npx task feedback:provision
+```
+
+Complete GitHub's device authorization as the repository owner; never paste the
+OAuth token into the thread. The task sends the existing `webhook-url` file and
+`owner.json`'s signing key directly to `gh secret set` through stdin; neither value
+is echoed, placed in command arguments, or stored in Git. Its final listing shows
+only names/dates. It does not push, deploy, or change the intake ledger. Provisioning
+is not activation: after an authorized push, verify the exact deployment revision
+and an authenticated feedback delivery before claiming production is connected.
+
 The intake authenticates HMAC-SHA256 before interpreting any data, validates the
 same contract, and exclusively persists the ticket/event claim before creating
 an isolated Hearth execution thread. Its fixed project and trusted

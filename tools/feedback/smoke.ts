@@ -42,8 +42,11 @@ try {
     await page.goto(`${url}/?source=feedback-smoke&access_token=disposable-query-credential#shopping?mode=arrange&hideChecked=1`);
     await page.getByRole("heading", { name: "Shopping list", exact: true }).waitFor();
     await page.getByLabel("Page options", { exact: true }).waitFor();
+    // The header precedes household hydration, which canonicalizes the initial route.
+    await page.locator(".shopping-layout").waitFor();
     await page.evaluate(() => history.replaceState(history.state, "", `${location.href}&api_key=disposable-fragment-credential`));
     const open = async () => {
+      await page.locator(".calendar,.recipe-list,.shopping-layout,.grocery-catalog,.recipe-checklist").first().waitFor();
       const before = page.url();
       await page.getByLabel("Page options", { exact: true }).click();
       await page.getByRole("button", { name: "File a ticket", exact: true }).click();
@@ -124,6 +127,7 @@ try {
       assert(actionBounds.y >= dialogBounds.y && actionBounds.y + actionBounds.height <= dialogBounds.y + dialogBounds.height, "New-ticket action is reachable inside the scrollable dialog");
       await page.screenshot({ path: `${artifacts}/feedback-${name}-error.png` });
       await page.goto(`${url}/#shopping`);
+      await page.locator(".shopping-layout").waitFor();
       await page.reload();
       await open();
       assert.equal(await field.inputValue(), draft.request);
@@ -140,6 +144,8 @@ try {
       await page.screenshot({ path: `${artifacts}/feedback-${name}-success.png` });
       assert.equal(await page.evaluate(() => sessionStorage.getItem("hearth-feedback-draft")), null);
       await page.getByRole("button", { name: "Done", exact: true }).click();
+      // Closing restores focus on the next animation frame, not synchronously with click.
+      await page.waitForFunction(() => document.activeElement?.getAttribute("aria-label") === "Page options");
       assert(await page.getByLabel("Page options", { exact: true }).evaluate(element => element === document.activeElement), "Focus returns to entry point");
       savedTicket = draft;
       const envelope = Schema.decodeUnknownSync(FeedbackSchema)(JSON.parse(await readFile(".amp/feedback-state/validation-envelope-v2.json", "utf8")));
