@@ -93,11 +93,14 @@ tasks:
     env:
       UV_USE_IO_URING: "0"
     cmds:
-      - npm install --prefix /tmp/hearth-ui --no-save --package-lock=false playwright@1.58.2 node@22.16.0
+      - npm install --prefix /tmp/hearth-ui --no-save --package-lock=false playwright@1.58.2 @playwright/test@1.58.2 node@22.16.0
       - /tmp/hearth-ui/node_modules/node/bin/node /tmp/hearth-ui/node_modules/playwright/cli.js install --with-deps chromium webkit
   ui:smoke:
     desc: Desktop and emulated iPhone/iPad usability E2E (run ui:setup first; requires local sample meals; optional -- local URL)
     cmds: ["node tools/ui-smoke.ts {{.CLI_ARGS}}"]
+  navigation:smoke:
+    desc: Deep links, sharing and browser history E2E on desktop/iPhone/iPad (run ui:setup first; local disposable fixtures; optional -- local URL)
+    cmds: ["node tools/navigation-smoke.ts {{.CLI_ARGS}}"]
   ui:demo:
     desc: Record a captioned mobile workflow demo with persisted-state assertions and cleanup (run ui:setup first; local sample household only)
     cmds: ["node tools/ui-demo.ts {{.CLI_ARGS}}"]

@@ -320,14 +320,24 @@ export function GroceryForm({ item, aisles, busy, error, save, cancel, remove }:
 export type GroceryManagerProps = {
   groceries: readonly GroceryItem[];
   recipes: readonly Recipe[];
+  search: string;
+  setSearch: (search: string) => void;
   busy: boolean;
   edit: (item: GroceryItem) => void;
   editRecipe: (recipe: Recipe) => void;
   match: () => Promise<Readonly<MatchReport>>;
 };
 
-export function GroceryManager({ groceries, recipes, busy, edit, editRecipe, match }: GroceryManagerProps) {
-  const [search, setSearch] = useState("");
+export function GroceryManager({
+  groceries,
+  recipes,
+  search,
+  setSearch,
+  busy,
+  edit,
+  editRecipe,
+  match,
+}: GroceryManagerProps) {
   const [matching, setMatching] = useState(false);
   const [matchMessage, setMatchMessage] = useState("");
   const [matchFailed, setMatchFailed] = useState(false);

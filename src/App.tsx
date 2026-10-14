@@ -6,6 +6,8 @@ import { ShoppingItems } from "./ShoppingItems";
 import { ShoppingRecipeForm } from "./ShoppingRecipeForm";
 import { RecipeChecklist } from "./RecipeChecklist";
 import { ChatGPTSetup } from "./ChatGPTSetup";
+import { readRoute, routeHash, type Page, type Route } from "./navigation";
+import { ShareLink } from "./ShareLink";
 import { browserEvent, browserOperation, browserResponse } from "./browser-observability";
 import { matchGrocery } from "./groceries";
 import { MatchReportSchema } from "./domain";
@@ -68,8 +70,6 @@ import {
   type ShoppingOrder,
 } from "./domain";
 
-type Page = "plan" | "recipes" | "shopping" | "groceries" | "recipe-checklist";
-
 const mobileViewport = "(max-width: 850px), (pointer: coarse) and (max-height: 500px)";
 
 type ShoppingEdit = { kind: "order"; order: ShoppingOrder } | { kind: "check"; key: string; checked: 0 | 1 };
@@ -121,17 +121,6 @@ const readableDate = (
   date: string,
   options: Intl.DateTimeFormatOptions = { month: "long", day: "numeric" },
 ) => new Date(`${date}T12:00:00`).toLocaleDateString("en-US", options);
-
-const pageFromHash = (): Page =>
-  location.hash === "#recipe-checklist"
-    ? "recipe-checklist"
-    : location.hash === "#recipes"
-      ? "recipes"
-      : location.hash === "#shopping"
-        ? "shopping"
-        : location.hash === "#groceries"
-          ? "groceries"
-          : "plan";
 
 async function api(
   path: string,
@@ -278,6 +267,7 @@ function Dialog({
           {title}
         </h2>
         {timerHost && <div className="timer-slot" ref={timerHost} />}
+        <ShareLink compact />
         <button className="icon-button" aria-label="Close dialog" onClick={close}>
           <X size={20} />
         </button>
@@ -288,7 +278,14 @@ function Dialog({
 }
 
 export function App() {
-  const [page, setPage] = useState<Page>(pageFromHash);
+  const [route, setRoute] = useState(readRoute);
+  const routeRef = useRef(route);
+  const entries = useRef(new Map<string, Route>());
+  const lastHistoryEvent = useRef("");
+  const { page, week, search, hideChecked, collection: collectionFilter } = route;
+  const shoppingMode = route.mode === "focus";
+  const listBuilder = route.mode === "builder";
+  const arranging = route.mode === "arrange";
   const [mobileLayout, setMobileLayout] = useState(() => window.matchMedia(mobileViewport).matches);
   const [data, setData] = useState<Household>(emptyHousehold);
 
@@ -304,17 +301,13 @@ export function App() {
   const [error, setError] = useState("");
   const [toast, setToast] = useState("");
   const [busy, setBusy] = useState(false);
-  const [week, setWeek] = useState(weekStart());
-  const [modal, setModal] = useState<Modal | null>(null);
-  const [search, setSearch] = useState("");
-  const [collectionFilter, setCollectionFilter] = useState("all");
+  const [modal, setModalState] = useState<Modal | null>(null);
+  // Only transient nested meal previews keep a draft, in memory, never in URLs/history storage.
+  const mealDrafts = useRef(new Map<string, MealDraft>());
+  const routeLoaded = useRef(false);
   const [extra, setExtra] = useState("");
-  const [hideChecked, setHideChecked] = useState(false);
-  const [shoppingMode, setShoppingMode] = useState(false);
-  const [listBuilder, setListBuilder] = useState(false);
-  const [builderSearch, setBuilderSearch] = useState("");
+  const builderSearch = search;
   const [debouncedBuilderSearch, setDebouncedBuilderSearch] = useState("");
-  const [arranging, setArranging] = useState(false);
   const [shoppingPending, setShoppingPending] = useState(0);
   const shoppingEdits = useRef<ShoppingEdit[]>([]);
   const shoppingWrites = useRef<Promise<unknown>>(Promise.resolve());
@@ -326,6 +319,196 @@ export function App() {
   const weekPicker = useRef<HTMLElement>(null);
   const pageOptions = useRef<HTMLElement>(null);
   const initialLoad = useRef(true);
+
+  const updateRoute = (patch: Partial<Route>, replace = false) => {
+    lastHistoryEvent.current = "";
+    const next = { ...routeRef.current, ...patch };
+    const hash = routeHash(next);
+
+    if (hash !== routeHash(routeRef.current)) {
+      const state = {
+        hearth: {
+          key: crypto.randomUUID(),
+          parent: history.state?.hearth?.key,
+          parentHash: routeHash(routeRef.current),
+        },
+      };
+
+      if (replace) history.replaceState(history.state, "", hash);
+      else history.pushState(state, "", hash);
+    }
+
+    if (history.state?.hearth?.key) entries.current.set(history.state.hearth.key, next);
+    routeRef.current = next;
+    setRoute(next);
+  };
+
+  const baseView = {
+    view: undefined,
+    id: undefined,
+    meal: undefined,
+    recipe: undefined,
+    date: undefined,
+    scale: undefined,
+  };
+
+  const setWeek = (week: string) => updateRoute({ week });
+  const setSearch = (search: string) => updateRoute({ search }, true);
+  const setCollectionFilter = (collection: string) => updateRoute({ collection });
+  const setHideChecked = (hideChecked: boolean) => updateRoute({ hideChecked });
+
+  const setModal = (next: Modal | null) => {
+    if (!next) {
+      // Only go Back to a known Hearth parent, including the safe page behind a direct link.
+      if (routeRef.current.view && entries.current.has(history.state?.hearth?.parent)) history.back();
+      else updateRoute(baseView, true);
+      setModalState(null);
+
+      return;
+    }
+
+    const parent = entries.current.get(history.state?.hearth?.parent);
+
+    if (parent?.view === next.kind && (next.kind === "meal" || next.kind === "collections")) {
+      history.back();
+      setModalState(next);
+
+      return;
+    }
+
+    const patch: Partial<Route> = { ...baseView, view: next.kind };
+
+    switch (next.kind) {
+      case "recipe":
+        patch.id = next.recipe.id;
+
+        if (next.meal && data.meals.some((meal) => meal.id === next.meal?.id)) patch.meal = next.meal.id;
+
+        if (next.returnToMeal && next.meal && history.state?.hearth?.key)
+          mealDrafts.current.set(history.state.hearth.key, next.meal);
+        break;
+      case "editor":
+        if (!next.isNew) patch.id = next.recipe.id;
+        break;
+      case "meal":
+        if (data.meals.some((meal) => meal.id === next.meal.id)) patch.id = next.meal.id;
+        else {
+          patch.date = next.meal.date;
+
+          if (next.meal.recipeId) patch.recipe = next.meal.recipeId;
+        }
+
+        break;
+      case "grocery":
+        if (data.groceries.some((item) => item.id === next.item.id)) patch.id = next.item.id;
+        break;
+      case "collection":
+        if (data.collections.some((collection) => collection.id === next.collection.id))
+          patch.id = next.collection.id;
+        break;
+    }
+
+    updateRoute(patch);
+    setModalState(next);
+  };
+
+  const resolveModal = useCallback(
+    (next: Route): Modal | null => {
+      const missing = () => {
+        setError("This item is no longer available. It may have been deleted from your household.");
+
+        return null;
+      };
+
+      const recipe = data.recipes.find((recipe) => recipe.id === next.id);
+
+      switch (next.view) {
+        case "recipe": {
+          const draft = mealDrafts.current.get(history.state?.hearth?.parent);
+
+          if (recipe && draft) return { kind: "recipe", recipe, meal: draft, returnToMeal: true };
+          const meal = next.meal ? data.meals.find((meal) => meal.id === next.meal) : undefined;
+
+          if (!recipe || (next.meal && !meal)) return missing();
+
+          return { kind: "recipe", recipe, meal };
+        }
+
+        case "editor":
+          if (next.id) return recipe ? { kind: "editor", recipe } : missing();
+
+          return {
+            kind: "editor",
+            isNew: true,
+            recipe: {
+              id: crypto.randomUUID(),
+              title: "",
+              description: "",
+              servings: 4,
+              minutes: 30,
+              category: data.collections.find((collection) => collection.id === next.collection)?.name ?? "",
+              photo: "",
+              source: "",
+              rating: "neutral",
+              ingredients: [{ name: "", quantity: 1, unit: "each" }],
+              instructions: [""],
+            },
+          };
+        case "meal": {
+          const draft = mealDrafts.current.get(history.state?.hearth?.key);
+          const meal = next.id ? data.meals.find((meal) => meal.id === next.id) : undefined;
+
+          if (
+            (next.id && !meal) ||
+            (next.recipe && !data.recipes.some((recipe) => recipe.id === next.recipe))
+          )
+            return missing();
+
+          return {
+            kind: "meal",
+            meal: draft ??
+              meal ?? {
+                id: crypto.randomUUID(),
+                recipeId: next.recipe ?? data.recipes[0]?.id ?? null,
+                date: next.date ?? nextDinnerDate(data.meals, next.week),
+                slot: "Dinner",
+                scale: 1,
+                note: "",
+              },
+          };
+        }
+
+        case "grocery": {
+          const item = data.groceries.find((item) => item.id === next.id);
+
+          return next.id
+            ? item
+              ? { kind: "grocery", item }
+              : missing()
+            : { kind: "grocery", item: newGrocery() };
+        }
+
+        case "collection": {
+          const collection = data.collections.find((collection) => collection.id === next.id);
+
+          return next.id
+            ? collection
+              ? { kind: "collection", collection }
+              : missing()
+            : { kind: "collection", collection: { id: crypto.randomUUID(), name: "" } };
+        }
+
+        case "collections":
+        case "import":
+        case "chatgpt":
+        case "shopping-recipes":
+          return { kind: next.view };
+        default:
+          return null;
+      }
+    },
+    [data],
+  );
 
   const refresh = useCallback(async (operationId = crypto.randomUUID()) => {
     const started = performance.now();
@@ -477,11 +660,66 @@ export function App() {
     return () => window.removeEventListener("beforeunload", warn);
   }, [shoppingPending]);
   useEffect(() => {
-    const sync = () => setPage(pageFromHash());
+    const sync = () => {
+      if (!history.state?.hearth?.key) history.replaceState({ hearth: { key: crypto.randomUUID() } }, "");
+      const signature = `${history.state?.hearth?.key ?? ""}:${location.hash}`;
+
+      if (lastHistoryEvent.current === signature) return;
+      lastHistoryEvent.current = signature;
+      const next = readRoute();
+      entries.current.set(history.state.hearth.key, next);
+      routeRef.current = next;
+      setRoute(next);
+      setError("");
+
+      if (loaded) setModalState(resolveModal(next));
+    };
+
+    if (loaded && !routeLoaded.current) {
+      routeLoaded.current = true;
+      const next = routeRef.current;
+      const previous = history.state?.hearth;
+
+      if (next.view && !previous?.parent) {
+        // A fresh texted link gets an in-app Back destination, not an accidental exit.
+        const base = {
+          ...next,
+          view: undefined,
+          id: undefined,
+          meal: undefined,
+          recipe: undefined,
+          date: undefined,
+          scale: undefined,
+        };
+
+        const key = crypto.randomUUID();
+        history.replaceState({ hearth: { key } }, "", routeHash(base));
+        entries.current.set(key, base);
+        history.pushState(
+          { hearth: { key: crypto.randomUUID(), parent: key, parentHash: routeHash(base) } },
+          "",
+          routeHash(next),
+        );
+      } else {
+        // Reuse the entry on reload; only safe URL state is restored, never a draft.
+        history.replaceState({ hearth: previous ?? { key: crypto.randomUUID() } }, "", routeHash(next));
+
+        if (previous?.parent && previous.parentHash)
+          entries.current.set(previous.parent, readRoute(previous.parentHash));
+      }
+
+      entries.current.set(history.state.hearth.key, routeRef.current);
+      setModalState(resolveModal(routeRef.current));
+    }
+
+    window.addEventListener("popstate", sync);
     window.addEventListener("hashchange", sync);
 
-    return () => window.removeEventListener("hashchange", sync);
-  }, []);
+    return () => {
+      window.removeEventListener("popstate", sync);
+      window.removeEventListener("hashchange", sync);
+    };
+  }, [loaded, resolveModal]);
   useEffect(() => {
     const dismiss = (event: PointerEvent) => {
       for (const trigger of [pageOptions.current, weekPicker.current]) {
@@ -498,7 +736,6 @@ export function App() {
   }, []);
   useEffect(() => {
     window.scrollTo({ top: 0 });
-    setArranging(false);
     pageOptions.current?.closest("details")?.removeAttribute("open");
     const started = performance.now();
 
@@ -518,7 +755,6 @@ export function App() {
   }, [toast]);
   useEffect(() => {
     if (!listBuilder || page !== "shopping") {
-      setBuilderSearch("");
       setDebouncedBuilderSearch("");
 
       return;
@@ -533,9 +769,25 @@ export function App() {
   }, [builderSearch, listBuilder, page]);
 
   const navigate = (next: Page) => {
-    location.hash = next;
-    setPage(next);
+    const patch: Partial<Route> = { ...baseView, page: next };
+
+    if (next !== page) {
+      patch.search = "";
+      patch.collection = "all";
+    }
+
+    updateRoute(patch);
+    setModalState(null);
     setError("");
+  };
+
+  const finishEditing = (entryKey: string | undefined) => {
+    // A background save must not navigate away from where Back/Forward has taken the user.
+    if (history.state?.hearth?.key !== entryKey) return;
+    // A committed save/delete must not leave a stale editor as the current history entry.
+    updateRoute(baseView, true);
+    setModalState(null);
+    mealDrafts.current.clear();
   };
 
   const mutate = async (
@@ -547,6 +799,7 @@ export function App() {
   ) => {
     const started = performance.now();
     const operationId = crypto.randomUUID();
+    const editingEntry = history.state?.hearth?.key;
     let acknowledged = false;
     let outcome: "success" | "error" | "saved_refresh_failed" = "success";
     setBusy(true);
@@ -557,7 +810,7 @@ export function App() {
       acknowledged = true;
       await refresh(operationId);
 
-      if (close) setModal(null);
+      if (close) finishEditing(editingEntry);
 
       if (message) setToast(message);
 
@@ -567,7 +820,7 @@ export function App() {
 
       // Closing editors can report the committed write and expose the page's refresh Retry.
       if (acknowledged && close) {
-        setModal(null);
+        finishEditing(editingEntry);
 
         if (message) setToast(message);
         setError(
@@ -635,24 +888,7 @@ export function App() {
       meal: { id: crypto.randomUUID(), recipeId, date, slot: "Dinner", scale: 1, note: "" },
     });
 
-  const newRecipe = () =>
-    setModal({
-      kind: "editor",
-      isNew: true,
-      recipe: {
-        id: crypto.randomUUID(),
-        title: "",
-        description: "",
-        servings: 4,
-        minutes: 30,
-        category: data.collections.find((collection) => collection.id === collectionFilter)?.name ?? "",
-        photo: "",
-        source: "",
-        rating: "neutral",
-        ingredients: [{ name: "", quantity: 1, unit: "each" }],
-        instructions: [""],
-      },
-    });
+  const newRecipe = () => setModal(resolveModal({ ...routeRef.current, ...baseView, view: "editor" }));
 
   const weekMeals = data.meals.filter((meal) => meal.date >= week && meal.date <= addDays(week, 6));
 
@@ -684,12 +920,43 @@ export function App() {
 
   if (page === "recipe-checklist")
     return (
-      <RecipeChecklist recipes={data.recipes} groceries={data.groceries} loaded={loaded} error={error} />
+      <RecipeChecklist
+        recipes={data.recipes}
+        groceries={data.groceries}
+        loaded={loaded}
+        error={error}
+        search={search}
+        setSearch={setSearch}
+        selected={route.selected}
+        setSelected={(selected) => updateRoute({ selected }, true)}
+        showList={route.checklist}
+        setShowList={(checklist) => updateRoute({ checklist })}
+      />
     );
 
   return (
     <div
       className={`app-shell${page === "shopping" && (shoppingMode || listBuilder) ? " shopping-mode" : ""}`}
+      onClick={(event) => {
+        if (
+          event.defaultPrevented ||
+          event.button !== 0 ||
+          event.metaKey ||
+          event.ctrlKey ||
+          event.shiftKey ||
+          event.altKey
+        )
+          return;
+        const link = event.target instanceof Element ? event.target.closest("a") : null;
+
+        if (link?.target === "_blank") return;
+        const href = link?.getAttribute("href");
+
+        if (href && ["#plan", "#recipes", "#shopping", "#groceries", "#recipe-checklist"].includes(href)) {
+          event.preventDefault();
+          navigate(readRoute(href).page);
+        }
+      }}
     >
       <aside className="sidebar">
         <a className="brand" href="#plan" aria-label="Hearth meal plan">
@@ -743,6 +1010,7 @@ export function App() {
                   : "Shopping list"}
           </h1>
           <div className="timer-slot" ref={setTimerHeaderHost} />
+          <ShareLink compact />
           {page === "plan" ? (
             <button className="primary page-add" aria-label="Add a meal" onClick={() => addMeal()}>
               <Plus size={17} /> <span>Add meal</span>
@@ -785,9 +1053,7 @@ export function App() {
                     aria-pressed={arranging}
                     onClick={(event) => {
                       event.currentTarget.closest("details")?.removeAttribute("open");
-                      setShoppingMode(false);
-                      setListBuilder(false);
-                      setArranging(!arranging);
+                      updateRoute({ mode: arranging ? "list" : "arrange" });
                     }}
                   >
                     <SlidersHorizontal size={16} /> {arranging ? "Done arranging" : "Arrange route"}
@@ -861,6 +1127,8 @@ export function App() {
               <GroceryManager
                 groceries={data.groceries}
                 recipes={data.recipes}
+                search={search}
+                setSearch={setSearch}
                 busy={busy}
                 edit={(item) => setModal({ kind: "grocery", item })}
                 editRecipe={(recipe) => setModal({ kind: "editor", recipe })}
@@ -1197,6 +1465,7 @@ export function App() {
                     </span>
                   </div>
                   <div className="shopping-controls">
+                    {(shoppingMode || listBuilder) && <ShareLink />}
                     <button
                       className="secondary"
                       disabled={busy || shoppingPending > 0}
@@ -1233,9 +1502,7 @@ export function App() {
                       aria-label={shoppingMode ? "Exit shopping mode" : "Shopping mode"}
                       aria-pressed={shoppingMode}
                       onClick={() => {
-                        setArranging(false);
-                        setListBuilder(false);
-                        setShoppingMode(!shoppingMode);
+                        updateRoute({ mode: shoppingMode ? "list" : "focus" });
                       }}
                     >
                       <ShoppingBasket size={16} />
@@ -1246,9 +1513,7 @@ export function App() {
                       aria-label={listBuilder ? "Exit List Builder" : "List Builder"}
                       aria-pressed={listBuilder}
                       onClick={() => {
-                        setArranging(false);
-                        setShoppingMode(false);
-                        setListBuilder(!listBuilder);
+                        updateRoute({ mode: listBuilder ? "list" : "builder" });
                       }}
                     >
                       <ListChecks size={16} />
@@ -1278,7 +1543,7 @@ export function App() {
                         aria-describedby="builder-hint"
                         placeholder="Search grocery items"
                         value={builderSearch}
-                        onChange={(event) => setBuilderSearch(event.target.value)}
+                        onChange={(event) => setSearch(event.target.value)}
                       />
                     </label>
                   </div>
@@ -1332,7 +1597,9 @@ export function App() {
                         </p>
                         <button
                           className="text-button"
-                          onClick={() => (catalog.length ? setListBuilder(true) : navigate("groceries"))}
+                          onClick={() =>
+                            catalog.length ? updateRoute({ mode: "builder" }) : navigate("groceries")
+                          }
                         >
                           {catalog.length ? "Open List Builder" : "Add grocery items"}{" "}
                           <ArrowRight size={15} />
@@ -1560,6 +1827,7 @@ export function App() {
           }}
         >
           <CollectionForm
+            key={modal.collection.id}
             collection={modal.collection}
             busy={busy}
             error={error}
@@ -1595,6 +1863,7 @@ export function App() {
           }}
         >
           <MealForm
+            key={modal.meal.id}
             meal={modal.meal}
             recipes={data.recipes}
             busy={busy}
@@ -1627,6 +1896,8 @@ export function App() {
           fullScreen
         >
           <RecipeDetail
+            scale={route.scale ?? modal.meal?.scale ?? 1}
+            setScale={(scale) => updateRoute({ scale }, true)}
             recipe={data.recipes.find((recipe) => recipe.id === modal.recipe.id) ?? modal.recipe}
             groceries={data.groceries}
             busy={busy}
@@ -1703,6 +1974,7 @@ export function App() {
           fullScreen={mobileLayout}
         >
           <RecipeForm
+            key={modal.recipe.id}
             recipe={modal.recipe}
             latestRecipe={data.recipes.find((recipe) => recipe.id === modal.recipe.id)}
             clearError={() => setError("")}
@@ -2040,6 +2312,8 @@ function MealForm({
 
 function RecipeDetail({
   recipe,
+  scale,
+  setScale,
   groceries,
   busy,
   error,
@@ -2050,6 +2324,8 @@ function RecipeDetail({
   returnToMeal = false,
 }: {
   recipe: Recipe;
+  scale: number;
+  setScale: (scale: number) => void;
   groceries: readonly GroceryItem[];
   busy: boolean;
   error: string;
@@ -2059,8 +2335,6 @@ function RecipeDetail({
   meal?: Pick<MealDraft, "scale">;
   returnToMeal?: boolean;
 }) {
-  const [scale, setScale] = useState(meal?.scale ?? 1);
-
   return (
     <div className="recipe-detail" tabIndex={0} role="region" aria-label={`${recipe.title} recipe`}>
       <div className="detail-title">

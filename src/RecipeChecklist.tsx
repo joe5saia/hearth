@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { displayAmount, matchesRecipeSearch, type Household, type ShoppingNeed, type Unit } from "./domain";
 import { matchGrocery } from "./groceries";
+import { ShareLink } from "./ShareLink";
 import "./recipe-checklist.css";
 
 // US customary volume; oz is weight, not fluid ounces. Counts only combine with the same unit.
@@ -75,10 +76,22 @@ export function RecipeChecklist({
   groceries,
   loaded,
   error,
-}: Pick<Household, "recipes" | "groceries"> & { loaded: boolean; error: string }) {
-  const [search, setSearch] = useState("");
-  const [selected, setSelected] = useState<string[]>([]);
-  const [showList, setShowList] = useState(false);
+  search,
+  setSearch,
+  selected,
+  setSelected,
+  showList,
+  setShowList,
+}: Pick<Household, "recipes" | "groceries"> & {
+  loaded: boolean;
+  error: string;
+  search: string;
+  setSearch: (search: string) => void;
+  selected: string[];
+  setSelected: (selected: string[]) => void;
+  showList: boolean;
+  setShowList: (showList: boolean) => void;
+}) {
   const [checked, setChecked] = useState<string[]>([]);
   const chosen = recipes.filter((recipe) => selected.includes(recipe.id));
   const rows = ingredientTotals({ recipes: chosen, groceries });
@@ -88,9 +101,10 @@ export function RecipeChecklist({
     <main className="recipe-checklist">
       <header>
         <h1>Recipe checklist</h1>
+        <a href="#recipes">Back to recipes</a> <ShareLink />
         <p className="muted">
           A separate checklist for one batch of each recipe. Nothing changes your shopping list or recipes.
-          Selections and checks reset when this tab reloads.
+          Recipe selections can be shared. Checks reset when this tab reloads.
         </p>
       </header>
       {error ? (
@@ -154,10 +168,10 @@ export function RecipeChecklist({
                   type="checkbox"
                   checked={selected.includes(recipe.id)}
                   onChange={(event) =>
-                    setSelected((current) =>
+                    setSelected(
                       event.target.checked
-                        ? [...current, recipe.id]
-                        : current.filter((id) => id !== recipe.id),
+                        ? [...selected, recipe.id]
+                        : selected.filter((id) => id !== recipe.id),
                     )
                   }
                 />

@@ -106,8 +106,8 @@ try {
   browser("click", ".primary");
   check("[...document.querySelectorAll('strong')].some(el => el.textContent === 'Long-grain rice' && el.nextElementSibling.textContent === '250 g') && !document.querySelector('input:checked')", "regeneration recalculates totals and resets checks");
   browser("reload");
-  browser("wait", ".recipe-checklist form");
-  check("document.querySelector('.primary').disabled && !document.querySelector('input:checked')", "tab reload resets this disposable checklist");
+  browser("wait", '[aria-label="Ingredients needed"]');
+  check("[...document.querySelectorAll('strong')].some(el => el.textContent === 'Long-grain rice' && el.nextElementSibling.textContent === '250 g') && !document.querySelector('input:checked')", "reload preserves shareable selections and list but resets disposable checks");
   assert.deepEqual(await household(), before, "All checklist operations must leave the real household unchanged.");
   console.log("Recipe checklist browser smoke passed; household unchanged.");
 } finally {

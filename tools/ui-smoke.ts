@@ -64,7 +64,7 @@ async function check(caseName: string, engine: string, viewport: string, name: s
 
 async function settle(page: any) {
   await page.waitForLoadState("domcontentloaded");
-  await page.locator("h1").first().waitFor({ state: "visible" });
+  await page.locator("h1:visible, .shopping-summary strong:visible").first().waitFor({ state: "visible" });
   await page.evaluate(async () => {
     await document.fonts.ready;
     await new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done)));
@@ -129,8 +129,9 @@ async function activate(locator: any, touch: boolean) {
 
 async function cancelDialog(page: any) {
   const dialog = page.locator("dialog[open]").last();
+  const title = await dialog.getAttribute("aria-label");
   await dialog.getByRole("button", { name: "Close dialog" }).click();
-  await dialog.waitFor({ state: "detached" });
+  await page.getByRole("dialog", { name: title, exact: true }).waitFor({ state: "detached" });
 }
 
 async function commonNavigation(page: any, touch: boolean, label: string, capture: boolean) {
@@ -248,6 +249,9 @@ async function commonNavigation(page: any, touch: boolean, label: string, captur
       assert.equal(await meal.getByLabel(/note for this meal/i).inputValue(), "UNSAVED planner recipe draft");
     }
     await cancelDialog(page);
+    await detail.waitFor();
+    assert.equal(await detail.locator("h1").textContent(), title, "closing a nested meal editor returns to its recipe history entry");
+    await cancelDialog(page);
   });
 
   await check(label, page.context().browser()?.browserType().name() ?? "webkit", `${page.viewportSize().width}×${page.viewportSize().height}`, "recipes search, detail, scale, nested meal preview, and editor cancellation", async () => {
@@ -263,10 +267,11 @@ async function commonNavigation(page: any, touch: boolean, label: string, captur
       await page.getByLabel("Preview recipe scale").selectOption("2");
       if (capture) await screenshot(page, `${label}-recipe-detail`);
       await auditLayout(page, touch);
+      const recipeURL = page.url();
       for (const [name, destination] of [["Ingredients", "recipe-ingredients"], ["Steps", "recipe-steps"]]) {
         await page.getByRole("link", { name, exact: true }).focus();
         await page.keyboard.press("Enter");
-        assert.equal(new URL(page.url()).hash, "#recipes", "Cooking shortcuts must preserve app navigation");
+        assert.equal(page.url(), recipeURL, "Cooking shortcuts must preserve the recipe deep link and scale");
         assert.equal(await page.evaluate(() => document.activeElement?.id), destination, "Keyboard focus must follow the cooking shortcut");
         await page.keyboard.press("Tab");
         if (name === "Ingredients") assert(await page.getByLabel("Preview recipe scale").evaluate((element: HTMLElement) => element === document.activeElement), "Tab must continue from Ingredients, not return to the shortcut toolbar");
@@ -506,7 +511,7 @@ async function shoppingAndTimers(page: any, touch: boolean, label: string, captu
     const persistedNames = ids.filter((id: string) => originalNames.includes(committed.groceries.find((item: any) => item.id === id)?.name)).map((id: string) => committed.groceries.find((item: any) => item.id === id).name);
     assert.deepEqual(persistedNames, [...originalNames.slice(1), originalNames[0]], "Worker must persist insertion, not a swap");
     await page.reload(); await settle(page);
-    await activate(page.getByRole("button", { name: "List Builder", exact: true }), touch);
+    assert(await page.getByRole("button", { name: "Exit List Builder", exact: true }).isVisible(), "reload preserves List Builder mode");
     await group.locator(".purchase-row").first().waitFor();
     assert.deepEqual(await names(), persistedNames, "reload must retain the route");
     if (touch) {
@@ -618,8 +623,7 @@ async function shoppingAndTimers(page: any, touch: boolean, label: string, captu
       await page.evaluate(() => { window.fetch = (window as any).aisleFetch; });
     }
     await page.reload(); await settle(page);
-    await activate(page.getByLabel("Page options", { exact: true }), touch);
-    await activate(page.getByRole("button", { name: "Arrange route" }), touch);
+    await page.locator(".route-aisle").first().waitFor();
     assert.deepEqual(await names(), [initial[2], initial[0], initial[1], ...initial.slice(3)]);
     if (page.context().browser()?.browserType().name() === "chromium") {
       const cdp = await page.context().newCDPSession(page);
@@ -644,8 +648,7 @@ async function shoppingAndTimers(page: any, touch: boolean, label: string, captu
       }
       await api("shopping-order", "PUT", moved.shoppingOrder);
       await page.reload(); await settle(page);
-      await activate(page.getByLabel("Page options", { exact: true }), touch);
-      await activate(page.getByRole("button", { name: "Arrange route" }), touch);
+      await page.locator(".route-aisle").first().waitFor();
     }
     const oldName = moved.shoppingOrder.aisles[0];
     const newName = `Smoke aisle ${Date.now()}`;
@@ -672,6 +675,7 @@ async function shoppingAndTimers(page: any, touch: boolean, label: string, captu
     renamedAisles.delete(newName);
     await api("shopping-order", "PUT", before.shoppingOrder);
     await page.reload(); await settle(page);
+    await activate(page.getByRole("button", { name: "Exit List Builder", exact: true }), touch);
     await activate(page.getByLabel("Page options", { exact: true }), touch);
     await activate(page.getByRole("button", { name: "Arrange route" }), touch);
     await auditLayout(page, touch);

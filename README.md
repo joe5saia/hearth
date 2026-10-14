@@ -155,6 +155,44 @@ Grocery quantity/unit describe one store package. Shopping no longer aggregates 
 
 The app uses one shared household, with no per-person app accounts or roles. Household changes are saved to the server; kitchen timers are the device-local exception. Reload to see another household member's latest edits; simultaneous edits use last-write-wins. Browser calendar dates are used without UTC conversion. Local development is network-independent after dependencies are installed; this is not an offline-sync PWA.
 
+## Links, sharing, and history
+
+Use **Share link** in any page or dialog header (or the shopping controls in Focus/List Builder).
+Supported browsers open their native share sheet for texting; others copy the link with a confirmation
+checkmark. If clipboard access is denied, a copyable link is shown instead. Recipients still need the
+existing household sign-in; links do not grant access or contain credentials.
+
+Hearth extends its existing hash URLs, so the app document, Access policy, manifest scope, and old
+`#plan`, `#recipes`, `#shopping`, `#groceries`, and `#recipe-checklist` bookmarks remain compatible.
+
+| Location            | URL state                                                                                                              |
+| ------------------- | ---------------------------------------------------------------------------------------------------------------------- |
+| Meal plan           | `#plan?week=2026-11-02` (local Monday date; sharing pins the selected week)                                            |
+| Shopping            | `#shopping?mode=focus&hideChecked=1`; modes are `focus`, `builder`, `arrange`, or the default list                     |
+| Recipes / groceries | `collection=<saved collection ID>` on recipes and `search=…` filters; builder search also restores                     |
+| Recipe details      | `view=recipe&id=<saved recipe ID>`, optional `meal=<saved meal ID>` and `scale=2`                                      |
+| Saved editors       | `view=editor`, `meal`, `grocery`, or `collection` with `id=<saved ID>`                                                 |
+| Flow entry points   | `view=import`, `collections`, `chatgpt`, `shopping-recipes`; editors without an ID open a new blank form               |
+| New meal            | `view=meal&date=2026-11-04&recipe=<saved recipe ID>` (no draft note, slot, or edits)                                   |
+| Recipe checklist    | Repeated `selected=<saved recipe ID>` and `checklist=1` restore selections and generated list, not device-local checks |
+
+Back/Forward restore pages, weeks, modes, filters, and nested dialogs. Closing a dialog returns to its
+in-app parent. A freshly opened deep link gets its underlying Hearth page as a Back destination;
+reload reuses that history instead of adding duplicates. Reload and shared links resolve saved entities from authenticated household data; missing or
+deleted entities show an unavailable message rather than a stale recipe or a new editable copy.
+Typing search text and changing cooking scale replace the current history entry, avoiding one Back
+press per keystroke. Other navigation adds entries.
+
+Unsaved recipe/import, grocery, collection, and meal edits are never serialized into a URL or browser
+history storage. Sharing/reloading/Forward opens the saved item or blank flow, not a private draft.
+Nested meal → recipe previews retain their meal draft only in document memory until save/reload.
+Timers, open menus, drag gestures, and pending writes are transient and aren't shareable destinations.
+
+Run `npx task ui:setup`, then `npx task navigation:smoke` for local Worker/database E2E coverage on
+desktop Chromium and touch iPhone/iPad WebKit profiles. Actual Apple installation, OS link handoff,
+native share sheets, and sign-in in the standalone app still need physical-device verification;
+website routing cannot force iOS to open a texted link in an already installed web app.
+
 ## Logo and device assets
 
 Hearth's Roman mosaic ember identity uses outlined lettering and true vector artwork, not generated
