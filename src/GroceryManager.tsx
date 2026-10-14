@@ -12,7 +12,7 @@ export type GroceryFormProps = {
   error: string;
   save: (item: GroceryDraft) => Promise<boolean>;
   cancel: () => void;
-  /** Only provide for products that are not linked to any recipe ingredient. */
+  /** Only provide for products that have already been saved. */
   remove?: () => Promise<boolean>;
 };
 
@@ -22,7 +22,6 @@ export function GroceryForm({ item, aisles, busy, error, save, cancel, remove }:
   const [amount, setAmount] = useState(String(item.quantity));
   const [pending, setPending] = useState(false);
   const [failure, setFailure] = useState("");
-  const [confirmDelete, setConfirmDelete] = useState(false);
   const locked = busy || pending;
   const hintId = useId();
   const aisleId = useId();
@@ -294,9 +293,8 @@ export function GroceryForm({ item, aisles, busy, error, save, cancel, remove }:
           {error || failure}
         </p>
       )}
-      {remove && confirmDelete && (
-        <div className="grocery-delete-confirm" role="group" aria-label="Confirm grocery item deletion">
-          <p>Delete “{item.name}”? This unused product will be removed from the catalog.</p>
+      <div className="form-actions">
+        {remove && (
           <button
             type="button"
             className="secondary danger"
@@ -305,27 +303,7 @@ export function GroceryForm({ item, aisles, busy, error, save, cancel, remove }:
               if (!locked) void write(remove, "Could not delete this grocery item. Please try again.");
             }}
           >
-            Confirm deletion
-          </button>
-          <button
-            type="button"
-            className="secondary"
-            disabled={locked}
-            onClick={() => setConfirmDelete(false)}
-          >
-            Keep item
-          </button>
-        </div>
-      )}
-      <div className="form-actions">
-        {remove && !confirmDelete && (
-          <button
-            type="button"
-            className="secondary danger"
-            disabled={locked}
-            onClick={() => setConfirmDelete(true)}
-          >
-            Delete unused item
+            Delete item
           </button>
         )}
         <button type="button" className="secondary" disabled={locked} onClick={cancel}>

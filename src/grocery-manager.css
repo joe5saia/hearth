@@ -189,21 +189,6 @@
   border-top: 1px solid var(--line);
   border-radius: 0;
 }
-.grocery-delete-confirm {
-  padding: 14px;
-  background: #f5ede0;
-  border: 1px solid #dcc7b5;
-  border-radius: 6px;
-  display: flex;
-  flex-wrap: wrap;
-  gap: 10px;
-}
-.grocery-delete-confirm p {
-  width: 100%;
-  font-size: 13px;
-  line-height: 1.6;
-  overflow-wrap: anywhere;
-}
 .grocery-form .form-actions {
   flex-wrap: wrap;
   gap: 10px;
