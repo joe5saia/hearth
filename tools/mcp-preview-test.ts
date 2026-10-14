@@ -89,6 +89,8 @@ const call = async (name: string, args: object) => {
   assert.deepEqual(JSON.parse(result.content[0].text), result.structuredContent);
   return result.structuredContent;
 };
+assert.equal((await call("search_recipes", { query: "" })).pagination.total, 0, "Use a fresh mcp:preview up --empty; never run fixture/bulk matching against seeded household data.");
+assert.equal((await call("list_groceries", {})).groceries.length, 0, "Use a fresh empty fixture grocery catalog.");
 const collections = await call("list_collections", {});
 for (const collection of [
   { id: "comfort", name: "Comfort food" },

@@ -7,10 +7,11 @@ import { bindings, type WorkerConfig } from "cf/config";
 import { workerRuntime } from "../cloudflare.config.ts";
 import { Cloudflare, previewName } from "./preview.ts";
 import { ampIdentity } from "./mcp-eval.ts";
+import { initializePreviewSeed, previewSeedPending, seedPreview } from "./production-data.ts";
 
 const directory = resolve(".wrangler/mcp-preview");
 const statePath = resolve(directory, "state.json");
-type State = { name: string; parent: string; preview: string; url: string; db?: string; kv?: string; app?: string; aud?: string; token?: string; client_id?: string; client_secret?: string };
+type State = { name: string; parent: string; preview: string; url: string; db?: string; seedIntent?: "empty" | "pending"; kv?: string; app?: string; aud?: string; token?: string; client_id?: string; client_secret?: string };
 const api = new Cloudflare(process.env.CLOUDFLARE_ACCOUNT_ID!, process.env.CLOUDFLARE_API_TOKEN!);
 const save = async (state: State) => writeFile(statePath, JSON.stringify(state), { mode: 0o600 });
 const run = (args: string[], env: NodeJS.ProcessEnv = {}) => execFileSync("npx", ["cf", ...args], { stdio: ["ignore", "pipe", "inherit"], env: { ...process.env, ...env, CI: "true", CF_SEND_TELEMETRY: "false" } });
@@ -41,6 +42,8 @@ export async function removeMcpPreview(api: Cloudflare, state: State) {
 }
 
 async function main() {
+  const option = process.argv[3];
+  if (option && !["--empty", "--reseed"].includes(option)) throw new Error("Use up [--empty|--reseed]. --empty preserves existing data.");
   const generatedName = `${previewName(process.env.AMP_THREAD_ID ?? "")}-mcp`;
   if (!process.env.CLOUDFLARE_ACCOUNT_ID || !process.env.CLOUDFLARE_API_TOKEN) throw new Error("Cloudflare credentials required");
   await mkdir(directory, { recursive: true, mode: 0o700 });
@@ -74,7 +77,18 @@ async function main() {
     await save(state);
   }
   if (!state.url) throw new Error("Preview URL missing");
-  if (!state.db) { state.db = (await api.request<{ uuid: string }>("/d1/database", "POST", { name: `hearth-${name}` })).uuid; await save(state); }
+  const newDatabase = !state.db;
+  if (!state.db) {
+    state.db = (await api.request<{ uuid: string }>("/d1/database", "POST", { name: `hearth-${name}` })).uuid;
+    state.seedIntent = option === "--empty" ? "empty" : "pending";
+    await save(state);
+  }
+  if (state.seedIntent) {
+    if (state.seedIntent === "pending" && option === "--empty") throw new Error("Production seed initialization is pending; retry up or tear down first.");
+    await initializePreviewSeed(api, state.db!, state.seedIntent === "empty");
+    delete state.seedIntent;
+    await save(state);
+  }
   if (!state.kv) { state.kv = (await api.request<{ id: string }>("/storage/kv/namespaces", "POST", { title: `hearth-${name}` })).id; await save(state); }
   if (!state.token) {
     const token = await api.request<{ id: string; client_id: string; client_secret: string }>("/access/service_tokens", "POST", { name: `hearth-${name}`, duration: "168h" });
@@ -104,6 +118,9 @@ async function main() {
   const configPath = resolve(directory, "worker.json");
   await writeFile(configPath, JSON.stringify(config), { mode: 0o600 });
   run(["d1", "migrations", "apply", state.db!, "--dir", resolve("migrations"), "--table", "d1_migrations"]);
+  const pendingSeed = await previewSeedPending(api, state.db!, option === "--empty" || option === "--reseed");
+  if (pendingSeed && option === "--empty") throw new Error("Preview seed is incomplete; retry up or tear down before empty-fixture testing.");
+  if (option === "--reseed" || pendingSeed || (newDatabase && option !== "--empty")) await seedPreview(api, state.db!, `hearth-${name}`);
   // Keep REST precreation with ignore_base_config=true; cf does not expose that option.
   run(["previews", "deploy", name, "--mode", "cf-mcp-preview"], { HEARTH_PREVIEW_CONFIG: configPath });
   console.log(JSON.stringify({ url: state.url, mcp: `${state.url}/mcp`, eval: `${state.url}/eval/mcp`, name,

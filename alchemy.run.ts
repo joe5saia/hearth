@@ -7,6 +7,7 @@ import * as Layer from "effect/Layer";
 import * as Redacted from "effect/Redacted";
 import { workerRuntime } from "./cloudflare.config";
 import { publicInstallPaths } from "./src/install-assets";
+import { localImportFiles } from "./tools/production-data";
 
 // Secret bindings never enter the browser bundle. Missing credentials disable ingestion.
 const telemetry = {
@@ -19,9 +20,17 @@ const telemetry = {
   TELEMETRY_TRACE_SAMPLE_RATE: process.env.TELEMETRY_TRACE_SAMPLE_RATE || "1",
 };
 
-export const Database = Cloudflare.D1.Database("Database", {
-  migrations: "./migrations",
-});
+export const Database = Cloudflare.D1.Database(
+  "Database",
+  Effect.gen(function* () {
+    const { dev } = yield* AlchemyContext;
+
+    return {
+      migrations: "./migrations",
+      importFiles: dev ? yield* Effect.promise(localImportFiles) : undefined,
+    };
+  }),
+);
 
 // Keep the existing top-level Google resource identity when sharing it with MCP.
 const Google = Effect.gen(function* () {
@@ -104,7 +113,7 @@ export const Website = Cloudflare.Worker(
       access,
       domain: dev ? undefined : "hearth.joesaia.trade",
       compatibility: { date: workerRuntime.compatibilityDate },
-      dev: { port: 8787 },
+      dev: { port: Number(process.env.HEARTH_DEV_PORT ?? 8787) },
       assets: workerRuntime.assets,
       env: dev ? env : { ...env, ...telemetry, AI: Cloudflare.Workers.AI() },
     } as const;

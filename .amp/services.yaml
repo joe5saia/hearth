@@ -9,4 +9,4 @@ services:
     health: /api/household
     portal:
       title: Hearth
-      description: Household meal planning with a local SQLite database. Sample recipes are disposable demo content.
+      description: Household meal planning with an isolated local production-data copy. Development edits never write production.

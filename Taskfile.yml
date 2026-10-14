@@ -12,17 +12,47 @@ tasks:
   orb:setup:
     desc: Prepare the orb, reusing unchanged and validated dependencies
     cmds: [bash -n .agents/setup, .agents/setup]
+  orb:resume:
+    desc: Check thread ownership and seed fresh production data on initial/snapshot activation
+    cmds: [bash -n .agents/resume, .agents/resume]
+  data:prepare:
+    desc: Export current production for an unseeded/new thread; preserve same-thread development edits
+    cmds: ["flock .hearth-data.lock node tools/production-data.ts prepare"]
+  data:reseed:
+    desc: Explicitly replace isolated local data from current production (stop Worker first; restart after)
+    cmds: ["flock .hearth-data.lock node tools/production-data.ts reseed"]
+  data:status:
+    desc: Show seed ownership, export time, and row counts without household contents
+    cmds: [node tools/production-data.ts status]
+  data:smoke:
+    desc: Live production export to disposable local Worker/D1; verify complete values and fresh/snapshot resume lifecycle
+    cmds: [node tools/production-data-smoke.ts]
   dev:
     desc: Start React, the local Worker, and persistent local SQLite through Alchemy
     cmds:
       - task: build
       - task --parallel dev:worker dev:web
   dev:worker:
+    desc: Prepare this thread's production seed before starting the local Worker
+    cmds:
+      - task: data:prepare
+      - task: dev:worker:local
+  dev:worker:local:
     desc: Local-only Alchemy Worker and SQLite; these placeholders cannot access Cloudflare
     env:
       CLOUDFLARE_ACCOUNT_ID: "00000000000000000000000000000000"
       CLOUDFLARE_API_TOKEN: "local-development-only"
-    cmds: [npx alchemy dev]
+    cmds: ['npx alchemy dev --stage "$(node tools/production-data.ts stage)"']
+  dev:empty:
+    desc: Start a fresh empty fixture Worker on 8788 with its own Alchemy stage (never the seeded household)
+    env:
+      HEARTH_EMPTY_DB: "1"
+      HEARTH_DEV_PORT: "8788"
+      CLOUDFLARE_ACCOUNT_ID: "00000000000000000000000000000000"
+      CLOUDFLARE_API_TOKEN: "local-development-only-not-a-cloudflare-token"
+    cmds:
+      - task: build
+      - npx alchemy dev --stage "fixture-$(node -e 'console.log(crypto.randomUUID())')"
   dev:web:
     desc: Start the React development server
     # Bundled dev's HMR runtime needs Rolldown 1.2.9; leave production Vite unchanged.

@@ -4,14 +4,14 @@ A meal planner for one household: saved recipes, a weekly calendar, and a manual
 
 ## Run everything locally
 
-Use Node 26.10 or newer (version in `.node-version`). No Cloudflare account, API key, remote database, Docker, or paid service is required.
+Use Node 26.10 or newer (version in `.node-version`). Normal development starts from a private copy of current production D1 and requires the existing Cloudflare account/token environment variables. No Docker is required. Offline empty-fixture development remains available with `npx task dev:empty`.
 
 ```sh
 npm ci
 npx task dev
 ```
 
-Open http://localhost:5173 on your own machine. `task dev` builds the initial static assets, then starts Vite with React HMR and Alchemy's local Worker on port 8787. Vite proxies `/api` to that Worker. Alchemy applies the SQL migrations and persists the local SQLite database beneath `.alchemy/`. Restarting the app preserves your local household. **Deleting `.alchemy/` deletes local data and development infrastructure state.** Production data and deployment state are stored in Cloudflare. Keep the local directory private and backed up.
+Open http://localhost:5173 on your own machine. `task dev` builds the initial static assets, then prepares the production seed and starts Vite with React HMR and Alchemy's local Worker on port 8787. Vite proxies `/api` to that Worker. Alchemy applies SQL migrations and imports the seed before serving requests, persisting isolated SQLite beneath `.alchemy/`. Restarting the app preserves your local household. **Deleting `.alchemy/` deletes local data and development infrastructure state.** Production data and deployment state remain in Cloudflare. Keep the local directory private and backed up.
 
 The empty app offers **Try a sample week**. This adds six editable recipes, five meals in the browser's current week, and eight sample grocery products with package sizes, aisles, and ingredient links. Existing matching grocery products are reused rather than overwritten. It never runs automatically in production. You can also start with your own recipe. Example recipes are original demonstration content; source links point to related recipe collections, bundled photos are illustrative, and sample grocery URLs use placeholder example.com links.
 
@@ -29,13 +29,91 @@ script explicitly selects the production package.
 
 Alchemy beta.79 resolves cloud credential configuration even for local resources. `dev:worker` supplies deliberately invalid local-only credential placeholders to satisfy that configuration check. Both resources run in **local** mode; these placeholders cannot access a Cloudflare account and are not used by the deployment task. Development uses Vite's standard HTTP proxy. Production uses one Worker serving both assets and API, with D1 provisioned and bound by Alchemy.
 
-In an Amp orb, `.agents/setup` installs the pinned Node version and dependencies. Use `amp orb services ensure` to start both local processes and create the Hearth portal. Setup never authenticates, deploys, or applies remote migrations. Do not expose either unauthenticated development port directly to the public internet.
+In an Amp orb, `.agents/setup` installs the pinned Node version and dependencies, without exporting data or authenticating. `.agents/resume` prepares this thread's private seed on initial activation (including exact snapshot reuse) and on wake. Use `amp orb services ensure` to start both local processes and create the Hearth portal. Worker startup repeats the ownership gate under a lock, so a slow resume export cannot race service startup. Neither lifecycle script deploys or applies remote migrations. Do not expose either unauthenticated development port directly to the public internet.
 
 Setup reuses snapshot dependencies when the setup script, manifests, lockfiles, Node/npm versions,
 and effective npm configuration are unchanged and `npm ls --all --offline` validates the installed tree.
 Otherwise it runs `npm ci --prefer-offline`, preserving lockfile enforcement and install scripts.
 Use `npx task orb:setup` to rerun setup and `npx task install` to force a clean dependency reinstall.
 The reuse marker lives inside `node_modules`, so a clean install also clears it.
+
+### Production-shaped isolated data: freshness and safety
+
+The household owner authorizes copying the **entire production app database, as-is, without
+anonymization** into isolated development/testing/staging environments. Normal local development
+and new website/MCP Previews use this data; disposable Previews are the staging environment.
+Do not deploy a separate Alchemy cloud stage to obtain a seed.
+
+- **Fresh thread:** `.agents/resume` exports the current production database if the private seed
+  manifest has no entry for this `AMP_THREAD_ID`. A snapshot's other-thread seed is never reused.
+  Each successful export selects a new local Alchemy stage, even if the production contents are
+  unchanged, so copied SQLite state, import hashes, and local edits from a snapshot cannot leak
+  into the new thread's active household. No new Amp thread is created by this workflow.
+- **Same thread/restarts:** resume and service restarts reuse the same stage/import hashes and
+  preserve local edits. No time-based automatic refresh occurs. Outside Amp, owner `local` gives
+  the same first-run/preserve semantics. Existing pre-seeding Alchemy stages remain untouched.
+- **Fresh Preview:** creating its isolated D1 exports production at that moment, not the local
+  orb seed. Repeated `up` preserves its data, including from a different orb of the same thread.
+  An old/unmarked Preview requires an explicit choice: `up --empty` preserves its existing data,
+  or `up --reseed` refreshes it. Unknown/interrupted initialization never silently becomes an
+  empty successful deployment.
+- **Explicit local refresh:** stop the Worker (`amp orb service stop hearth` in an orb), run
+  `npx task data:reseed`, then `amp orb services ensure`. This selects a fresh isolated local
+  stage; the previous stage's SQLite remains private and recoverable. `npx task data:status`
+  shows owner, export completion time, and per-table counts, never household contents.
+- **Explicit Preview refresh:** `npx task preview -- up --reseed` or
+  `npx task mcp:preview -- up --reseed` replaces the owning disposable D1's app data. Stop
+  concurrent Preview writes first. Imports use bounded batches; a failed remote import may
+  leave partial data and must be retried with `up`/`--reseed` or torn down, not used for testing.
+  A destination-side pending marker survives lost orbs; `up` finishes reseeding rather than
+  deploying an incomplete copy, while `up --empty` rejects a pending seed.
+- **Freshness boundary:** the seed is the consistent D1 SQL export returned by Cloudflare at
+  provisioning time, not a continuously synchronized mirror. Changes after that export are
+  absent until explicit reseeding. D1 export can briefly block production queries; no production
+  SQL mutations or migrations are sent. Schema/data migrations newer than production run only
+  against the private copy. A checkout older than production fails closed rather than guessing.
+
+The production Website is discovered using its Alchemy production tags, and its exact `DB`
+binding identifies the export source. Use existing `CLOUDFLARE_ACCOUNT_ID` and
+`CLOUDFLARE_API_TOKEN` project secrets/environment (or private shell environment), with
+**Workers Scripts Read** for binding discovery and authorization for
+`POST /accounts/<account>/d1/database/<production-db>/export` (including polling).
+The existing project token was verified against that endpoint. Cloudflare's public export reference
+does not publish its minimum token permission; **do not assume D1 Read alone suffices or broaden a
+token by trial and error**. If export is denied, request an export-authorized credential for that
+operation/account from the owner. Preview provisioning additionally needs its documented write permissions. Missing permissions
+or failed export/import abort seeding; there is no silent sample-data fallback. Never paste
+credentials, signed export URLs, or SQL dumps into logs, Git, screenshots, or public artifacts.
+
+Exports are decoded in memory; private import batches/ownership metadata live under gitignored
+`.hearth-data/` (directory 0700, files 0600). SQLite and infrastructure/import state are under
+gitignored `.alchemy/`; Preview credentials remain under `.wrangler/`. Keep **all three** private,
+including backups and orb snapshots. Every app table is copied, including cache/revision and
+shopping state, with text/photos/IDs/links intact. Cloudflare internals and migration bookkeeping
+are not household data: each destination maintains its own migration history and schema/triggers.
+Bounded import batches reconstruct large photo/JSON values without truncation. Production OAuth
+KV, API tokens and Access credentials are not copied into the household seed.
+
+### Empty-fixture tests are separate
+
+`npx task test` continues using disposable Miniflare D1/KV, never the seeded household or production.
+For browser smokes that require emptiness, run `npx task dev:empty`: it builds the SPA and starts
+a new local-only Worker on port 8788, in a unique fixture stage, without any Cloudflare access.
+Pass `http://localhost:8788` to the relevant smoke task on your own machine/in the orb; do not
+share a loopback URL with another person. The ordinary seeded services can keep running on
+8787/5173. Empty means no household fixtures; migration-provided collections remain.
+Use `npx task preview -- up --empty` or `npx task mcp:preview -- up --empty` for fixture-only remote
+checks. `--empty` skips seeding **only for a new D1**, never clears existing data; tear down an
+existing Preview first if the test requires emptiness. Run fixture/demo tools against those
+isolated environments, not the production-shaped household, and clean them up afterward.
+
+`npx task data:smoke` verifies a real production export against every row/column in disposable
+local workerd/D1, exercises the actual household API, and runs `.agents/resume` in temporary
+fresh and copied-snapshot checkouts. It checks same-owner preservation without cloud credentials,
+new-owner freshness, missing-access failure, explicit reseeding, and refusal to target production.
+It creates no Amp threads, writes no production/remote SQL, logs only counts/check results, and
+deletes temporary copies in `finally`. The regular integration suite covers large photos/JSON,
+Unicode/NUL text, fractional values, complete table replacement, and restored constraints/triggers.
 
 ## Daily use
 
@@ -253,7 +331,7 @@ model accuracy and complete Preview/browser coverage, use:
 
 ```sh
 npx task matching:eval -- models .amp/in/artifacts/matching-models.json
-npx task preview -- up
+npx task preview -- up --empty
 npx task matching:eval -- preview-ui .amp/in/artifacts/matching-browser.json
 npx task preview -- down
 npx task preview -- list
@@ -376,7 +454,8 @@ legacy version URLs, or a second production Worker. Uses the pinned `cf` CLI and
 From the thread's working branch, with `AMP_THREAD_ID` set to its full thread ID:
 
 ```sh
-npx task preview -- up                # Build, provision/update, migrate isolated D1, deploy, smoke-test
+npx task preview -- up                # New D1: current production seed; updates preserve data
+npx task preview -- up --empty        # New D1: fixture-only, no production export
 npx task preview -- test              # Recheck Access/assets/API and D1 persistence; print latency samples
 npx task preview -- list              # Account-side inventory, including partially provisioned resources
 npx task preview -- down              # Delete this thread's Preview and ALL its supporting resources
@@ -395,7 +474,7 @@ the Preview build. The config rejects non-Preview Worker builds. Keep API precre
 `up` prints the stable HTTPS URL, deployment ID, and UTC cleanup deadline. Sign in with the same Google
 accounts allowed in production. Share **only this stable URL**: immutable deployment URLs retain the
 parent Worker's Access policy, whose audience the Preview intentionally does not accept. Each thread
-gets an empty D1 database; **Try a sample week** supplies disposable data. Production data is never copied.
+gets an isolated D1 database seeded from current production by default; use `up --empty` for fixture-only checks.
 Repeated `up` preserves the Preview URL/database and applies new migrations. Serialize commands for a
 given thread across orbs. Separate threads use separate databases and credentials.
 
@@ -682,7 +761,7 @@ machine identity or run the write-capable preview test against production to byp
 ### Isolated MCP preview
 
 ```sh
-npx task mcp:preview -- up
+npx task mcp:preview -- up --empty     # OAuth/tool fixture smoke requires a fresh empty D1
 npx task mcp:preview:test
 npx task mcp:preview -- down
 ```

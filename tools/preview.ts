@@ -6,6 +6,7 @@ import { pathToFileURL } from "node:url";
 import { bindings, type WorkerConfig } from "cf/config";
 import { workerRuntime } from "../cloudflare.config.ts";
 import { publicInstallPaths } from "../src/install-assets.ts";
+import { initializePreviewSeed, previewSeedPending, seedPreview } from "./production-data.ts";
 
 const prefix = "hearth-preview-";
 const stateRoot = resolve(".wrangler/hearth-previews");
@@ -194,6 +195,7 @@ export async function up(
   sourceApp: App,
   runCommand = command,
   verify = smoke,
+  seedMode: "production" | "empty" | "reseed" = "production",
 ): Promise<void> {
   const directory = resolve(stateRoot, name);
   await mkdir(directory, { recursive: true, mode: 0o700 });
@@ -271,10 +273,16 @@ export async function up(
     const db =
       before.databases.find((d) => d.name === resourceName) ??
       (await manager.api.request<Database>("/d1/database", "POST", { name: resourceName }));
+    if (!before.databases.some((d) => d.uuid === db.uuid)) await initializePreviewSeed(manager.api, db.uuid, seedMode === "empty");
     const config = previewConfig(manager.worker, db, app.aud, token.client_id);
     const configPath = resolve(directory, "worker.json");
     await save(configPath, config);
     runCommand("npx", ["cf", "d1", "migrations", "apply", db.uuid, "--dir", resolve("migrations"), "--table", "d1_migrations"]);
+    const pendingSeed = await previewSeedPending(manager.api, db.uuid, seedMode !== "production");
+    if (pendingSeed && seedMode === "empty") throw new Error("Preview seed is incomplete; retry up or tear down before empty-fixture testing.");
+    if (seedMode === "reseed" || pendingSeed || (seedMode === "production" && !before.databases.some((d) => d.uuid === db.uuid))) {
+      await seedPreview(manager.api, db.uuid, resourceName);
+    }
     // Precreation above must retain ignore_base_config=true: cf has no equivalent CLI flag.
     runCommand(
       "npx",
@@ -443,10 +451,12 @@ async function smoke(name: string): Promise<void> {
 }
 
 async function main(): Promise<void> {
-  const [action = "help", argument, method, path, body] = process.argv.slice(2);
+  const [action = "help", option, method, path, body] = process.argv.slice(2);
+  const seedMode = action === "up" && option === "--empty" ? "empty" : action === "up" && option === "--reseed" ? "reseed" : "production";
+  const argument = action === "up" && ["--empty", "--reseed"].includes(option) ? undefined : option;
   if (!["up", "down", "list", "gc", "test", "request"].includes(action)) {
     console.log(
-      "npx task preview -- up | list | gc | down [name] | test [name] | request <name> <METHOD> </path> [JSON]\nup/gc removes resources past their seven-day cleanup deadline. No background timer runs. Use down when review ends.",
+      "npx task preview -- up [--empty|--reseed] | list | gc | down [name] | test [name] | request <name> <METHOD> </path> [JSON]\nNew D1 seeds current production unless --empty. Updates preserve data unless --reseed. --empty never clears existing data. up/gc removes expired resources. Use down when review ends.",
     );
     return;
   }
@@ -521,7 +531,7 @@ async function main(): Promise<void> {
   if (!settings.previews_enabled)
     throw new Error("workers.dev Preview URLs are disabled. Configure through the production owner first.");
   await manager.gc();
-  await up(manager, expiresAt(name) <= Date.now() ? generated : name, sourceApp);
+  await up(manager, expiresAt(name) <= Date.now() ? generated : name, sourceApp, command, smoke, seedMode);
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {

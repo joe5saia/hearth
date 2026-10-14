@@ -17,6 +17,7 @@
     "vite.config.ts",
     "tests",
     "tools/matching-eval.ts",
-    "tools/mcp-preview.ts"
+    "tools/mcp-preview.ts",
+    "tools/production-data-smoke.ts"
   ]
 }

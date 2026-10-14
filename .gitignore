@@ -3,6 +3,8 @@ dist/
 .alchemy/
 .cloudflare/
 .wrangler/
+.hearth-data/
+.hearth-data.lock
 .amp/in/
 .amp/portals/
 .amp/deploy-state/

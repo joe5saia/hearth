@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Resume also runs on initial activation when an exact snapshot skips setup.
+# Keep household data out of setup snapshots; service startup repeats this gate
+# because Amp can continue while a longer export is still running here.
+npx task data:prepare
