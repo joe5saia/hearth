@@ -1,13 +1,14 @@
 import { Schema } from "effect";
 import { FeedbackInputSchema, FeedbackSchema, feedbackURL, type Feedback } from "./feedback-contract";
 
+/** Server-only delivery bindings; absent credentials leave drafts recoverable instead of faking acceptance. */
 export type FeedbackEnv = {
   DB: D1Database;
   FEEDBACK_WEBHOOK_URL?: string;
   FEEDBACK_SIGNING_KEY?: string;
 };
 
-// This transport runs only behind the website's household authentication and write guards.
+/** Requires household/write guards upstream; persists immutable context before signing and deduplicating delivery. */
 export async function submitFeedback(
   request: Request,
   env: FeedbackEnv,
@@ -83,9 +84,15 @@ export async function submitFeedback(
       .bind(ticket.id, body, envelope, Date.now(), Date.now() - 600000)
       .run();
 
-    const saved = await env.DB.prepare("SELECT body,envelope,queued FROM feedback WHERE id=?")
+    const stored = await env.DB.prepare("SELECT body,envelope,queued FROM feedback WHERE id=?")
       .bind(ticket.id)
-      .first<{ body: string; envelope: string; queued: number }>();
+      .first<unknown>();
+    const saved =
+      stored === null
+        ? null
+        : Schema.decodeUnknownSync(
+            Schema.Struct({ body: Schema.String, envelope: Schema.String, queued: Schema.Literals([0, 1]) }),
+          )(stored);
 
     if (!saved) return reply("A few tickets just came in. Please try again in ten minutes.", 429);
 

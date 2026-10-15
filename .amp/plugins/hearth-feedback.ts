@@ -7,8 +7,10 @@ import { Schema } from "effect";
 import { FeedbackSchema } from "../../src/feedback-contract.ts";
 
 // @amp-agent-mode {"key":"hearth-ticket","label":"Hearth ticket"}
+/** Opt-in intake runs only in its private configured owner; ticket text cannot authorize release actions. */
 export const description = "Authenticated Hearth ticket intake; one isolated no-shipping execution thread per ticket. Only enabled in its durable intake owner.";
 
+/** Registers authenticated durable intake and a fixed Hearth execution mode only for the configured owner. */
 export default async function (amp: PluginAPI) {
   if (!amp.system.workspaceRoot) return;
   const root = fileURLToPath(amp.system.workspaceRoot.toString());

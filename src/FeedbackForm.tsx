@@ -7,6 +7,7 @@ const draftKey = "hearth-feedback-draft";
 
 const attemptKey = "hearth-feedback-attempt";
 
+/** Preserves one immutable attempted ticket across reloads; Enter sends, and acknowledgement never ships it. */
 export function FeedbackForm({ context, close }: { context: FeedbackDraft["context"]; close: () => void }) {
   const [ticket, setTicket] = useState<FeedbackDraft>(() => {
     try {

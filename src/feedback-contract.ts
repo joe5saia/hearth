@@ -14,7 +14,7 @@ const contextText = (limit: number) =>
     Schema.makeFilter((value) => !credentialValue.test(value)),
   );
 
-// Shared by browser capture and server ingestion. Preserve navigation, never URL credentials.
+/** Preserves HTTP(S) navigation while removing userinfo and recognizable query/fragment credentials. */
 export function feedbackURL(value: string): string {
   const url = new URL(value);
 
@@ -93,13 +93,16 @@ const fields = {
   }),
 };
 
+/** Unsent tab-local drafts may omit the client timestamp; all context remains untrusted browser data. */
 export const FeedbackDraftSchema = Schema.Struct({
   ...fields,
   clientSubmittedAt: Schema.optional(timestamp),
 });
 
+/** Versioned browser submission: a stable ticket ID and first-attempt timestamp, without server authority. */
 export const FeedbackInputSchema = Schema.Struct({ ...fields, clientSubmittedAt: timestamp });
 
+/** Verified household claims only; the authenticated server, never the browser, supplies these fields. */
 export const FeedbackIdentitySchema = Schema.Struct({
   source: Schema.Literal("cloudflare-access"),
   subject: Schema.String.check(Schema.isLengthBetween(1, 256)),
@@ -109,6 +112,7 @@ export const FeedbackIdentitySchema = Schema.Struct({
   name: Schema.optional(Schema.String.check(Schema.isLengthBetween(1, 200))),
 });
 
+/** Signed intake envelope adds immutable server receipt, identity and correlation metadata to browser input. */
 export const FeedbackSchema = Schema.Struct({
   ...FeedbackInputSchema.fields,
   delivery: Schema.Struct({
@@ -128,8 +132,11 @@ export const FeedbackSchema = Schema.Struct({
   }),
 });
 
+/** Tab-local request/context preserved until delivery; its timestamp is absent before the first attempt. */
 export type FeedbackDraft = typeof FeedbackDraftSchema.Type;
 
+/** Browser-owned v2 submission; neither its observations nor its timestamp establish authenticated identity. */
 export type FeedbackInput = typeof FeedbackInputSchema.Type;
 
+/** Immutable server-enriched envelope signed for Amp; URLs and request text grant no execution authority. */
 export type Feedback = typeof FeedbackSchema.Type;
