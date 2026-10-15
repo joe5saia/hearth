@@ -128,8 +128,9 @@ ledger available; archive pauses delivery. Orb pause/resume retains the ledger,
 but replacing a lost orb requires restoring that ledger before accepting tickets.
 
 Provision `FEEDBACK_WEBHOOK_URL` and `FEEDBACK_SIGNING_KEY` through private server
-secret settings for the Worker when deployment is separately authorized. Alchemy
-binds both as redacted server-only values. Missing configuration returns an honest
+secret settings for the Worker when activation is separately authorized. Cloudflare
+owns both production secret values; Alchemy explicitly inherits their bindings
+without reading their values. Missing configuration returns an honest
 503 and leaves the user's draft intact. Never place these values in `VITE_*`,
 committed files, normal logs, thread messages, or browser assets. Production still
 uses its existing household Access authentication and cross-site write guards.
@@ -138,33 +139,34 @@ persists immutable tickets in D1, signs exact bytes, and retries with a stable I
 It does not silently retry an unconfirmed submission in the background; the user
 can retry the preserved draft. Only sample data belongs in test submissions.
 
-For GitHub's production deployment, both values must be **environment secrets**
-in `joe5saia/hearth` → Settings → Environments → `production`, not browser variables.
-The minimum fine-grained repository token permission is **Environments: Read and
-write**, scoped to this repository (public-key read uses Environments: Read).
-Repository **Secrets** permission alone is not the environment-secrets permission.
-An owner/admin can instead authorize the GitHub CLI's browser login with its
-standard `repo` OAuth scope. Do not reuse an integration credential that returned
-403, paste either feedback value into chat, or transfer it through public artifacts.
-
-In the orb holding the private intake source files, authenticate interactively
-using an isolated CLI profile, with injected integration tokens removed:
+Feedback needs **no GitHub secrets or additional GitHub authentication**. The
+existing Cloudflare account/token must allow production Worker discovery and
+**Workers Scripts Edit** to provision its two `secret_text` bindings. In the orb
+holding the private intake source files, after explicit activation authorization:
 
 ```sh
-mkdir -p .amp/feedback-state/github-auth
-chmod 700 .amp/feedback-state/github-auth
-env -u GH_TOKEN -u GITHUB_TOKEN GH_CONFIG_DIR="$PWD/.amp/feedback-state/github-auth" \
-  gh auth login --hostname github.com --git-protocol https --web
+npx task feedback:secrets:smoke
 npx task feedback:provision
+npx task feedback:status
 ```
 
-Complete GitHub's device authorization as the repository owner; never paste the
-OAuth token into the thread. The task sends the existing `webhook-url` file and
-`owner.json`'s signing key directly to `gh secret set` through stdin; neither value
-is echoed, placed in command arguments, or stored in Git. Its final listing shows
-only names/dates. It does not push, deploy, or change the intake ledger. Provisioning
-is not activation: after an authorized push, verify the exact deployment revision
-and an authenticated feedback delivery before claiming production is connected.
+The smoke uses fake values in a header-gated disposable Worker, verifies both
+values before and after an `inherit` code upload, and removes that Worker in
+`finally`; it never touches the household. Provisioning discovers the unique
+Alchemy-tagged production Website and sends the existing private `webhook-url`
+and `owner.json` signing key directly to Cloudflare's Worker secret API. It never
+prints values, writes GitHub secrets, changes Access, applies migrations, submits
+tickets, or deploys app code. Status retrieves only secret names/types.
+
+Provision before the first feedback code deployment. Alchemy's explicit `inherit`
+bindings retain the existing values across future CI deployments; merely omitting
+them from `env` would not preserve them. Missing inherited values can be silently
+dropped by Cloudflare, so verify presence before and after deployment. A replaced
+Worker needs separate provisioning. Local development still accepts server-only
+environment values; Previews stay disconnected unless explicitly configured.
+After an authorized push, verify the exact deployment revision and authenticated
+delivery before claiming the complete production loop works. Secret presence
+alone is not a household delivery acknowledgement.
 
 The intake authenticates HMAC-SHA256 before interpreting any data, validates the
 same contract, and exclusively persists the ticket/event claim before creating

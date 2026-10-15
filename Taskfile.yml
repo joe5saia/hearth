@@ -80,16 +80,14 @@ tasks:
       - task: build
       - node tools/feedback/demo.ts {{.CLI_ARGS}}
   feedback:provision:
-    desc: Provision production feedback secrets from private files (requires authorized owner login in the isolated GitHub CLI profile; does not deploy)
-    env:
-      GH_CONFIG_DIR: "{{.ROOT_DIR}}/.amp/feedback-state/github-auth"
-    cmds:
-      - test -s "$GH_CONFIG_DIR/hosts.yml"
-      - env -u GH_TOKEN -u GITHUB_TOKEN gh secret set FEEDBACK_WEBHOOK_URL --repo joe5saia/hearth --env production < .amp/feedback-state/webhook-url
-      - >-
-        bash -o pipefail -c 'jq -erj ".signingKey | select(type == \"string\" and length >= 32)" .amp/feedback-state/owner.json |
-        env -u GH_TOKEN -u GITHUB_TOKEN gh secret set FEEDBACK_SIGNING_KEY --repo joe5saia/hearth --env production'
-      - env -u GH_TOKEN -u GITHUB_TOKEN gh secret list --repo joe5saia/hearth --env production
+    desc: Provision Cloudflare-managed production feedback secrets from private files (requires activation authorization; no code deploy or household writes)
+    cmds: [node tools/feedback/secrets.ts provision]
+  feedback:status:
+    desc: Check production feedback secret names/types without retrieving values or submitting tickets
+    cmds: [node tools/feedback/secrets.ts status]
+  feedback:secrets:smoke:
+    desc: Verify external secrets survive code uploads on a disposable Cloudflare Worker; always remove it
+    cmds: [node tools/feedback/secrets.ts smoke]
   feedback:smoke:
     desc: Feedback desktop and touch WebKit E2E (run ui:setup and feedback:demo first; optional -- --live-intake sends one isolated Amp ticket)
     cmds: ["node tools/feedback/smoke.ts {{.CLI_ARGS}}"]

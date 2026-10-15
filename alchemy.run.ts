@@ -106,8 +106,6 @@ export const Website = Cloudflare.Worker(
       LOCAL_DEV: dev ? "true" : "false",
       ACCESS_AUD: access?.aud ?? "",
       SMOKE_CLIENT_ID: smoke?.clientId ?? "",
-      FEEDBACK_WEBHOOK_URL: Redacted.make(process.env.FEEDBACK_WEBHOOK_URL ?? ""),
-      FEEDBACK_SIGNING_KEY: Redacted.make(process.env.FEEDBACK_SIGNING_KEY ?? ""),
     } as const;
 
     return {
@@ -117,7 +115,13 @@ export const Website = Cloudflare.Worker(
       compatibility: { date: workerRuntime.compatibilityDate },
       dev: { port: Number(process.env.HEARTH_DEV_PORT ?? 8787) },
       assets: workerRuntime.assets,
-      env: dev ? env : { ...env, ...telemetry, AI: Cloudflare.Workers.AI() },
+      env: dev
+        ? {
+            ...env,
+            FEEDBACK_WEBHOOK_URL: Redacted.make(process.env.FEEDBACK_WEBHOOK_URL ?? ""),
+            FEEDBACK_SIGNING_KEY: Redacted.make(process.env.FEEDBACK_SIGNING_KEY ?? ""),
+          }
+        : { ...env, ...telemetry, AI: Cloudflare.Workers.AI() },
     } as const;
   }),
 );
@@ -186,6 +190,15 @@ export default Alchemy.Stack(
   Effect.gen(function* () {
     const { dev } = yield* AlchemyContext;
     const website = yield* Website;
+    if (!dev) {
+      // Cloudflare owns these values; code deployments inherit without reading or clearing them.
+      yield* website.bind`feedback-secrets`({
+        bindings: [
+          { type: "inherit", name: "FEEDBACK_WEBHOOK_URL" },
+          { type: "inherit", name: "FEEDBACK_SIGNING_KEY" },
+        ],
+      });
+    }
     const mcp = dev ? undefined : yield* Mcp;
 
     return { url: website.url, mcp: mcp ? "https://hearth-mcp.joesaia.trade/mcp" : undefined };
