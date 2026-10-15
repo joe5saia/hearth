@@ -179,6 +179,7 @@ try {
         await expect(page).toHaveURL(new RegExp(`view=recipe&id=${recipe.id}`));
         await dialog().getByRole("button", { name: "Close dialog" }).click();
         await expect(dialog()).toHaveCount(0);
+        await expect(page).toHaveURL(`${root}/#recipes?collection=${collection.id}&search=lentil`);
         await expect(page.locator(".recipe-row-main")).toHaveCount(1);
         await open(`#groceries?search=${encodeURIComponent(grocery.name)}`);
         await expect(page.getByRole("button", { name: `Edit grocery item ${grocery.name}` })).toBeVisible();

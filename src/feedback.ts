@@ -87,6 +87,7 @@ export async function submitFeedback(
     const stored = await env.DB.prepare("SELECT body,envelope,queued FROM feedback WHERE id=?")
       .bind(ticket.id)
       .first<unknown>();
+
     const saved =
       stored === null
         ? null

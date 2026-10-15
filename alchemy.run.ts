@@ -190,6 +190,7 @@ export default Alchemy.Stack(
   Effect.gen(function* () {
     const { dev } = yield* AlchemyContext;
     const website = yield* Website;
+
     if (!dev) {
       // Cloudflare owns these values; code deployments inherit without reading or clearing them.
       yield* website.bind`feedback-secrets`({
@@ -199,6 +200,7 @@ export default Alchemy.Stack(
         ],
       });
     }
+
     const mcp = dev ? undefined : yield* Mcp;
 
     return { url: website.url, mcp: mcp ? "https://hearth-mcp.joesaia.trade/mcp" : undefined };

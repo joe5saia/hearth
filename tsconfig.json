@@ -18,6 +18,7 @@
     "tests",
     "tools/matching-eval.ts",
     "tools/mcp-preview.ts",
-    "tools/production-data-smoke.ts"
+    "tools/production-data-smoke.ts",
+    "tools/feedback/secrets.ts"
   ]
 }
