@@ -17,24 +17,39 @@
 }
 .purchase-row {
   position: relative;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
   border-bottom: 1px solid var(--line);
 }
 .purchase-row .shopping-item {
+  grid-area: 1 / 1;
   display: grid;
   grid-template-columns: 20px minmax(0, 1fr);
+  align-items: center;
   gap: 10px;
   border: 0;
-  min-height: 64px;
-  padding: 8px 60px 8px 16px;
+  min-height: 48px;
+  height: max-content;
+  padding: 4px 60px 4px 16px;
 }
 .purchase-row.has-drag .shopping-item {
   padding-right: 104px;
 }
-.purchase-row > .route-drag {
+.purchase-row > .route-drag,
+.purchase-details > summary {
   position: absolute;
-  top: 8px;
+  /* Keep controls centered on the label, not the expanded product links below it. */
+  grid-area: 1 / 1 / 2 / 2;
+  top: 0;
+  bottom: 0;
+  margin-block: auto;
+}
+.purchase-row > .route-drag {
   right: 52px;
   z-index: 1;
+}
+.purchase-row .custom-check {
+  margin-top: 0;
 }
 .purchase-row .item-info {
   gap: 2px;
@@ -44,7 +59,8 @@
 }
 .purchase-row .shopping-item > input {
   left: 16px;
-  top: 22px;
+  top: 50%;
+  transform: translateY(-50%);
 }
 .purchase-row .item-info strong {
   text-transform: none;
@@ -58,14 +74,13 @@
   color: var(--olive);
 }
 .purchase-details {
+  grid-area: 2 / 1;
   padding: 0;
 }
 .purchase-details[open] {
   padding: 0 16px 8px 46px;
 }
 .purchase-details > summary {
-  position: absolute;
-  top: 8px;
   right: 8px;
   display: grid;
   place-items: center;

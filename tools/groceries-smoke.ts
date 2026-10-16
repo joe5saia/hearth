@@ -14,6 +14,16 @@ const check = (expression: string, message: string) => {
   browser("eval", `(() => { if (!(${expression})) throw new Error(${JSON.stringify(message)}); return true; })()`);
   console.log(`PASS ${message}`);
 };
+const checkRowAlignment = () => check(`
+  [...document.querySelectorAll('.purchase-row')].every(row => {
+    const label = row.querySelector('.shopping-item').getBoundingClientRect();
+    const center = label.top + label.height / 2;
+    return [...row.querySelectorAll('.custom-check, .item-info, .route-drag, summary')].every(element => {
+      const box = element.getBoundingClientRect();
+      return Math.abs(box.top + box.height / 2 - center) < 1;
+    }) && [...row.querySelectorAll('.route-drag, summary')].every(element => element.getBoundingClientRect().height >= 44)
+      && (row.querySelector('.item-info').getBoundingClientRect().height > 32 || label.height <= 48);
+  })`, "shopping text, checkbox and 44px controls stay centered in compact and wrapped rows");
 const request = async (path: string, method = "GET", value?: GroceryDraft | RecipeDraft | MealDraft | ShoppingOrder | typeof CheckSchema.Encoded) => {
   const response = await fetch(`${url}/api/${path}`, { method, headers: { "Content-Type": "application/json", Connection: "close" }, body: value ? JSON.stringify(value) : undefined });
   assert(response.ok, `${method} ${path}: ${response.status}`);
@@ -536,10 +546,12 @@ try {
   const riceKey = JSON.stringify(["shopping-list", products[0].id]);
   assert((await household()).checks.some(entry => entry.key === riceKey && entry.checked === 0));
   check("document.querySelectorAll('.purchase-row').length === 6 && document.querySelector('.shopping-summary').textContent.includes('2 left')", "unchecking adds items without hiding any catalog rows");
-  for (const width of [320, 390]) {
+  for (const width of [320, 390, 1280]) {
     browser("set", "viewport", String(width), "844", "2");
     check("document.documentElement.scrollWidth <= innerWidth", `${width}px List Builder has no horizontal overflow`);
+    checkRowAlignment();
   }
+  browser("set", "viewport", "390", "844", "2");
   screenshot("list-builder-narrow");
   browser("set", "viewport", "1280", "1000", "2");
   screenshot("list-builder-desktop");
@@ -564,8 +576,10 @@ try {
   check("document.querySelectorAll('.purchase-row').length === 2 && document.querySelector('[aria-label=\"Picked up Rolled oats\"]')", "manual selection persists after reload and changing meal date/scale");
   browser("click", '[aria-label="Shopping mode"]');
   check("[...document.querySelectorAll('.purchase-row')].filter(el => !el.querySelector('.purchase-warning')).every(el => el.getBoundingClientRect().height <= 88) && [...document.querySelectorAll('.purchase-details summary')].every(el => el.getBoundingClientRect().height >= 44)", "compact rows retain 44px disclosure targets");
+  checkRowAlignment();
   browser("click", '[aria-label="Details for Long-grain rice"]');
   check("[...document.querySelectorAll('.purchase-details[open]')].some(el => el.querySelector('a').href === 'https://example.com/rice') && !document.querySelector('.purchase-need')", "expanded row retains product URL without recipe-derived totals");
+  checkRowAlignment();
   browser("click", '.purchase-details[open] button');
   browser("wait", ".grocery-form");
   check("document.querySelector('.grocery-form input').value === 'Long-grain rice'", "expanded linked row edits the correct product");
