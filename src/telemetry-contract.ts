@@ -5,6 +5,7 @@ const operations = [
   "groceries",
   "groceries.match",
   "shopping-order",
+  "shopping-items",
   "shopping-aisles",
   "collections",
   "recipes",

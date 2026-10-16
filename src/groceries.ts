@@ -78,18 +78,40 @@ export function linkIngredients(ingredients: readonly Ingredient[], groceries: r
   });
 }
 
+const validGrocery = (item: GroceryItem) =>
+  Schema.decodeEffect(GroceryItemSchema)(item).pipe(
+    Effect.mapError(
+      () => new ValidationError({ message: "Check the grocery name, package quantity, unit, and URL." }),
+    ),
+    Effect.map((decoded) => ({ ...decoded, name: decoded.name.trim(), aisle: decoded.aisle.trim() })),
+  );
+
 /** Validates and upserts a catalog item, trimming its display name and aisle. */
 export function saveGrocery(db: D1Database, item: GroceryItem) {
   return Effect.gen(function* () {
-    const decoded = yield* Schema.decodeEffect(GroceryItemSchema)(item).pipe(
-      Effect.mapError(
-        () => new ValidationError({ message: "Check the grocery name, package quantity, unit, and URL." }),
-      ),
-    );
-
-    const grocery = { ...decoded, name: decoded.name.trim(), aisle: decoded.aisle.trim() };
+    const grocery = yield* validGrocery(item);
 
     yield* database(() => groceryStatement(db, grocery).run());
+
+    return { grocery };
+  });
+}
+
+/** Upserts a catalog item and puts it on the shopping list atomically, keeping any saved package count. */
+export function saveGroceryToList(db: D1Database, item: GroceryItem) {
+  return Effect.gen(function* () {
+    const grocery = yield* validGrocery(item);
+
+    yield* database(() =>
+      db.batch([
+        groceryStatement(db, grocery),
+        db
+          .prepare(
+            "INSERT INTO checks(key,checked,packages) VALUES(?,0,1) ON CONFLICT(key) DO UPDATE SET checked=0",
+          )
+          .bind(JSON.stringify(["shopping-list", grocery.id])),
+      ]),
+    );
 
     return { grocery };
   });

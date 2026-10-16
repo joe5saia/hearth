@@ -45,7 +45,8 @@ try {
           context.newPage = async (...args) => {
             const page = await newPage(...args);
             page.on('request', request => {
-              const kind = new URL(request.url()).pathname.split('/')[2];
+              const segment = new URL(request.url()).pathname.split('/')[2];
+              const kind = segment === 'shopping-items' ? 'groceries' : segment;
               if (!['PUT', 'POST'].includes(request.method()) || !['extras', 'meals', 'recipes', 'groceries', 'collections'].includes(kind)) return;
               const body = request.postDataJSON();
               if (body !== null && typeof body === 'object' && typeof body.id === 'string') {
@@ -65,8 +66,8 @@ try {
                 const body = request.method() === 'PUT' ? request.postDataJSON() : null;
                 const reject = ${JSON.stringify(fault)} === 'route'
                   ? request.url().endsWith('/api/shopping-order') && request.method() === 'PUT'
-                  : request.url().endsWith('/api/extras') && body !== null && typeof body === 'object' &&
-                    body.checked === 1 && typeof body.name === 'string' && body.name.includes('demo');
+                  : request.url().endsWith('/api/shopping-items') && body !== null && typeof body === 'object' &&
+                    typeof body.name === 'string' && body.name.includes('demo');
                 if (reject) {
                   console.log('INJECTED ${fault}');
                   await route.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ error: 'Injected save failure' }) });

@@ -1451,6 +1451,48 @@ describe("real Worker with disposable SQLite D1", () => {
       rating: "up",
     });
   });
+  it("quick-adds a minimal grocery to the list atomically and keeps saved package counts on retry", async () => {
+    const coffee = {
+      id: "coffee",
+      name: "  Coffee ",
+      url: "",
+      aisle: " 4 ",
+      quantity: 1,
+      unit: "each",
+      aliases: ["Coffee"],
+    };
+
+    const state = async () =>
+      Schema.decodeUnknownSync(HouseholdSchema)(
+        await (await worker.dispatchFetch("http://localhost/api/household")).json(),
+      );
+
+    expect((await send("shopping-items", "PUT", JSON.stringify(coffee))).status).toBe(200);
+    expect((await state()).groceries).toEqual([{ ...coffee, name: "Coffee", aisle: "4" }]);
+    expect((await state()).checks).toEqual([{ key: '["shopping-list","coffee"]', checked: 0, packages: 1 }]);
+
+    expect(
+      (await send("checks", "PUT", JSON.stringify({ key: '["shopping-list","coffee"]', checked: 1 }))).status,
+    ).toBe(200);
+    expect(
+      (
+        await send(
+          "checks",
+          "PUT",
+          JSON.stringify({ key: '["shopping-list","coffee"]', checked: 0, packages: 3 }),
+        )
+      ).status,
+    ).toBe(200);
+    expect((await send("shopping-items", "PUT", JSON.stringify(coffee))).status).toBe(200);
+    expect((await state()).checks).toEqual([{ key: '["shopping-list","coffee"]', checked: 0, packages: 3 }]);
+
+    // A rejected item writes neither the product nor its list membership.
+    expect(
+      (await send("shopping-items", "PUT", JSON.stringify({ ...coffee, id: "blank", name: " " }))).status,
+    ).toBe(400);
+    expect((await state()).groceries.map((item) => item.id)).toEqual(["coffee"]);
+    expect((await state()).checks).toHaveLength(1);
+  });
   it("persists independent extras and ingredient checks, and deletes only the requested extra", async () => {
     expect(
       (await send("extras", "PUT", JSON.stringify({ id: "snack", name: "Apples", checked: 0 }))).status,

@@ -66,7 +66,9 @@ try {
   const page = await context.newPage();
   page.on("pageerror", (error: Error) => errors.push(error.message));
   page.on("request", (request: Playwright.Request) => {
-    const kind = new URL(request.url()).pathname.split("/")[2];
+    const segment = new URL(request.url()).pathname.split("/")[2];
+    // Quick add creates a catalog item through its own list endpoint.
+    const kind = segment === "shopping-items" ? "groceries" : segment;
     if (!["PUT", "POST"].includes(request.method()) || !isOwnedKind(kind)) return;
     const body: unknown = request.postDataJSON();
     if (typeof body === "object" && body !== null && "id" in body && typeof body.id === "string" &&
@@ -379,26 +381,26 @@ try {
     await pause();
 
     await chapter(
-      "07 · Extras and focus mode",
-      "Household extras are independent of meal plans. Add and check an extra, use the immersive shopping view, return to navigation, then remove the extra.",
+      "07 · Quick add and focus mode",
+      "Quick add saves a new grocery for next time and puts it on the list. Add one, use the immersive shopping view, pick it up, then return to navigation.",
     );
-    await click(page.getByRole("link", { name: "Extras", exact: true }));
     await page.getByLabel("New household item").fill(extraName);
     await click(page.getByRole("button", { name: "Add household item", exact: true }));
-    data = await persisted((h) => h.extras.some((e) => e.name === extraName));
-    const extra = data.extras.find((e) => e.name === extraName);
-    assert(extra, "Saved demo extra must exist");
-    const extraId = extra.id;
-    owned.extras.add(extraId);
-    await click(page.locator(".extra-item").filter({ hasText: extraName }).locator('input[type="checkbox"]'));
-    await persisted((h) => h.extras.find((e) => e.id === extraId)?.checked === 1);
+    const create = page.getByRole("button", { name: `Create “${extraName}”`, exact: true });
+    if (await create.isVisible()) await click(create);
+    data = await persisted((h) => h.groceries.some((g) => g.name === extraName));
+    const extra = data.groceries.find((g) => g.name === extraName);
+    assert(extra, "Saved demo grocery must exist");
+    const extraKey = JSON.stringify(["shopping-list", extra.id]);
+    owned.groceries.add(extra.id);
+    await persisted((h) => h.checks.some((c) => c.key === extraKey && c.checked === 0));
     await click(page.getByRole("button", { name: "Shopping mode", exact: true }));
     await pause();
     assert(await page.locator(".shopping-mode").isVisible());
     await capture("mobile-focus");
+    await click(page.getByRole("checkbox", { name: `Picked up ${extraName}`, exact: true }));
+    await persisted((h) => !h.checks.some((c) => c.key === extraKey && c.checked === 0));
     await click(page.getByRole("button", { name: "Exit shopping mode", exact: true }));
-    await click(page.getByRole("button", { name: `Remove ${extraName}`, exact: true }));
-    await persisted((h) => !h.extras.some((e) => e.name === extraName));
 
     await nav("recipes");
     await chapter(
@@ -546,7 +548,7 @@ try {
     const current = await household();
     for (const kind of ["extras", "meals", "recipes", "groceries", "collections"] as const) {
       for (const item of current[kind])
-        if (owned[kind].has(item.id) || ("name" in item && kind === "extras" && item.name === extraName))
+        if (owned[kind].has(item.id) || ("name" in item && kind === "groceries" && item.name === extraName))
           await restore(`${kind}/${encodeURIComponent(item.id)}`, "DELETE");
     }
     const after = await household();

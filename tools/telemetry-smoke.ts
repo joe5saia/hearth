@@ -132,7 +132,7 @@ const server = createServer(async (request, response) => {
     if (path.startsWith("/api/")) {
       const chunks: Buffer[] = [];
       for await (const chunk of request) chunks.push(chunk);
-      if (failNetwork && path === "/api/extras") {
+      if (failNetwork && path === "/api/shopping-items") {
         // Keep the fault active through any automatic transport-level retries.
         request.socket.destroy();
         return;
@@ -178,8 +178,9 @@ const waitFor = async (predicate: () => boolean, label: string) => {
 
 try {
   const db = await worker.getD1Database("DB");
+  // Quick add saves a catalog item and its list membership in one write.
   const savedExtra = async (name: string) => Schema.decodeUnknownSync(Schema.NullOr(IdSchema))(
-    await db.prepare("SELECT id FROM extras WHERE name=?").bind(name).first("id"),
+    await db.prepare("SELECT id FROM groceries WHERE name=? AND EXISTS (SELECT 1 FROM checks WHERE key=json_array('shopping-list',groceries.id) AND checked=0)").bind(name).first("id"),
   );
   for (const file of (await readdir("migrations")).filter(file => file.endsWith(".sql")).sort()) {
     const sql = await readFile(`migrations/${file}`, "utf8");
@@ -210,6 +211,8 @@ try {
   const submitExtra = async (name: string) => {
     await browser("fill", ".extra-form input", name);
     await browser("click", '[aria-label="Add household item"]');
+    // Smoke names share words with each other and the fixture catalog, so confirm a new item when offered.
+    await browser("eval", "document.querySelector('.extra-matches .secondary')?.click(); true");
   };
   const privateName = "PRIVATE-BROWSER-CONTENT-NEVER-EXPORT";
   await submitExtra(privateName);
@@ -218,13 +221,13 @@ try {
   assert(saved);
   const mutation = events.find(event => event.event === "browser_mutation" && event.outcome === "success");
   assert(mutation, "Successful mutation must be present before checking correlation");
-  assert(events.some(event => event.event === "server_request" && event.operation === "extras" && event.operationId === mutation.relatedOperationId));
-  const request = events.find(event => event.event === "browser_request" && event.operation === "extras" && event.relatedOperationId === mutation.relatedOperationId);
+  assert(events.some(event => event.event === "server_request" && event.operation === "shopping-items" && event.operationId === mutation.relatedOperationId));
+  const request = events.find(event => event.event === "browser_request" && event.operation === "shopping-items" && event.relatedOperationId === mutation.relatedOperationId);
   assert(request, "Successful mutation must have a correlated browser request");
   assert(events.some(event => event.event === "server_request" && event.traceId === request.relatedTraceId && event.requestId === request.relatedRequestId));
   assert(events.some(event => event.event === "browser_household" && event.initial === true && event.bytes !== undefined && event.bytes > 1000 && event.outcome === "success"));
   console.log("PASS browser→write→refresh correlation, initial payload/download/decode measurements and D1 persistence");
-  failWrite = "/api/extras";
+  failWrite = "/api/shopping-items";
   await submitExtra("Private rejected extra");
   await waitFor(() => events.some(event => event.event === "browser_mutation" && event.outcome === "error" && event.acknowledged === false), "rejected write is not reported as acknowledged");
   assert.equal(await savedExtra("Private rejected extra"), null);
@@ -264,8 +267,8 @@ try {
   for (const secret of ["PRIVATE-ERROR-NEVER-EXPORT", "PRIVATE-REJECTION-NEVER-EXPORT", "PRIVATE-INVALID-HOUSEHOLD", "private.example", "disposable-browser-ingestion"]) assert(!payloads.join("\n").includes(secret));
   console.log("PASS no user content, error text, URLs or ingestion token in exported payloads");
   if (live) {
-    await waitFor(() => acceptedEvents.some(event => event.event === "browser_mutation" && event.relatedOperationId === mutation.relatedOperationId) && acceptedEvents.some(event => event.event === "server_request" && event.traceId === request.relatedTraceId) && acceptedSpans.some(span => span.traceId === request.relatedTraceId && span.name === "PUT extras") && ["LCP", "INP", "CLS", "FCP", "TTFB"].every(metric => acceptedEvents.some(event => event.event === "browser_vital" && event.metric === metric)), "live Axiom accepted correlated browser/server events, all five Web Vitals and OTLP request spans");
-    const root = acceptedSpans.find(span => span.traceId === request.relatedTraceId && span.name === "PUT extras");
+    await waitFor(() => acceptedEvents.some(event => event.event === "browser_mutation" && event.relatedOperationId === mutation.relatedOperationId) && acceptedEvents.some(event => event.event === "server_request" && event.traceId === request.relatedTraceId) && acceptedSpans.some(span => span.traceId === request.relatedTraceId && span.name === "PUT shopping-items") && ["LCP", "INP", "CLS", "FCP", "TTFB"].every(metric => acceptedEvents.some(event => event.event === "browser_vital" && event.metric === metric)), "live Axiom accepted correlated browser/server events, all five Web Vitals and OTLP request spans");
+    const root = acceptedSpans.find(span => span.traceId === request.relatedTraceId && span.name === "PUT shopping-items");
     assert(root, "Live ingestion must accept the correlated request root span");
     assert(acceptedSpans.some(span => span.traceId === root.traceId && span.parentSpanId === root.spanId && span.name === "api.operation"));
     assert(!deliveries.some(delivery => delivery.status < 200 || delivery.status >= 300 || delivery.rejected > 0), `Live Axiom delivery failed: ${JSON.stringify(deliveries)}`);
@@ -277,7 +280,7 @@ try {
   await browser("set", "viewport", "390", "844", "2");
   await browser("wait", ".extra-form");
   await submitExtra("Private ingestion outage success");
-  await browser("wait", "--fn", "(() => { const input = document.querySelector('.extra-form input'); return input instanceof HTMLInputElement && input.value === '' && document.querySelector('.extra-items')?.textContent?.includes('Private ingestion outage success'); })()");
+  await browser("wait", "--fn", "(() => { const input = document.querySelector('.extra-form input'); return input instanceof HTMLInputElement && input.value === '' && document.querySelector('.shopping-panel')?.textContent?.includes('Private ingestion outage success'); })()");
   assert(await savedExtra("Private ingestion outage success"));
   await waitFor(() => events.some(event => event.event === "browser_mutation" && event.device === "narrow" && event.outcome === "success"), "narrow-screen browser measurements exported during ingestion failure");
   console.log("PASS ingestion outage does not break UI saves or persisted state");
@@ -286,7 +289,7 @@ try {
   await browser("wait", ".extra-form");
   const before = events.filter(event => String(event.event).startsWith("browser_")).length;
   await submitExtra("Private disabled telemetry success");
-  await browser("wait", "--fn", "(() => { const input = document.querySelector('.extra-form input'); return input instanceof HTMLInputElement && input.value === '' && document.querySelector('.extra-items')?.textContent?.includes('Private disabled telemetry success'); })()");
+  await browser("wait", "--fn", "(() => { const input = document.querySelector('.extra-form input'); return input instanceof HTMLInputElement && input.value === '' && document.querySelector('.shopping-panel')?.textContent?.includes('Private disabled telemetry success'); })()");
   await new Promise(resolve => setTimeout(resolve, 6000));
   assert.equal(events.filter(event => String(event.event).startsWith("browser_")).length, before);
   console.log("PASS disabled ingestion negotiation suppresses browser exports without blocking saves");

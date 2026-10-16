@@ -410,19 +410,31 @@ async function shoppingAndTimers(page: Page, touch: boolean, label: string, capt
     assert.equal(await page.locator(".shopping-range").count(), 0);
     await activate(page.getByRole("button", { name: "List Builder", exact: true }), touch);
     assert.equal(await page.locator(".purchase-row").count(), original.groceries.length);
-    const extraName = `UI smoke extra ${Date.now()}`;
+    const existing = original.groceries[0];
+    if (existing) {
+      await page.getByLabel("New household item").fill(existing.name.toUpperCase());
+      await activate(page.getByRole("button", { name: "Add household item" }), touch);
+      await page.getByRole("button", { name: `Use existing ${existing.name}` }).waitFor();
+      await activate(page.getByRole("button", { name: "Cancel", exact: true }), touch);
+      await page.locator(".extra-matches").waitFor({ state: "detached" });
+    }
+    const extraName = `Quick add smoke ${Date.now()}`;
     tempExtraNames.add(extraName);
     await page.getByLabel("New household item").fill(extraName);
+    await page.getByLabel("Aisle for this item (optional)").fill("Smoke aisle");
     await activate(page.getByRole("button", { name: "Add household item" }), touch);
-    const removeExtra = page.getByRole("button", { name: `Remove ${extraName}` });
-    await removeExtra.waitFor();
-    const addedExtra = (await household()).extras.find((entry) => entry.name === extraName);
-    assert(addedExtra, "temporary household extra was not persisted");
-    tempExtraIds.add(addedExtra.id);
-    await activate(removeExtra, touch);
-    await removeExtra.waitFor({ state: "detached" });
-    assert(!(await household()).extras.some((entry) => entry.id === addedExtra.id), "own extra was not removed");
-    tempExtraIds.delete(addedExtra.id);
+    const create = page.getByRole("button", { name: `Create “${extraName}”` });
+    if (await create.isVisible()) await activate(create, touch);
+    await page.getByRole("checkbox", { name: `Off list ${extraName}` }).waitFor();
+    const added = (await household()).groceries.find((entry) => entry.name === extraName);
+    assert(added, "quick-added grocery was not persisted");
+    tempExtraIds.add(added.id);
+    assert.equal(added.aisle, "Smoke aisle");
+    assert((await household()).checks.some((entry) => entry.key === JSON.stringify(["shopping-list", added.id]) && entry.checked === 0), "quick-added grocery is not on the list");
+    await api(`groceries/${encodeURIComponent(added.id)}`, "DELETE");
+    tempExtraIds.delete(added.id);
+    await page.goto(`${root}/#shopping`); await settle(page);
+    await activate(page.getByRole("button", { name: "List Builder", exact: true }), touch);
     const grips = page.locator('[aria-label^="Drag "]');
     const details = page.locator('[aria-label^="Details for "]');
     if (await grips.count() && await details.count()) {
@@ -884,7 +896,7 @@ try {
         await api("shopping-aisles", "PUT", { from, to });
     }
     const current = await household();
-    for (const extra of current.extras) if (tempExtraIds.has(extra.id) || tempExtraNames.has(extra.name)) await api(`extras/${encodeURIComponent(extra.id)}`, "DELETE");
+    for (const grocery of current.groceries) if (tempExtraIds.has(grocery.id) || tempExtraNames.has(grocery.name)) await api(`groceries/${encodeURIComponent(grocery.id)}`, "DELETE");
     if (changedOrder && JSON.stringify(current.shoppingOrder) !== JSON.stringify(original.shoppingOrder)) await api("shopping-order", "PUT", original.shoppingOrder);
     const allCheckKeys = new Set([...changedChecks, ...current.checks.map((entry) => entry.key), ...original.checks.map((entry) => entry.key)]);
     for (const key of allCheckKeys) {

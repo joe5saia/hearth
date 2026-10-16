@@ -13,6 +13,7 @@ import { FeedbackForm } from "./FeedbackForm";
 import { feedbackURL, type FeedbackInput } from "./feedback-contract";
 import { browserEvent, browserOperation, browserResponse } from "./browser-observability";
 import { matchGrocery } from "./groceries";
+import { GrocerySearch } from "./ingredient-matching";
 import { MatchReportSchema } from "./domain";
 import {
   ArrowDownToLine,
@@ -343,6 +344,9 @@ export function App() {
   const mealDrafts = useRef(new Map<string, MealDraft>());
   const routeLoaded = useRef(false);
   const [extra, setExtra] = useState("");
+  const [extraAisle, setExtraAisle] = useState("");
+  // Possible existing catalog items for the typed name; null until the add form is submitted.
+  const [extraMatches, setExtraMatches] = useState<readonly GroceryItem[] | null>(null);
   const builderSearch = search;
   const [debouncedBuilderSearch, setDebouncedBuilderSearch] = useState("");
   const [shoppingPending, setShoppingPending] = useState(0);
@@ -1001,6 +1005,38 @@ export function App() {
   const completed = items.filter((item) => isChecked(checkKey(item))).length;
   const totalItems = items.length + data.extras.length;
   const totalCompleted = completed + data.extras.filter((item) => item.checked).length;
+
+  const resetExtra = () => {
+    setExtra("");
+    setExtraAisle("");
+    setExtraMatches(null);
+  };
+
+  // Quick add saves a minimal catalog item (name and aisle) and puts it on the list in one write.
+  const createExtraGrocery = async () => {
+    const name = extra.trim();
+    setBusy(true);
+    await shoppingWrites.current;
+
+    if (
+      await mutate(
+        "shopping-items",
+        "PUT",
+        { ...newGrocery(name), aisle: extraAisle.trim() },
+        `Added ${name}`,
+      )
+    )
+      resetExtra();
+  };
+
+  const addExistingGrocery = (item: GroceryItem) => {
+    const key = JSON.stringify(["shopping-list", item.id]);
+    const onList = !isChecked(key);
+
+    if (!onList) void saveShoppingEdit({ kind: "check", key, checked: 0 });
+    setToast(onList ? `${item.name} is already on your list` : `Added ${item.name}`);
+    resetExtra();
+  };
 
   if (page === "recipe-checklist")
     return (
@@ -1778,38 +1814,109 @@ export function App() {
                   <aside className="shopping-side">
                     <section className="extras-panel">
                       <h2>Household extras</h2>
-                      <p>Added manually, independently of your meal plan.</p>
+                      <p>Add anything to your list. New items are saved to Groceries for next time.</p>
                       <form
                         className="extra-form"
                         onSubmit={async (event) => {
                           event.preventDefault();
+                          const name = extra.trim();
+                          const key = name.toLowerCase();
 
-                          if (
-                            await mutate("extras", "PUT", {
-                              id: crypto.randomUUID(),
-                              name: extra,
-                              checked: 0,
-                            })
-                          )
-                            setExtra("");
+                          // Offer similar catalog items first; exact name or alias matches lead.
+                          const matches = new GrocerySearch(data.groceries)
+                            .candidates(name, name)
+                            .sort(
+                              (a, b) =>
+                                Number(
+                                  [b.name, ...b.aliases].some((alias) => alias.trim().toLowerCase() === key),
+                                ) -
+                                Number(
+                                  [a.name, ...a.aliases].some((alias) => alias.trim().toLowerCase() === key),
+                                ),
+                            )
+                            .slice(0, 4);
+
+                          if (matches.length) setExtraMatches(matches);
+                          else await createExtraGrocery();
                         }}
                       >
                         <input
                           aria-label="New household item"
                           placeholder="e.g. coffee, apples, oat milk"
                           required
-                          maxLength={200}
+                          maxLength={150}
                           value={extra}
-                          onChange={(event) => setExtra(event.target.value)}
+                          onChange={(event) => {
+                            setExtra(event.target.value);
+                            setExtraMatches(null);
+                          }}
                         />
+                        <input
+                          className="extra-aisle"
+                          aria-label="Aisle for this item (optional)"
+                          placeholder="Aisle (optional)"
+                          list="extra-aisles"
+                          maxLength={150}
+                          value={extraAisle}
+                          onChange={(event) => setExtraAisle(event.target.value)}
+                        />
+                        <datalist id="extra-aisles">
+                          {aisles.map((aisle) => (
+                            <option key={aisle} value={aisle} />
+                          ))}
+                        </datalist>
                         <button
                           className="primary"
                           aria-label="Add household item"
-                          disabled={busy || !extra.trim()}
+                          disabled={busy || !extra.trim() || extraMatches !== null}
                         >
                           <Plus size={18} />
                         </button>
                       </form>
+                      {extraMatches && (
+                        <div className="extra-matches" role="group" aria-labelledby="extra-matches-title">
+                          <h3 id="extra-matches-title">Did you mean…</h3>
+                          {extraMatches.map((item, index) => (
+                            <button
+                              type="button"
+                              className="extra-match"
+                              key={item.id}
+                              aria-label={`Use existing ${item.name}`}
+                              autoFocus={index === 0}
+                              disabled={busy}
+                              onClick={() => addExistingGrocery(item)}
+                            >
+                              <span>
+                                <strong>{item.name}</strong>
+                                <small>
+                                  {item.aisle ? `Aisle ${item.aisle}` : "No aisle"}
+                                  {isChecked(JSON.stringify(["shopping-list", item.id]))
+                                    ? ""
+                                    : " · On your list"}
+                                </small>
+                              </span>
+                              <span className="extra-match-use">Use</span>
+                            </button>
+                          ))}
+                          <div className="extra-match-actions">
+                            <button
+                              type="button"
+                              className="secondary"
+                              disabled={busy}
+                              onClick={() => void createExtraGrocery()}
+                            >
+                              <Plus size={16} /> Create “{extra.trim()}”
+                            </button>
+                            <button
+                              type="button"
+                              className="text-button"
+                              onClick={() => setExtraMatches(null)}
+                            >
+                              Cancel
+                            </button>
+                          </div>
+                        </div>
+                      )}
                       <div className="extra-items">
                         {data.extras.map((item) =>
                           hideChecked && item.checked ? null : (
