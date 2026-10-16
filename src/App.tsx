@@ -42,6 +42,7 @@ import {
   Pencil,
   Package,
   MessageCircle,
+  ArrowUpDown,
 } from "lucide-react";
 import {
   addDays,
@@ -1508,8 +1509,9 @@ export function App() {
                     </select>
                     <ChevronDown size={16} aria-hidden="true" />
                   </label>
-                  <label>
+                  <label className="recipe-sort">
                     <span className="sr-only">Sort</span>
+                    <ArrowUpDown size={17} aria-hidden="true" />
                     <select
                       aria-label="Sort recipes"
                       value={recipeSort}
@@ -1517,9 +1519,10 @@ export function App() {
                     >
                       <option value="az">A–Z</option>
                       <option value="za">Z–A</option>
-                      <option value="newest">Newest added</option>
-                      <option value="oldest">Oldest added</option>
+                      <option value="newest">Newest</option>
+                      <option value="oldest">Oldest</option>
                     </select>
+                    <ChevronDown size={16} aria-hidden="true" />
                   </label>
                 </div>
                 <p className="muted small">

@@ -776,20 +776,24 @@ main {
   min-width: 0;
   max-width: 260px;
 }
-.recipe-toolbar .collection-filter {
+.recipe-toolbar .collection-filter,
+.recipe-toolbar .recipe-sort {
   position: relative;
   color: var(--olive);
 }
-.collection-filter > svg {
+.collection-filter > svg,
+.recipe-sort > svg {
   position: absolute;
   pointer-events: none;
   left: 14px;
 }
-.collection-filter > svg:last-child {
+.collection-filter > svg:last-child,
+.recipe-sort > svg:last-child {
   left: auto;
   right: 12px;
 }
-.recipe-toolbar .collection-filter select {
+.recipe-toolbar .collection-filter select,
+.recipe-toolbar .recipe-sort select {
   appearance: none;
   width: 100%;
   min-height: 44px;
