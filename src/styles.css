@@ -1170,7 +1170,10 @@ main {
   margin-top: 4px;
 }
 .extra-match-actions .secondary {
+  max-width: 100%;
+  white-space: normal;
   overflow-wrap: anywhere;
+  text-align: left;
 }
 .extra-form input {
   min-width: 0;

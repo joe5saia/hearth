@@ -347,6 +347,7 @@ export function App() {
   const [extraAisle, setExtraAisle] = useState("");
   // Possible existing catalog items for the typed name; null until the add form is submitted.
   const [extraMatches, setExtraMatches] = useState<readonly GroceryItem[] | null>(null);
+  const extraInput = useRef<HTMLInputElement>(null);
   const builderSearch = search;
   const [debouncedBuilderSearch, setDebouncedBuilderSearch] = useState("");
   const [shoppingPending, setShoppingPending] = useState(0);
@@ -1006,10 +1007,16 @@ export function App() {
   const totalItems = items.length + data.extras.length;
   const totalCompleted = completed + data.extras.filter((item) => item.checked).length;
 
+  // The focused suggestion disappears with the panel, so return focus to the name field.
+  const closeExtraMatches = () => {
+    setExtraMatches(null);
+    extraInput.current?.focus();
+  };
+
   const resetExtra = () => {
     setExtra("");
     setExtraAisle("");
-    setExtraMatches(null);
+    closeExtraMatches();
   };
 
   // Quick add saves a minimal catalog item (name and aisle) and puts it on the list in one write.
@@ -1819,28 +1826,31 @@ export function App() {
                         className="extra-form"
                         onSubmit={async (event) => {
                           event.preventDefault();
-                          const name = extra.trim();
-                          const key = name.toLowerCase();
 
-                          // Offer similar catalog items first; exact name or alias matches lead.
-                          const matches = new GrocerySearch(data.groceries)
-                            .candidates(name, name)
-                            .sort(
-                              (a, b) =>
-                                Number(
-                                  [b.name, ...b.aliases].some((alias) => alias.trim().toLowerCase() === key),
-                                ) -
-                                Number(
-                                  [a.name, ...a.aliases].some((alias) => alias.trim().toLowerCase() === key),
-                                ),
-                            )
-                            .slice(0, 4);
+                          // Saving clears the error banner, which would hide a failed queued list change.
+                          if (shoppingPending > 0) return;
+                          const name = extra.trim();
+                          const normalize = (text: string) => text.trim().replace(/\s+/g, " ").toLowerCase();
+                          const key = normalize(name);
+
+                          // Exact name/alias matches lead; lexical search ignores digits and preparation words.
+                          const exact = data.groceries.filter((item) =>
+                            [item.name, ...item.aliases].some((alias) => normalize(alias) === key),
+                          );
+
+                          const matches = [
+                            ...new Set([
+                              ...exact,
+                              ...new GrocerySearch(data.groceries).candidates(name, name),
+                            ]),
+                          ].slice(0, 4);
 
                           if (matches.length) setExtraMatches(matches);
                           else await createExtraGrocery();
                         }}
                       >
                         <input
+                          ref={extraInput}
                           aria-label="New household item"
                           placeholder="e.g. coffee, apples, oat milk"
                           required
@@ -1868,7 +1878,7 @@ export function App() {
                         <button
                           className="primary"
                           aria-label="Add household item"
-                          disabled={busy || !extra.trim() || extraMatches !== null}
+                          disabled={busy || shoppingPending > 0 || !extra.trim() || extraMatches !== null}
                         >
                           <Plus size={18} />
                         </button>
@@ -1882,13 +1892,14 @@ export function App() {
                               className="extra-match"
                               key={item.id}
                               aria-label={`Use existing ${item.name}`}
+                              aria-describedby={`extra-match-${index}`}
                               autoFocus={index === 0}
                               disabled={busy}
                               onClick={() => addExistingGrocery(item)}
                             >
                               <span>
                                 <strong>{item.name}</strong>
-                                <small>
+                                <small id={`extra-match-${index}`}>
                                   {item.aisle ? `Aisle ${item.aisle}` : "No aisle"}
                                   {isChecked(JSON.stringify(["shopping-list", item.id]))
                                     ? ""
@@ -1902,16 +1913,12 @@ export function App() {
                             <button
                               type="button"
                               className="secondary"
-                              disabled={busy}
+                              disabled={busy || shoppingPending > 0}
                               onClick={() => void createExtraGrocery()}
                             >
                               <Plus size={16} /> Create “{extra.trim()}”
                             </button>
-                            <button
-                              type="button"
-                              className="text-button"
-                              onClick={() => setExtraMatches(null)}
-                            >
+                            <button type="button" className="text-button" onClick={closeExtraMatches}>
                               Cancel
                             </button>
                           </div>

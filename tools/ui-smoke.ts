@@ -417,6 +417,7 @@ async function shoppingAndTimers(page: Page, touch: boolean, label: string, capt
       await page.getByRole("button", { name: `Use existing ${existing.name}` }).waitFor();
       await activate(page.getByRole("button", { name: "Cancel", exact: true }), touch);
       await page.locator(".extra-matches").waitFor({ state: "detached" });
+      assert.equal(await page.evaluate(() => document.activeElement?.getAttribute("aria-label")), "New household item", "Cancel returns focus to the name field");
     }
     const extraName = `Quick add smoke ${Date.now()}`;
     tempExtraNames.add(extraName);
@@ -433,8 +434,47 @@ async function shoppingAndTimers(page: Page, touch: boolean, label: string, capt
     assert((await household()).checks.some((entry) => entry.key === JSON.stringify(["shopping-list", added.id]) && entry.checked === 0), "quick-added grocery is not on the list");
     await api(`groceries/${encodeURIComponent(added.id)}`, "DELETE");
     tempExtraIds.delete(added.id);
-    await page.goto(`${root}/#shopping`); await settle(page);
-    await activate(page.getByRole("button", { name: "List Builder", exact: true }), touch);
+
+    // A digits-only alias has no lexical search terms, so only the exact-match lookup can offer it.
+    const digits = String(Date.now());
+    const exact = { id: `quick-add-exact-${digits}`, name: `Quick add exact ${digits}`, url: "", aisle: "", quantity: 1, unit: "each", aliases: [digits] };
+    tempExtraIds.add(exact.id);
+    tempExtraNames.add(digits);
+    await api("groceries", "PUT", exact);
+    // A same-hash goto keeps the loaded household; reload to read the API-created grocery.
+    await page.reload(); await settle(page);
+    const before = (await household()).groceries.length;
+    const useExact = page.getByRole("button", { name: `Use existing ${exact.name}` });
+    await page.getByLabel("New household item").fill(digits);
+    await activate(page.getByRole("button", { name: "Add household item" }), touch);
+    await useExact.waitFor();
+    assert.equal(await useExact.getAttribute("aria-describedby").then((id) => page.locator(`[id="${id}"]`).textContent()), "No aisle", "suggestion describes its aisle and list status");
+    // Hold the membership write open: quick-add must wait so its save cannot hide this write's outcome.
+    let releaseCheck = () => {};
+    const held = new Promise<void>((resolve) => { releaseCheck = resolve; });
+    await page.route("**/api/checks", async (route) => { await held; await route.continue(); });
+    await activate(useExact, touch);
+    assert.equal(await page.evaluate(() => document.activeElement?.getAttribute("aria-label")), "New household item", "Use returns focus to the name field");
+    await page.getByLabel("New household item").fill(`Quick add pending ${digits}`);
+    assert(await page.getByRole("button", { name: "Add household item" }).isDisabled(), "quick-add waits for pending list writes");
+    releaseCheck();
+    await page.locator(".shopping-save-status").waitFor({ state: "detached" });
+    await page.unroute("**/api/checks");
+    assert(await page.getByRole("button", { name: "Add household item" }).isEnabled(), "quick-add resumes after list writes settle");
+    assert((await household()).checks.some((entry) => entry.key === JSON.stringify(["shopping-list", exact.id]) && entry.checked === 0), "Use existing puts the grocery on the list");
+    await page.getByLabel("New household item").fill(digits);
+    await activate(page.getByRole("button", { name: "Add household item" }), touch);
+    await useExact.waitFor();
+    assert.equal(await useExact.getAttribute("aria-describedby").then((id) => page.locator(`[id="${id}"]`).textContent()), "No aisle · On your list");
+    await activate(useExact, touch);
+    await page.locator(".toast", { hasText: `${exact.name} is already on your list` }).waitFor();
+    assert.equal((await household()).groceries.length, before, "Use existing never creates a grocery");
+    await api(`groceries/${encodeURIComponent(exact.id)}`, "DELETE");
+    tempExtraIds.delete(exact.id);
+    // Reload keeps the current history entry's view mode; continue in List Builder either way.
+    await page.reload(); await settle(page);
+    if (!(await page.getByRole("button", { name: "Exit List Builder", exact: true }).count()))
+      await activate(page.getByRole("button", { name: "List Builder", exact: true }), touch);
     const grips = page.locator('[aria-label^="Drag "]');
     const details = page.locator('[aria-label^="Details for "]');
     if (await grips.count() && await details.count()) {
