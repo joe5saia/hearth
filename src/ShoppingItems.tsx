@@ -589,7 +589,10 @@ export function ShoppingItems({
                         <span className="item-info">
                           <span className="item-heading">
                             <strong>{item.name}</strong>
-                            <span className="purchase-amount">{displayAmount(item.grocery)}</span>
+                            <span className="purchase-amount">
+                              {item.packages && item.packages > 1 ? `${item.packages} × ` : ""}
+                              {displayAmount(item.grocery)}
+                            </span>
                           </span>
                         </span>
                       </label>

@@ -5,7 +5,7 @@ import {
   IdSchema,
   MealSchema,
   ExtraSchema,
-  CheckSchema,
+  CheckWriteSchema,
   ShoppingOrderSchema,
   DateSchema,
   type Collection,
@@ -176,10 +176,10 @@ export const saveExtra = (db: D1Database, input: Extra) =>
 export const deleteExtra = (db: D1Database, id: string) =>
   database(() => db.prepare("DELETE FROM extras WHERE id=?").bind(id).run()).pipe(Effect.as(ok));
 
-/** Stores only nondefault checks, guarding catalog membership against grocery deletion. */
-export const setShoppingChecked = (db: D1Database, input: typeof CheckSchema.Type) =>
+/** Saves membership/counts atomically; conditional additions and omitted counts preserve existing amounts. */
+export const setShoppingChecked = (db: D1Database, input: typeof CheckWriteSchema.Type) =>
   Effect.gen(function* () {
-    const check = yield* validate(CheckSchema, input, "Invalid shopping item.");
+    const check = yield* validate(CheckWriteSchema, input, "Invalid shopping item.");
     // Catalog checks default to 1; retain only the unchecked/on-list exception.
     // Legacy recipe check identities defaulted to 0 and remain readable without a migration.
     const defaultChecked = check.key.startsWith('["shopping-list",') ? 1 : 0;
@@ -190,11 +190,20 @@ export const setShoppingChecked = (db: D1Database, input: typeof CheckSchema.Typ
         ? db.prepare("DELETE FROM checks WHERE key=?").bind(check.key).run()
         : db
             .prepare(
-              `INSERT INTO checks(key,checked) SELECT ?,? WHERE ?=0 OR EXISTS
+              `INSERT INTO checks(key,checked,packages) SELECT ?,?,COALESCE(?,1) WHERE ?=0 OR EXISTS
                 (SELECT 1 FROM groceries WHERE json_array('shopping-list',id)=?)
-                ON CONFLICT(key) DO UPDATE SET checked=excluded.checked`,
+                ON CONFLICT(key) DO UPDATE SET checked=excluded.checked,
+                packages=CASE WHEN ? THEN checks.packages ELSE COALESCE(?,checks.packages) END`,
             )
-            .bind(check.key, check.checked, defaultChecked, check.key)
+            .bind(
+              check.key,
+              check.checked,
+              check.packages ?? null,
+              defaultChecked,
+              check.key,
+              check.onlyIfAbsent ? 1 : 0,
+              check.packages ?? null,
+            )
             .run(),
     );
 

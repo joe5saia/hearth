@@ -180,9 +180,11 @@ try {
     await saveVisible("Save grocery item");
     await dialog().getByLabel("Store product name").fill(productName);
     await dialog().getByLabel("Aisle (optional)").fill("7");
-    await dialog().getByLabel("Package quantity").fill("500");
+    await dialog().getByLabel("Package quantity", { exact: true }).selectOption("500");
     await dialog().getByLabel("Package unit").selectOption("g");
-    await dialog().getByLabel("Alternate ingredient names").fill("brown rice");
+    await click(dialog().getByRole("button", { name: "Add Alternative", exact: true }));
+    await dialog().getByLabel("Alternative 1", { exact: true }).fill("brown rice");
+    await dialog().getByLabel("Alternative 1", { exact: true }).press("Enter");
     await click(dialog().getByRole("button", { name: "Save grocery item" }));
     let data = await persisted((h) => h.groceries.some((g) => g.name === productName));
     const product = data.groceries.find((g) => g.name === productName);
@@ -233,7 +235,9 @@ try {
     await dialog().getByLabel("Ingredient 1 unit").selectOption("g");
     await dialog().getByLabel("Grocery item for ingredient 1").selectOption(product.id);
     await click(dialog().getByRole("button", { name: "Edit product", exact: true }));
-    await dialog().getByLabel("Alternate ingredient names").fill("brown rice\nwholegrain rice");
+    await click(dialog().getByRole("button", { name: "Add Alternative", exact: true }));
+    await dialog().getByLabel("Alternative 2", { exact: true }).fill("wholegrain rice");
+    await dialog().getByLabel("Alternative 2", { exact: true }).press("Enter");
     await click(dialog().getByRole("button", { name: "Save grocery item" }));
     assert.equal(
       await dialog().getByLabel("Recipe name", { exact: true }).inputValue(),
@@ -301,7 +305,7 @@ try {
         .inputValue(),
       note,
     );
-    await click(dialog().getByRole("button", { name: "Save to meal plan", exact: true }));
+    await click(dialog().getByRole("button", { name: "Save", exact: true }));
     data = await persisted((h) => h.meals.some((m) => m.recipeId === recipe.id));
     const meal = data.meals.find((m) => m.recipeId === recipe.id);
     assert(meal, "Saved demo meal must exist");
@@ -310,19 +314,19 @@ try {
     await click(page.getByLabel("Jump to date", { exact: true }));
     await page.getByLabel("Jump to week containing date").fill(date);
     await click(page.getByRole("button", { name: "Go to week", exact: true }));
-    await click(page.locator(".meal-card").filter({ hasText: recipeName }));
+    await click(page.getByRole("button", { name: `Actions for meal ${recipeName}`, exact: true }));
     await click(page.getByRole("button", { name: "Edit meal", exact: true }));
     await dialog()
       .getByLabel(/note for this meal/i)
       .fill(`${note} — save leftovers`);
-    await click(dialog().getByRole("button", { name: "Save to meal plan", exact: true }));
+    await click(dialog().getByRole("button", { name: "Save", exact: true }));
     await persisted((h) => h.meals.find((m) => m.id === meal.id)?.note.endsWith("save leftovers") === true);
     await click(page.getByRole("button", { name: "Add a meal", exact: true }));
     await dialog().getByLabel("Plan type").selectOption("note");
     await dialog().getByLabel("Date", { exact: true }).fill(date);
     await dialog().getByLabel("Meal").selectOption("Lunch");
     await dialog().getByLabel("What’s the plan?").fill(`Leftovers · ${stamp}`);
-    await click(dialog().getByRole("button", { name: "Save to meal plan", exact: true }));
+    await click(dialog().getByRole("button", { name: "Save", exact: true }));
     await persisted((h) => h.meals.some((m) => m.note === `Leftovers · ${stamp}`));
     await click(page.locator(".meal-card").filter({ hasText: `Leftovers · ${stamp}` }));
     await click(dialog().getByRole("button", { name: "Remove meal", exact: true }));
@@ -330,7 +334,7 @@ try {
 
     await chapter(
       "06 · Build a shopping list",
-      "List Builder shows the full grocery catalog. Uncheck a product to add it to the list, use Focus to shop, and arrange the store route with keyboard-accessible arrows. Recipes do not populate the list.",
+      "List Builder shows the full grocery catalog. Uncheck a product to add it to the list, use Shop Mode to shop, and arrange the store route with keyboard-accessible arrows. Recipes do not automatically populate the list.",
     );
     await click(page.getByRole("button", { name: "Shopping list", exact: true }));
     await click(page.getByRole("button", { name: "List Builder", exact: true }));
@@ -475,7 +479,7 @@ try {
     await click(page.getByLabel("Jump to date", { exact: true }));
     await page.getByLabel("Jump to week containing date").fill(date);
     await click(page.getByRole("button", { name: "Go to week", exact: true }));
-    await click(page.locator(".meal-card").filter({ hasText: recipeName }));
+    await click(page.getByRole("button", { name: `Actions for meal ${recipeName}`, exact: true }));
     await click(page.getByRole("button", { name: "Edit meal", exact: true }));
     await click(dialog().getByRole("button", { name: "Remove meal", exact: true }));
     await persisted((h) => !h.meals.some((m) => m.id === meal.id));
@@ -550,9 +554,10 @@ try {
       await restore("shopping-order", "PUT", original.shoppingOrder);
     for (const key of new Set([...after.checks, ...original.checks].map((check) => check.key))) {
       const fallback = key.startsWith('["shopping-list",') ? 1 : 0;
-      const wanted = original.checks.find((c) => c.key === key)?.checked ?? fallback;
-      const now = after.checks.find((c) => c.key === key)?.checked ?? fallback;
-      if (wanted !== now) await restore("checks", "PUT", { key, checked: wanted });
+      const wanted = original.checks.find((c) => c.key === key);
+      const now = after.checks.find((c) => c.key === key);
+      if ((wanted?.checked ?? fallback) !== (now?.checked ?? fallback) || (wanted?.packages ?? 1) !== (now?.packages ?? 1))
+        await restore("checks", "PUT", { key, checked: wanted?.checked ?? fallback, packages: wanted?.packages ?? 1 });
     }
     assert.deepEqual(await household(), original, "Exact original household must be restored");
     console.log("PASS demo cleanup: exact household restored");

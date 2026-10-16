@@ -16,6 +16,7 @@ import {
   GroceryItemSchema,
   MealSchema,
   ExtraSchema,
+  CheckSchema,
   CollectionSchema,
   ShoppingOrderSchema,
   MatchReportSchema,
@@ -495,7 +496,7 @@ export function recipeMcp(
         "get_shopping_list",
         {
           description:
-            "Read the manually built shopping list and household extras. Recipes and meals do not add items. Pass all=true for List Builder's complete grocery catalog: checked means off-list, unchecked means on-list. Default returns only on-list items. start/end are accepted for compatibility but do not affect membership. key is route order; checkKey is persistent grocery membership. Legacy needs/warnings/recipes arrays are empty; packages is 1, not a recipe calculation.",
+            "Read the manually built shopping list and household extras. Recipes and meals do not automatically add items. Pass all=true for List Builder's complete grocery catalog: checked means off-list, unchecked means on-list. Default returns only on-list items. start/end are accepted for compatibility but do not affect membership. key is route order; checkKey is persistent grocery membership. Legacy needs/warnings/recipes arrays are empty; packages is the saved whole-package count, defaulting to one. Grocery quantity/unit describe the size of one package.",
           inputSchema: mcpSchema(
             Schema.Struct({ ...range.fields, all: Schema.optionalKey(Schema.Boolean) }).check(
               Schema.makeFilter(({ start, end }) => start <= end, {
@@ -537,7 +538,7 @@ export function recipeMcp(
                 return {
                   start,
                   end,
-                  items: shoppingList(data.groceries, data.shoppingOrder)
+                  items: shoppingList(data.groceries, data.shoppingOrder, data.checks)
                     .map((item) => ({
                       ...item,
                       checkKey: checkKey(item),
@@ -580,11 +581,12 @@ export function recipeMcp(
         "set_shopping_checked",
         {
           description:
-            "Set persistent grocery list membership. checked=false adds an item; checked=true removes it. New groceries default to checked/off-list. Discover all items with get_shopping_list(all=true), then pass its exact checkKey as key, NOT its route-order key. Meal, recipe, date and package edits do not reset membership. For a manual extra use save_shopping_extra instead.",
+            "Set persistent grocery list membership. checked=false adds an item; checked=true removes it. Optional packages sets the whole number of packages to buy (1–1000000); omitted preserves an existing count or defaults to one. New groceries default to checked/off-list. Discover all items with get_shopping_list(all=true), then pass its exact checkKey as key, NOT its route-order key. Meal, recipe, date and catalog package edits do not reset membership or saved counts. For a manual extra use save_shopping_extra instead.",
           inputSchema: mcpSchema(
             Schema.Struct({
               key: Schema.String.check(Schema.isLengthBetween(1, 1000)),
               checked: Schema.Boolean,
+              packages: CheckSchema.fields.packages,
             }),
           ),
           outputSchema: mcpSchema(ok),
@@ -595,8 +597,12 @@ export function recipeMcp(
             openWorldHint: false,
           },
         },
-        ({ key, checked }, context) =>
-          result("set_shopping_checked", context, setShoppingChecked(db, { key, checked: checked ? 1 : 0 })),
+        ({ key, checked, packages }, context) =>
+          result(
+            "set_shopping_checked",
+            context,
+            setShoppingChecked(db, { key, checked: checked ? 1 : 0, packages }),
+          ),
       );
 
       server.registerTool(

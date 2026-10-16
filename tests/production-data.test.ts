@@ -47,7 +47,7 @@ it("imports complete household data into real D1, preserves large/NUL/Unicode va
     INSERT INTO recipes VALUES ('dinner','Chef''s dinner',${text(description)},3.5,27,'Family’s favorites',${text(photo)},'https://example.com/recipe',${text(ingredients)},${text(instructions)},'up');
     INSERT INTO meals VALUES ('planned','dinner','2026-10-16','Dinner',1.3333333333333333,'Leftovers');
     INSERT INTO meals VALUES ('note',NULL,'2026-10-17','Lunch',1,'Picnic');
-    INSERT INTO checks VALUES ('["shopping-list","oil"]',0);
+    INSERT INTO checks(key,checked,packages) VALUES ('["shopping-list","oil"]',0,3);
     INSERT INTO extras VALUES ('extra','Soap',1);
     INSERT INTO shopping_order VALUES (1,'["12"]','["grocery","oil"]');
     INSERT INTO ingredient_match_cache VALUES ('cache','{"model":"fixture"}',123456);

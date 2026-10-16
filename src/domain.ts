@@ -180,11 +180,26 @@ export const ExtraSchema = Schema.Struct({
   checked: Schema.Literals([0, 1]),
 });
 
-/** Persisted checked state keyed separately from grocery data. */
+/** Whole packages to buy; independent of the quantity contained in one catalog package. */
+export const PackageCountSchema = Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 1_000_000 }));
+
+/** Persisted list membership with an optional package count; omitted counts preserve existing amounts. */
 export const CheckSchema = Schema.Struct({
   key: Schema.String.check(Schema.isMaxLength(1000)),
   checked: Schema.Literals([0, 1]),
+  packages: Schema.optional(PackageCountSchema),
 });
+
+/** Conditional recipe additions preserve existing membership/counts; ordinary writes still replace counts. */
+export const CheckWriteSchema = Schema.Struct({
+  ...CheckSchema.fields,
+  onlyIfAbsent: Schema.optional(Schema.Literal(true)),
+}).check(
+  Schema.makeFilter(
+    (check) => !check.onlyIfAbsent || (check.checked === 0 && check.key.startsWith('["shopping-list",')),
+    { expected: "an unchecked catalog item for a conditional addition" },
+  ),
+);
 
 /** Allows legacy migration identifiers longer than newly written identifiers. */
 export const CollectionSchema = Schema.Struct({
@@ -393,18 +408,21 @@ export function savedOrder(a: string, b: string, order: readonly string[]): numb
   return (ai < 0 ? Infinity : ai) - (bi < 0 ? Infinity : bi) || 0;
 }
 
-/** Builds one-package manual rows, sorted by saved aisle/item preferences without mutating inputs. */
+/** Builds manual rows with saved package counts, sorted without changing catalog package sizes. */
 export function shoppingList(
   groceries: readonly GroceryItem[],
   order: ShoppingOrder = { aisles: [], items: [] },
+  checks: readonly (typeof CheckSchema.Type)[] = [],
 ): ShoppingItem[] {
+  const packages = new Map(checks.map((entry) => [entry.key, entry.packages ?? 1]));
+
   return groceries
     .map((grocery): ShoppingItem => ({
       key: JSON.stringify(["grocery", grocery.id]),
       name: grocery.name,
       grocery,
       needs: [],
-      packages: 1,
+      packages: packages.get(JSON.stringify(["shopping-list", grocery.id])) ?? 1,
       warnings: [],
       recipes: [],
     }))

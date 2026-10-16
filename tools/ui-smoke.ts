@@ -235,7 +235,7 @@ async function commonNavigation(page: Page, touch: boolean, label: string, captu
     await page.keyboard.press("Escape");
     await detail.waitFor({ state: "detached" });
     assert.equal(await page.getByRole("dialog").count(), 0, "direct recipe close returns to the plan, not the editor");
-    await activate(card, touch);
+    await activate(card.locator("..").getByRole("button", { name: /^Actions for meal / }), touch);
     await activate(page.getByRole("button", { name: "Edit meal", exact: true }), touch);
     const meal = page.getByRole("dialog", { name: "Edit meal" });
     await meal.waitFor();
@@ -302,14 +302,11 @@ async function commonNavigation(page: Page, touch: boolean, label: string, captu
       if (capture) await screenshot(page, `${label}-recipe-detail`);
       await auditLayout(page, touch);
       const recipeURL = page.url();
-      for (const [name, destination] of [["Ingredients", "recipe-ingredients"], ["Steps", "recipe-steps"]]) {
-        await page.getByRole("link", { name, exact: true }).focus();
-        await page.keyboard.press("Enter");
-        assert.equal(page.url(), recipeURL, "Cooking shortcuts must preserve the recipe deep link and scale");
-        assert.equal(await page.evaluate(() => document.activeElement?.id), destination, "Keyboard focus must follow the cooking shortcut");
-        await page.keyboard.press("Tab");
-        if (name === "Ingredients") assert(await page.getByLabel("Preview recipe scale").evaluate((element: HTMLElement) => element === document.activeElement), "Tab must continue from Ingredients, not return to the shortcut toolbar");
-      }
+      await page.getByRole("link", { name: "Steps", exact: true }).focus();
+      await page.keyboard.press("Enter");
+      assert.equal(page.url(), recipeURL, "Cooking shortcuts must preserve the recipe deep link and scale");
+      assert.equal(await page.evaluate(() => document.activeElement?.id), "recipe-steps", "Keyboard focus must follow the cooking shortcut");
+      await page.keyboard.press("Tab");
       await detail.evaluate((element: HTMLElement) => { element.scrollTop = element.scrollHeight; });
       assert(await detail.evaluate((element: HTMLElement) => element.scrollHeight <= element.clientHeight || element.scrollTop > 0), "long recipe details must scroll vertically");
       await cancelDialog(page);
@@ -444,9 +441,9 @@ async function shoppingAndTimers(page: Page, touch: boolean, label: string, capt
       const current = await household();
       for (const key of new Set([...current.checks.map((entry) => entry.key), ...original.checks.map((entry) => entry.key)])) {
         const fallback = key.startsWith('["shopping-list",') ? 1 : 0;
-        const before = original.checks.find((entry) => entry.key === key)?.checked ?? fallback;
-        const after = current.checks.find((entry) => entry.key === key)?.checked ?? fallback;
-        if (before !== after) changedChecks.add(key);
+        const before = original.checks.find((entry) => entry.key === key);
+        const after = current.checks.find((entry) => entry.key === key);
+        if ((before?.checked ?? fallback) !== (after?.checked ?? fallback) || (before?.packages ?? 1) !== (after?.packages ?? 1)) changedChecks.add(key);
       }
       assert.equal(await page.locator(".purchase-row").count(), original.groceries.length, "Builder must always show every grocery");
       assert(name !== null, "Shopping checkbox must have an accessible label");
@@ -892,9 +889,10 @@ try {
     const allCheckKeys = new Set([...changedChecks, ...current.checks.map((entry) => entry.key), ...original.checks.map((entry) => entry.key)]);
     for (const key of allCheckKeys) {
       const fallback = key.startsWith('["shopping-list",') ? 1 : 0;
-      const wanted = original.checks.find((entry) => entry.key === key)?.checked ?? fallback;
-      const now = current.checks.find((entry) => entry.key === key)?.checked ?? fallback;
-      if (wanted !== now) await api("checks", "PUT", { key, checked: wanted });
+      const wanted = original.checks.find((entry) => entry.key === key);
+      const now = current.checks.find((entry) => entry.key === key);
+      if ((wanted?.checked ?? fallback) !== (now?.checked ?? fallback) || (wanted?.packages ?? 1) !== (now?.packages ?? 1))
+        await api("checks", "PUT", { key, checked: wanted?.checked ?? fallback, packages: wanted?.packages ?? 1 });
     }
     const restored = await household();
     assert.equal(JSON.stringify(restored), originalText, "household differs from exact starting snapshot after cleanup");

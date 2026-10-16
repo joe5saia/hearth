@@ -579,9 +579,10 @@ try {
     const current = await household();
     for (const key of new Set([...current.checks.map((check) => check.key), ...original.checks.map((check) => check.key)])) {
       const fallback = key.startsWith('["shopping-list",') ? 1 : 0;
-      const checked = original.checks.find((check) => check.key === key)?.checked ?? fallback;
-      if ((current.checks.find((check) => check.key === key)?.checked ?? fallback) !== checked) {
-        const response = await fetch(`${url}/api/checks`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ key, checked }) });
+      const wanted = original.checks.find((check) => check.key === key);
+      const now = current.checks.find((check) => check.key === key);
+      if ((wanted?.checked ?? fallback) !== (now?.checked ?? fallback) || (wanted?.packages ?? 1) !== (now?.packages ?? 1)) {
+        const response = await fetch(`${url}/api/checks`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ key, checked: wanted?.checked ?? fallback, packages: wanted?.packages ?? 1 }) });
         assert(response.ok, "Restore the original checkmark.");
       }
     }

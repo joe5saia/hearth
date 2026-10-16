@@ -81,7 +81,7 @@ try {
   }
   assert(results.length === 8 && results.every(result => result.passed), "Deletion must remove only the selected ID, preserving its base control.");
 
-  // The recipe-backed calendar card reaches removal through Recipe details -> Edit meal.
+  // Calendar actions remove the planned meal without deleting its recipe.
   const base = "delete-related-base";
   const id = `${base}?variant`;
   await request("recipes", "PUT", recipe(base, "Deletion base control"));
@@ -100,7 +100,7 @@ try {
   browser("open", `${url}/#plan`);
   browser("reload");
   browser("wait", "--text", "Deletion variant target");
-  browser("find", "role", "button", "click", "--name", "Deletion variant target");
+  browser("find", "role", "button", "click", "--name", "Actions for meal Deletion variant target", "--exact");
   browser("find", "role", "button", "click", "--name", "Edit meal", "--exact");
   browser("find", "role", "button", "click", "--name", "Remove meal", "--exact");
   browser("wait", "--fn", "!document.querySelector('dialog[open]')");

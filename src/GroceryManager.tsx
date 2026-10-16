@@ -1,6 +1,6 @@
 import { useId, useRef, useState } from "react";
 import { Schema } from "effect";
-import { Link2, Pencil, RefreshCw, Search } from "lucide-react";
+import { Link2, Pencil, Plus, RefreshCw, Search, X } from "lucide-react";
 import { displayAmount, units, UnitSchema, type GroceryDraft, type GroceryItem, type Recipe } from "./domain";
 import type { MatchReport } from "./domain";
 import "./grocery-manager.css";
@@ -20,8 +20,10 @@ export type GroceryFormProps = {
 /** Edits a local product draft and locks its controls while a write is pending. */
 export function GroceryForm({ item, aisles, busy, error, save, cancel, remove }: GroceryFormProps) {
   const [draft, setDraft] = useState<GroceryDraft>(item);
-  const [aliases, setAliases] = useState(item.aliases.join("\n"));
+  const [editingAlias, setEditingAlias] = useState<number | null>(null);
+  const returnToAlias = useRef<number | null>(null);
   const [amount, setAmount] = useState(String(item.quantity));
+  const [customAmount, setCustomAmount] = useState(false);
   const [pending, setPending] = useState(false);
   const [failure, setFailure] = useState("");
   const locked = busy || pending;
@@ -98,203 +100,289 @@ export function GroceryForm({ item, aisles, busy, error, save, cancel, remove }:
               url,
               aisle: draft.aisle.trim(),
               quantity,
-              aliases: [
-                ...new Set(
-                  aliases
-                    .split("\n")
-                    .map((name) => name.trim())
-                    .filter(Boolean),
-                ),
-              ],
+              aliases: [...new Set(draft.aliases.map((name) => name.trim()).filter(Boolean))],
             }),
           "Could not confirm whether this grocery item was saved. Refresh the grocery catalog to check its current state.",
         );
       }}
     >
-      <label>
-        Store product name
-        <input
-          required
-          maxLength={150}
-          value={draft.name}
-          disabled={locked}
-          onChange={(event) => setDraft({ ...draft, name: event.target.value })}
-        />
-      </label>
-      <label>
-        Product URL (optional)
-        <input
-          type="url"
-          maxLength={4000}
-          value={draft.url}
-          disabled={locked}
-          placeholder="https://…"
-          aria-describedby={hintId}
-          onChange={(event) => setDraft({ ...draft, url: event.target.value })}
-        />
-      </label>
-      <div
-        className="aisle-picker"
-        onKeyDown={(event) => {
-          if (event.key === "Escape" && showAisles && !event.nativeEvent.isComposing) {
-            event.preventDefault();
-            event.stopPropagation();
-            aisleInput.current?.focus();
-            setAislesOpen(false);
-            setActiveAisle(null);
-          }
-        }}
-        onBlur={(event) => {
-          if (!event.currentTarget.contains(event.relatedTarget)) {
-            setAislesOpen(false);
-            setActiveAisle(null);
-          }
-        }}
-      >
-        <label htmlFor={aisleId}>Aisle (optional)</label>
-        <input
-          id={aisleId}
-          ref={aisleInput}
-          role="combobox"
-          aria-autocomplete="list"
-          aria-expanded={showAisles}
-          aria-controls={showAisles ? `${aisleId}-list` : undefined}
-          aria-activedescendant={
-            showAisles && activeAisleIndex >= 0 ? `${aisleId}-option-${activeAisleIndex}` : undefined
-          }
-          maxLength={150}
-          autoComplete="off"
-          value={draft.aisle}
-          disabled={locked}
-          placeholder="Search aisles or enter a new name"
-          aria-describedby={`${hintId} ${aisleId}-hint`}
-          onFocus={() => setAislesOpen(true)}
-          onClick={() => setAislesOpen(true)}
-          onChange={(event) => {
-            setDraft({ ...draft, aisle: event.target.value });
-            setActiveAisle(null);
-            setAisleMessage("");
-            setAislesOpen(true);
-          }}
-          onKeyDown={(event) => {
-            if (event.nativeEvent.isComposing) return;
-
-            if (event.key === "ArrowDown" || event.key === "ArrowUp") {
-              event.preventDefault();
-              setAislesOpen(true);
-
-              const next = matchingAisles.length
-                ? event.key === "ArrowDown"
-                  ? (activeAisleIndex + 1) % matchingAisles.length
-                  : (activeAisleIndex <= 0 ? matchingAisles.length : activeAisleIndex) - 1
-                : -1;
-
-              setActiveAisle(matchingAisles[next] ?? null);
-              requestAnimationFrame(() =>
-                document.getElementById(`${aisleId}-option-${next}`)?.scrollIntoView({ block: "nearest" }),
-              );
-            } else if (event.key === "Enter" && showAisles && activeAisle !== null) {
-              event.preventDefault();
-
-              if (activeAisleIndex >= 0) selectAisle(activeAisle);
-              else setActiveAisle(null);
-            }
-          }}
-        />
-        {showAisles && (
-          <div className="aisle-choices">
-            <div id={`${aisleId}-list`} role="listbox" aria-label="Existing aisles" className="aisle-list">
-              {matchingAisles.map((aisle, index) => (
-                <button
-                  key={aisle}
-                  id={`${aisleId}-option-${index}`}
-                  type="button"
-                  role="option"
-                  aria-selected={draft.aisle === aisle}
-                  className={activeAisleIndex === index ? "is-active" : ""}
-                  tabIndex={-1}
-                  onPointerDown={(event) => event.preventDefault()}
-                  onClick={() => selectAisle(aisle)}
-                >
-                  {aisle}
-                </button>
-              ))}
-            </div>
-            {!matchingAisles.length && (
-              <p className="field-hint">
-                {aisles.length ? "No matching aisles." : "No aisles assigned yet."}
-              </p>
-            )}
-            <button
-              type="button"
-              className="secondary aisle-create"
-              disabled={!canCreateAisle}
-              onClick={() => selectAisle(draft.aisle.trim(), true)}
-            >
-              Create new aisle
-            </button>
-          </div>
-        )}
-        <p id={`${aisleId}-hint`} className="field-hint" role="status">
-          {aisleMessage || "Choose an existing aisle, or type a new name and choose Create new aisle."}
-        </p>
-      </div>
-      <p className="field-hint" id={hintId}>
-        You can save without a URL or aisle. Missing details will be marked as setup gaps. Product URLs are
-        not fetched.
-      </p>
-      <div className="form-grid">
+      <div className="grocery-form-fields">
         <label>
-          Package quantity
+          Store product name
           <input
-            type="number"
             required
-            min="0"
-            max="1000000"
-            step="any"
-            value={amount}
+            maxLength={150}
+            value={draft.name}
             disabled={locked}
-            onChange={(event) => setAmount(event.target.value)}
+            onChange={(event) => setDraft({ ...draft, name: event.target.value })}
           />
         </label>
         <label>
-          Package unit
-          <select
-            value={draft.unit}
+          Product URL (optional)
+          <input
+            type="url"
+            maxLength={4000}
+            value={draft.url}
             disabled={locked}
-            onChange={(event) =>
-              setDraft({ ...draft, unit: Schema.decodeUnknownSync(UnitSchema)(event.target.value) })
-            }
-          >
-            {!units.includes(draft.unit) && <option value={draft.unit}>{draft.unit}</option>}
-            {units.map((unit) => (
-              <option key={unit} value={unit}>
-                {unit}
-              </option>
-            ))}
-          </select>
+            placeholder="https://…"
+            aria-describedby={hintId}
+            onChange={(event) => setDraft({ ...draft, url: event.target.value })}
+          />
         </label>
-      </div>
-      <p className="field-hint">Use the size of one package. Counts are never converted to weight.</p>
-      <label>
-        Alternate ingredient names
-        <textarea
-          rows={4}
-          maxLength={15000}
-          value={aliases}
-          disabled={locked}
-          placeholder={"e.g. plain flour\nall-purpose flour"}
-          onChange={(event) => setAliases(event.target.value)}
-        />
-        <span className="field-hint">
-          One name per line. These names match recipe ingredients to this store product.
-        </span>
-      </label>
-      {(error || failure) && (
-        <p className="error" role="alert">
-          {error || failure}
+        <div
+          className="aisle-picker"
+          onKeyDown={(event) => {
+            if (event.key === "Escape" && showAisles && !event.nativeEvent.isComposing) {
+              event.preventDefault();
+              event.stopPropagation();
+              aisleInput.current?.focus();
+              setAislesOpen(false);
+              setActiveAisle(null);
+            }
+          }}
+          onBlur={(event) => {
+            if (!event.currentTarget.contains(event.relatedTarget)) {
+              setAislesOpen(false);
+              setActiveAisle(null);
+            }
+          }}
+        >
+          <label htmlFor={aisleId}>Aisle (optional)</label>
+          <input
+            id={aisleId}
+            ref={aisleInput}
+            role="combobox"
+            aria-autocomplete="list"
+            aria-expanded={showAisles}
+            aria-controls={showAisles ? `${aisleId}-list` : undefined}
+            aria-activedescendant={
+              showAisles && activeAisleIndex >= 0 ? `${aisleId}-option-${activeAisleIndex}` : undefined
+            }
+            maxLength={150}
+            autoComplete="off"
+            value={draft.aisle}
+            disabled={locked}
+            placeholder="Search aisles or enter a new name"
+            aria-describedby={`${hintId} ${aisleId}-hint`}
+            onFocus={() => setAislesOpen(true)}
+            onClick={() => setAislesOpen(true)}
+            onChange={(event) => {
+              setDraft({ ...draft, aisle: event.target.value });
+              setActiveAisle(null);
+              setAisleMessage("");
+              setAislesOpen(true);
+            }}
+            onKeyDown={(event) => {
+              if (event.nativeEvent.isComposing) return;
+
+              if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+                event.preventDefault();
+                setAislesOpen(true);
+
+                const next = matchingAisles.length
+                  ? event.key === "ArrowDown"
+                    ? (activeAisleIndex + 1) % matchingAisles.length
+                    : (activeAisleIndex <= 0 ? matchingAisles.length : activeAisleIndex) - 1
+                  : -1;
+
+                setActiveAisle(matchingAisles[next] ?? null);
+                requestAnimationFrame(() =>
+                  document.getElementById(`${aisleId}-option-${next}`)?.scrollIntoView({ block: "nearest" }),
+                );
+              } else if (event.key === "Enter" && showAisles && activeAisle !== null) {
+                event.preventDefault();
+
+                if (activeAisleIndex >= 0) selectAisle(activeAisle);
+                else setActiveAisle(null);
+              }
+            }}
+          />
+          {showAisles && (
+            <div className="aisle-choices">
+              <div id={`${aisleId}-list`} role="listbox" aria-label="Existing aisles" className="aisle-list">
+                {matchingAisles.map((aisle, index) => (
+                  <button
+                    key={aisle}
+                    id={`${aisleId}-option-${index}`}
+                    type="button"
+                    role="option"
+                    aria-selected={draft.aisle === aisle}
+                    className={activeAisleIndex === index ? "is-active" : ""}
+                    tabIndex={-1}
+                    onPointerDown={(event) => event.preventDefault()}
+                    onClick={() => selectAisle(aisle)}
+                  >
+                    {aisle}
+                  </button>
+                ))}
+              </div>
+              {!matchingAisles.length && (
+                <p className="field-hint">
+                  {aisles.length ? "No matching aisles." : "No aisles assigned yet."}
+                </p>
+              )}
+              <button
+                type="button"
+                className="secondary aisle-create"
+                disabled={!canCreateAisle}
+                onClick={() => selectAisle(draft.aisle.trim(), true)}
+              >
+                Create new aisle
+              </button>
+            </div>
+          )}
+          <p id={`${aisleId}-hint`} className="field-hint" role="status">
+            {aisleMessage || "Choose an existing aisle, or type a new name and choose Create new aisle."}
+          </p>
+        </div>
+        <p className="field-hint" id={hintId}>
+          You can save without a URL or aisle. Missing details will be marked as setup gaps. Product URLs are
+          not fetched.
         </p>
-      )}
+        <section className="grocery-packaging" aria-label="Packaging">
+          <h3>Packaging</h3>
+          <div className="form-grid">
+            <label>
+              Package quantity
+              <select
+                aria-label="Package quantity"
+                value={customAmount ? "custom" : amount}
+                disabled={locked}
+                onChange={(event) => {
+                  setCustomAmount(event.target.value === "custom");
+
+                  if (event.target.value !== "custom") setAmount(event.target.value);
+                }}
+              >
+                {[...new Set([0.5, 1, 2, 4, 6, 8, 12, 16, 24, 32, 100, 250, 500, 1000, item.quantity])]
+                  .sort((a, b) => a - b)
+                  .map((value) => (
+                    <option key={value} value={value}>
+                      {value}
+                    </option>
+                  ))}
+                <option value="custom">Custom…</option>
+              </select>
+            </label>
+            <label>
+              Package unit
+              <select
+                aria-label="Package unit"
+                value={draft.unit}
+                disabled={locked}
+                onChange={(event) =>
+                  setDraft({ ...draft, unit: Schema.decodeUnknownSync(UnitSchema)(event.target.value) })
+                }
+              >
+                {!units.includes(draft.unit) && <option value={draft.unit}>{draft.unit}</option>}
+                {units.map((unit) => (
+                  <option key={unit} value={unit}>
+                    {unit}
+                  </option>
+                ))}
+              </select>
+            </label>
+          </div>
+          {customAmount && (
+            <label>
+              Custom package quantity
+              <input
+                type="number"
+                required
+                min="0"
+                max="1000000"
+                step="any"
+                value={amount}
+                disabled={locked}
+                onChange={(event) => setAmount(event.target.value)}
+              />
+            </label>
+          )}
+          <p className="field-hint">Use the size of one package. Counts are never converted to weight.</p>
+        </section>
+        <section className="grocery-alternatives" aria-label="Alternative ingredient names">
+          <h3>Alternative names</h3>
+          <ul>
+            {draft.aliases.map((alias, index) => (
+              <li key={index}>
+                {editingAlias === index ? (
+                  <input
+                    autoFocus
+                    aria-label={`Alternative ${index + 1}`}
+                    maxLength={150}
+                    value={alias}
+                    disabled={locked}
+                    onChange={(event) =>
+                      setDraft({
+                        ...draft,
+                        aliases: draft.aliases.map((name, position) =>
+                          position === index ? event.target.value : name,
+                        ),
+                      })
+                    }
+                    onBlur={() => setEditingAlias(null)}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter" || event.key === "Escape") {
+                        event.preventDefault();
+                        event.stopPropagation();
+                        returnToAlias.current = index;
+                        setEditingAlias(null);
+                      }
+                    }}
+                  />
+                ) : (
+                  <button
+                    ref={(button) => {
+                      if (button && returnToAlias.current === index) {
+                        returnToAlias.current = null;
+                        button.focus({ preventScroll: true });
+                      }
+                    }}
+                    type="button"
+                    className="alternative-name"
+                    disabled={locked}
+                    onClick={() => setEditingAlias(index)}
+                  >
+                    {alias || "Name this alternative"}
+                    <Pencil size={14} aria-hidden="true" />
+                  </button>
+                )}
+                <button
+                  type="button"
+                  className="icon-button"
+                  aria-label={`Remove alternative ${alias || index + 1}`}
+                  disabled={locked}
+                  onClick={() => {
+                    setDraft({
+                      ...draft,
+                      aliases: draft.aliases.filter((_, position) => position !== index),
+                    });
+                    setEditingAlias(null);
+                  }}
+                >
+                  <X size={16} />
+                </button>
+              </li>
+            ))}
+          </ul>
+          <button
+            type="button"
+            className="text-button"
+            disabled={locked || draft.aliases.length >= 100}
+            onClick={() => {
+              setEditingAlias(draft.aliases.length);
+              setDraft({ ...draft, aliases: [...draft.aliases, ""] });
+            }}
+          >
+            <Plus size={15} /> Add Alternative
+          </button>
+        </section>
+        {(error || failure) && (
+          <p className="error" role="alert">
+            {error || failure}
+          </p>
+        )}
+      </div>
       <div className="form-actions">
         {remove && (
           <button

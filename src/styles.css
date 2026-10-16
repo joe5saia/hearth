@@ -534,6 +534,91 @@ main {
   border-color: #aab397;
   transform: translateY(-2px);
 }
+.meal-card-row {
+  position: relative;
+  min-width: 0;
+  border-radius: 6px;
+}
+.meal-card-row.is-revealed {
+  overflow: hidden;
+}
+.meal-card-row.actions-open {
+  z-index: 2;
+}
+.meal-card-row .meal-card {
+  position: relative;
+  z-index: 1;
+  touch-action: pan-y pinch-zoom;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
+  transition: transform 180ms cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+.meal-card-row .meal-card.is-swiping {
+  transition: none;
+}
+.meal-swipe-delete {
+  position: absolute;
+  inset: 0 0 0 auto;
+  width: 88px;
+  border-radius: 6px;
+  background: #b5352f;
+  color: white;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  font-size: 14px;
+}
+.meal-actions-toggle.icon-button {
+  position: absolute;
+  z-index: 2;
+  top: 0;
+  right: 0;
+  width: 44px;
+  height: 44px;
+  color: var(--olive);
+  background: #fffefbe8;
+  border-radius: 0 6px 0 12px;
+}
+.meal-swipe-delete[hidden],
+.meal-actions-toggle[hidden] {
+  display: none;
+}
+.meal-card-row .meal-content {
+  padding-right: 42px;
+}
+.meal-actions {
+  position: fixed;
+  z-index: 3;
+  inset: auto;
+  margin: 0;
+  padding: 0;
+  width: 190px;
+  max-width: calc(100vw - 32px);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: #fffefa;
+  box-shadow: 0 8px 24px #252e232b;
+  overflow: hidden;
+}
+.meal-actions button {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 44px;
+  width: 100%;
+  padding: 12px 16px;
+  text-align: left;
+  font-size: 14px;
+}
+.meal-actions button + button {
+  border-top: 1px solid var(--line);
+}
+.meal-actions button:hover {
+  background: #f0f1e7;
+}
 .meal-photo {
   position: relative;
   height: 104px;
@@ -687,6 +772,32 @@ main {
 .recipe-toolbar select {
   min-width: 0;
   max-width: 260px;
+}
+.recipe-toolbar .collection-filter {
+  position: relative;
+  color: var(--olive);
+}
+.collection-filter > svg {
+  position: absolute;
+  pointer-events: none;
+  left: 14px;
+}
+.collection-filter > svg:last-child {
+  left: auto;
+  right: 12px;
+}
+.recipe-toolbar .collection-filter select {
+  appearance: none;
+  width: 100%;
+  min-height: 44px;
+  padding: 10px 36px 10px 40px;
+  border: 0;
+  border-radius: 14px;
+  background: #e9eddf;
+  color: var(--olive);
+  font-weight: 600;
+  text-overflow: ellipsis;
+  cursor: pointer;
 }
 .collection-row {
   gap: 16px;
@@ -1279,10 +1390,14 @@ main {
 }
 .modal-form > *,
 .meal-form-fields > *,
+.grocery-form-fields > *,
+.shopping-recipe-fields > *,
 .recipe-fields > * {
   flex-shrink: 0;
 }
 .meal-form-fields,
+.grocery-form-fields,
+.shopping-recipe-fields,
 .recipe-fields {
   display: contents;
 }
@@ -1557,6 +1672,8 @@ main {
   gap: 8px;
 }
 .modal.fullscreen > .meal-form,
+.modal.fullscreen > .grocery-form,
+.modal.fullscreen > .shopping-recipe-form,
 .modal.fullscreen > .recipe-form {
   flex: 1;
   overflow: hidden;
@@ -1564,6 +1681,8 @@ main {
   gap: 0;
 }
 .fullscreen .meal-form-fields,
+.fullscreen .grocery-form-fields,
+.fullscreen .shopping-recipe-fields,
 .fullscreen .recipe-fields {
   display: flex;
   flex-direction: column;
@@ -1595,6 +1714,8 @@ main {
   min-height: 6rem;
 }
 .modal.fullscreen > .meal-form > .form-actions,
+.modal.fullscreen > .grocery-form > .form-actions,
+.modal.fullscreen > .shopping-recipe-form > .form-actions,
 .modal.fullscreen > .recipe-form > .form-actions {
   position: static;
   margin: 0;
@@ -1776,12 +1897,8 @@ main {
   color: #8f9880;
 }
 .detail-footer a {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 2em;
-  text-decoration: underline;
-  text-underline-offset: 3px;
+  min-height: 44px;
+  font-size: 0.875rem;
 }
 .photo-fields {
   display: flex;
@@ -1824,6 +1941,10 @@ main {
   gap: 8px;
   margin-bottom: 10px;
   align-items: center;
+}
+.ingredient-editor > input[type="number"],
+.ingredient-editor > select {
+  align-self: stretch;
 }
 .instruction-editor {
   display: flex;

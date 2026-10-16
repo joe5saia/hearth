@@ -260,6 +260,33 @@
   min-width: 0;
   overflow-wrap: anywhere;
 }
+.shopping-review-item {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 12px;
+  display: grid;
+  gap: 12px;
+}
+.shopping-review-item:has(:checked) {
+  background: #eef0e6;
+  border-color: var(--olive);
+}
+.shopping-review-item .shopping-recipe-option {
+  padding: 0;
+  border: 0;
+  background: transparent;
+}
+.modal-form .shopping-package-count {
+  flex-direction: row;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.shopping-package-count input {
+  width: 96px;
+  min-height: 44px;
+  font-size: 16px;
+}
 .shopping-recipe-preview {
   padding: 12px;
   background: #eef0e6;

@@ -1,10 +1,11 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Option, Schema } from "effect";
 import { KitchenTimers } from "./KitchenTimers";
 import { GroceryForm, GroceryManager } from "./GroceryManager";
 import { ShoppingItems } from "./ShoppingItems";
 import { ShoppingRecipeForm } from "./ShoppingRecipeForm";
 import { RecipeChecklist } from "./RecipeChecklist";
+import { MealCard } from "./MealCard";
 import { ChatGPTSetup } from "./ChatGPTSetup";
 import { readRoute, routeHash, type Page, type Route } from "./navigation";
 import { ShareLink } from "./ShareLink";
@@ -58,6 +59,7 @@ import {
   HouseholdSchema,
   DateSchema,
   UnitSchema,
+  type CheckWriteSchema,
   type Household,
   type Collection,
   type IngredientDraft,
@@ -74,16 +76,30 @@ import {
 
 const mobileViewport = "(max-width: 850px), (pointer: coarse) and (max-height: 500px)";
 
-type ShoppingEdit = { kind: "order"; order: ShoppingOrder } | { kind: "check"; key: string; checked: 0 | 1 };
+type ShoppingEdit =
+  | { kind: "order"; order: ShoppingOrder }
+  | ({ kind: "check" } & typeof CheckWriteSchema.Type);
 
 function applyShoppingEdit(state: Pick<Household, "shoppingOrder" | "checks">, edit: ShoppingEdit) {
+  if (edit.kind === "check" && edit.onlyIfAbsent && state.checks.some((entry) => entry.key === edit.key))
+    return state;
+
   return edit.kind === "order"
     ? { checks: state.checks, shoppingOrder: edit.order }
     : {
         shoppingOrder: state.shoppingOrder,
         checks: [
           ...state.checks.filter((entry) => entry.key !== edit.key),
-          ...(!edit.checked ? [{ key: edit.key, checked: edit.checked }] : []),
+          ...(!edit.checked
+            ? [
+                {
+                  key: edit.key,
+                  checked: edit.checked,
+                  packages:
+                    edit.packages ?? state.checks.find((entry) => entry.key === edit.key)?.packages ?? 1,
+                },
+              ]
+            : []),
         ],
       };
 }
@@ -140,7 +156,7 @@ async function api(
     | ShoppingOrder
     | { url: string }
     | Household["extras"][number]
-    | Household["checks"][number]
+    | typeof CheckWriteSchema.Type
     | { from: string; to: string }
     | { rating: Rating },
   operationId = crypto.randomUUID(),
@@ -238,15 +254,19 @@ function Dialog({
   timerHost?: (element: HTMLDivElement | null) => void;
 }) {
   const ref = useRef<HTMLDialogElement>(null);
-  useEffect(() => {
+  useLayoutEffect(() => {
     const dialog = ref.current;
     dialog?.showModal();
 
+    // Close while still connected so the browser can restore the invoker's focus.
     return () => dialog?.close();
   }, []);
 
   useEffect(() => {
     if (!fullScreen) return;
+
+    // A nested fullscreen dialog shares its ancestor's lock, including when both unmount together.
+    if (ref.current?.parentElement?.closest("dialog.fullscreen")) return;
 
     const scrollY = window.scrollY;
     const bodyStyle = document.body.style.cssText;
@@ -269,6 +289,7 @@ function Dialog({
       className={`modal${wide ? " wide" : ""}${fullScreen ? " fullscreen" : ""}`}
       onCancel={(event) => {
         event.preventDefault();
+        event.stopPropagation();
         close();
       }}
       onClick={(event) => {
@@ -601,7 +622,14 @@ export function App() {
         await api(
           edit.kind === "order" ? "shopping-order" : "checks",
           "PUT",
-          edit.kind === "order" ? edit.order : { key: edit.key, checked: edit.checked },
+          edit.kind === "order"
+            ? edit.order
+            : {
+                key: edit.key,
+                checked: edit.checked,
+                packages: edit.packages,
+                onlyIfAbsent: edit.onlyIfAbsent,
+              },
           operationId,
         );
         written = performance.now();
@@ -936,8 +964,8 @@ export function App() {
   );
 
   const catalog = useMemo(
-    () => shoppingList(data.groceries, data.shoppingOrder),
-    [data.groceries, data.shoppingOrder],
+    () => shoppingList(data.groceries, data.shoppingOrder, data.checks),
+    [data.groceries, data.shoppingOrder, data.checks],
   );
 
   const isChecked = (key: string) => (data.checks.find((entry) => entry.key === key)?.checked ?? 1) === 1;
@@ -1010,7 +1038,7 @@ export function App() {
             className={page === "recipes" ? "active" : ""}
           >
             <BookOpen size={19} /> <span className="nav-label">Recipes</span>{" "}
-            <span className="nav-count">{data.recipes.length}</span>
+            {loaded && <span className="nav-count">{data.recipes.length}</span>}
           </a>
           <a
             href="#shopping"
@@ -1372,12 +1400,23 @@ export function App() {
                             if (meal.recipeId !== null && !recipe) return null;
 
                             return (
-                              <button
-                                className={`meal-card${recipe ? "" : " note-only-card"}`}
+                              <MealCard
                                 key={meal.id}
-                                onClick={() =>
+                                title={recipe?.title ?? meal.note}
+                                noteOnly={!recipe}
+                                busy={busy}
+                                open={() =>
                                   setModal(recipe ? { kind: "recipe", recipe, meal } : { kind: "meal", meal })
                                 }
+                                edit={() => setModal({ kind: "meal", meal })}
+                                remove={() => {
+                                  void mutate(
+                                    `meals/${encodeURIComponent(meal.id)}`,
+                                    "DELETE",
+                                    undefined,
+                                    "Meal removed",
+                                  );
+                                }}
                               >
                                 {recipe && (
                                   <div className="meal-photo">
@@ -1396,7 +1435,7 @@ export function App() {
                                   )}
                                   {recipe && meal.note && <p className="meal-note">{meal.note}</p>}
                                 </div>
-                              </button>
+                              </MealCard>
                             );
                           })}
                           {meals.length === 0 && (
@@ -1423,8 +1462,9 @@ export function App() {
                       onChange={(event) => setSearch(event.target.value)}
                     />
                   </label>
-                  <label>
+                  <label className="collection-filter">
                     <span className="sr-only">Collection</span>
+                    <BookOpen size={17} aria-hidden="true" />
                     <select
                       aria-label="Filter by collection"
                       value={
@@ -1444,6 +1484,7 @@ export function App() {
                         </option>
                       ))}
                     </select>
+                    <ChevronDown size={16} aria-hidden="true" />
                   </label>
                 </div>
                 <p className="muted small">
@@ -1544,7 +1585,7 @@ export function App() {
             {page === "shopping" && (
               <>
                 <div className="shopping-summary">
-                  <div role="status">
+                  <div role="status" className={listBuilder || shoppingMode ? "sr-only" : undefined}>
                     <strong className={shoppingPending > 0 ? "shopping-save-status" : undefined}>
                       {shoppingPending > 0
                         ? "Saving…"
@@ -1559,69 +1600,64 @@ export function App() {
                     </span>
                   </div>
                   <div className="shopping-controls">
-                    {(shoppingMode || listBuilder) && <ShareLink />}
-                    <button
-                      className="secondary"
-                      disabled={busy || shoppingPending > 0}
-                      onClick={() => {
-                        setError("");
-                        setModal({ kind: "shopping-recipes" });
-                      }}
-                    >
-                      <BookOpen size={16} /> Add from recipes
-                    </button>
-                    <a
-                      className="secondary"
-                      href="#recipe-checklist"
-                      target="_blank"
-                      rel="noopener noreferrer"
-                    >
-                      <ListChecks size={16} /> Recipe checklist <ExternalLink size={14} />
-                    </a>
-                    <a
-                      className="text-button"
-                      href="#household-extras"
-                      onClick={(event) => {
-                        event.preventDefault();
-                        document.getElementById("household-extras")?.scrollIntoView({ block: "start" });
-                        const input = document.querySelector('[aria-label="New household item"]');
-
-                        if (input instanceof HTMLInputElement) input.focus({ preventScroll: true });
-                      }}
-                    >
-                      Extras
-                    </a>
-                    <button
-                      className={shoppingMode ? "primary" : "secondary"}
-                      aria-label={shoppingMode ? "Exit shopping mode" : "Shopping mode"}
-                      aria-pressed={shoppingMode}
-                      onClick={() => {
-                        updateRoute({ mode: shoppingMode ? "list" : "focus" });
-                      }}
-                    >
-                      <ShoppingBasket size={16} />
-                      {shoppingMode ? "Exit" : "Focus"}
-                    </button>
-                    <button
-                      className={listBuilder ? "primary" : "secondary"}
-                      aria-label={listBuilder ? "Exit List Builder" : "List Builder"}
-                      aria-pressed={listBuilder}
-                      onClick={() => {
-                        updateRoute({ mode: listBuilder ? "list" : "builder" });
-                      }}
-                    >
-                      <ListChecks size={16} />
-                      {listBuilder ? "Exit Builder" : "List Builder"}
-                    </button>
-                    <button
-                      className={`secondary ${hideChecked ? "selected" : ""}`}
-                      aria-label={hideChecked ? "Show checked items" : "Hide checked items"}
-                      aria-pressed={hideChecked}
-                      disabled={listBuilder}
-                      onClick={() => setHideChecked(!hideChecked)}
-                    >
-                      <SlidersHorizontal size={16} /> {hideChecked ? "Show checked" : "Hide checked"}
-                    </button>
+                    {!listBuilder && !shoppingMode && (
+                      <>
+                        <button
+                          className="secondary"
+                          disabled={busy || shoppingPending > 0}
+                          onClick={() => {
+                            setError("");
+                            setModal({ kind: "shopping-recipes" });
+                          }}
+                        >
+                          <BookOpen size={16} /> Add from recipes
+                        </button>
+                        <a
+                          className="secondary"
+                          href="#recipe-checklist"
+                          target="_blank"
+                          rel="noopener noreferrer"
+                        >
+                          <ListChecks size={16} /> Recipe checklist <ExternalLink size={14} />
+                        </a>
+                      </>
+                    )}
+                    {!listBuilder && (
+                      <button
+                        className={shoppingMode ? "primary" : "secondary"}
+                        aria-label={shoppingMode ? "Exit shopping mode" : "Shopping mode"}
+                        aria-pressed={shoppingMode}
+                        onClick={() => {
+                          updateRoute({ mode: shoppingMode ? "list" : "focus" });
+                        }}
+                      >
+                        <ShoppingBasket size={16} />
+                        {shoppingMode ? "Exit" : "Shop Mode"}
+                      </button>
+                    )}
+                    {!shoppingMode && (
+                      <button
+                        className={listBuilder ? "primary" : "secondary"}
+                        aria-label={listBuilder ? "Exit List Builder" : "List Builder"}
+                        aria-pressed={listBuilder}
+                        onClick={() => {
+                          updateRoute({ mode: listBuilder ? "list" : "builder" });
+                        }}
+                      >
+                        <ListChecks size={16} />
+                        {listBuilder ? "Exit Builder" : "List Builder"}
+                      </button>
+                    )}
+                    {!listBuilder && !shoppingMode && (
+                      <button
+                        className={`secondary ${hideChecked ? "selected" : ""}`}
+                        aria-label={hideChecked ? "Show checked items" : "Hide checked items"}
+                        aria-pressed={hideChecked}
+                        onClick={() => setHideChecked(!hideChecked)}
+                      >
+                        <SlidersHorizontal size={16} /> {hideChecked ? "Show checked" : "Hide checked"}
+                      </button>
+                    )}
                   </div>
                 </div>
                 {listBuilder && (
@@ -1702,7 +1738,7 @@ export function App() {
                     )}
                   </section>
                   <aside className="shopping-side">
-                    <section className="extras-panel" id="household-extras">
+                    <section className="extras-panel">
                       <h2>Household extras</h2>
                       <p>Added manually, independently of your meal plan.</p>
                       <form
@@ -1790,6 +1826,7 @@ export function App() {
       {modal?.kind === "shopping-recipes" && (
         <Dialog
           title="Add from recipes"
+          fullScreen={mobileLayout}
           close={() => {
             if (busy) return;
             setModal(null);
@@ -1807,12 +1844,18 @@ export function App() {
               setModal(null);
               setError("");
             }}
-            save={async (ids) => {
+            save={async (items) => {
               setBusy(true);
 
               const results = await Promise.all(
-                ids.map((id) =>
-                  saveShoppingEdit({ kind: "check", key: JSON.stringify(["shopping-list", id]), checked: 0 }),
+                items.map(({ id, packages }) =>
+                  saveShoppingEdit({
+                    kind: "check",
+                    key: JSON.stringify(["shopping-list", id]),
+                    checked: 0,
+                    packages,
+                    onlyIfAbsent: true,
+                  }),
                 ),
               );
 
@@ -1820,7 +1863,7 @@ export function App() {
 
               if (results.every(Boolean)) {
                 setModal(null);
-                setToast(`${ids.length} ${ids.length === 1 ? "item" : "items"} added to shopping list`);
+                setToast(`${items.length} ${items.length === 1 ? "item" : "items"} added to shopping list`);
               }
             }}
           />
@@ -1829,6 +1872,7 @@ export function App() {
       {modal?.kind === "grocery" && (
         <Dialog
           title="Grocery item"
+          fullScreen={mobileLayout}
           close={() => {
             if (busy) return;
             setModal(null);
@@ -2087,6 +2131,7 @@ export function App() {
         >
           <RecipeForm
             key={modal.recipe.id}
+            fullScreen={mobileLayout}
             recipe={modal.recipe}
             latestRecipe={data.recipes.find((recipe) => recipe.id === modal.recipe.id)}
             clearError={() => setError("")}
@@ -2214,6 +2259,7 @@ function MealForm({
   const [draft, setDraft] = useState<MealDraft>(meal);
   const [recipeSearch, setRecipeSearch] = useState("");
   const [debouncedRecipeSearch, setDebouncedRecipeSearch] = useState("");
+  const [choosingRecipe, setChoosingRecipe] = useState(false);
   const recipeSearchInput = useRef<HTMLInputElement>(null);
   const recipe = recipes.find((entry) => entry.id === draft.recipeId);
   const noteOnly = draft.recipeId === null;
@@ -2269,10 +2315,12 @@ function MealForm({
                 onKeyDown={(event) => {
                   if (event.key === "Enter") event.preventDefault();
                 }}
-                aria-describedby={recipeSearch.trim() ? "meal-recipe-search-status" : undefined}
+                aria-describedby={
+                  choosingRecipe || recipeSearch.trim() ? "meal-recipe-search-status" : undefined
+                }
               />
             </label>
-            {recipeSearch.trim() && (
+            {(choosingRecipe || recipeSearch.trim()) && (
               <div className="meal-recipe-results" aria-busy={searching}>
                 <p id="meal-recipe-search-status" role="status">
                   {searching
@@ -2291,6 +2339,7 @@ function MealForm({
                             setDraft({ ...draft, recipeId: entry.id });
                             setRecipeSearch("");
                             setDebouncedRecipeSearch("");
+                            setChoosingRecipe(false);
                             recipeSearchInput.current?.focus();
                           }}
                         >
@@ -2321,6 +2370,21 @@ function MealForm({
                     {recipe.minutes} minutes · View recipe <ArrowRight size={12} />
                   </small>
                 </span>
+              </button>
+            )}
+            {recipe && (
+              <button
+                type="button"
+                className="secondary"
+                disabled={busy}
+                onClick={() => {
+                  setRecipeSearch("");
+                  setDebouncedRecipeSearch("");
+                  setChoosingRecipe(true);
+                  recipeSearchInput.current?.focus();
+                }}
+              >
+                Change recipe
               </button>
             )}
           </>
@@ -2414,7 +2478,7 @@ function MealForm({
           </button>
         )}
         <button className="primary" disabled={busy || (noteOnly ? !draft.note.trim() : !recipe)}>
-          {busy ? "Saving…" : "Save to meal plan"}
+          {busy ? "Saving…" : "Save"}
           <Check size={16} />
         </button>
       </div>
@@ -2462,23 +2526,12 @@ function RecipeDetail({
             {quantity(recipe.servings * scale)} servings
           </span>
           {edit && (
-            <button className="text-button" onClick={edit}>
-              <Pencil size={14} /> Edit recipe
+            <button className="text-button" aria-label="Edit recipe" onClick={edit}>
+              <Pencil size={14} /> Edit
             </button>
           )}
         </div>
         <div className="recipe-section-nav">
-          <a
-            href="#recipe-ingredients"
-            onClick={(event) => {
-              event.preventDefault();
-              const section = document.getElementById("recipe-ingredients");
-              section?.scrollIntoView({ block: "start" });
-              section?.focus({ preventScroll: true });
-            }}
-          >
-            Ingredients
-          </a>
           <a
             href="#recipe-steps"
             onClick={(event) => {
@@ -2490,14 +2543,16 @@ function RecipeDetail({
           >
             Steps
           </a>
-          <button className="primary" onClick={plan}>
-            {returnToMeal ? <ChevronLeft size={16} /> : meal ? <Pencil size={16} /> : <Plus size={16} />}{" "}
-            {returnToMeal ? "Back to meal" : meal ? "Edit meal" : "Add to meal plan"}
-          </button>
+          {(returnToMeal || !meal) && (
+            <button className="primary" onClick={plan}>
+              {returnToMeal ? <ChevronLeft size={16} /> : <Plus size={16} />}{" "}
+              {returnToMeal ? "Back to meal" : "Add to meal plan"}
+            </button>
+          )}
         </div>
       </div>
       <div className="detail-columns">
-        <section id="recipe-ingredients" tabIndex={-1}>
+        <section>
           <div className="ingredients-heading">
             <h2>Ingredients</h2>
             <select
@@ -2536,12 +2591,10 @@ function RecipeDetail({
                           target="_blank"
                           rel="noreferrer"
                         >
-                          {grocery.name} ↗ · {displayAmount(grocery)} per package
+                          {grocery.name}
                         </a>
                       ) : (
-                        <span className="ingredient-product-link">
-                          {grocery.name} · {displayAmount(grocery)} per package
-                        </span>
+                        <span className="ingredient-product-link">{grocery.name}</span>
                       )
                     ) : (
                       <span className="ingredient-product-link unlinked">No grocery item linked</span>
@@ -2583,11 +2636,6 @@ function RecipeDetail({
               {error}
             </p>
           )}
-          {edit && (
-            <button className="text-button" onClick={edit}>
-              <Package size={15} /> Manage ingredient links
-            </button>
-          )}
         </section>
         <section id="recipe-steps" tabIndex={-1}>
           <h2>Let’s make it</h2>
@@ -2611,8 +2659,8 @@ function RecipeDetail({
       </details>
       <div className="detail-footer">
         {recipe.source ? (
-          <a href={recipe.source} target="_blank" rel="noreferrer">
-            Recipe source <ExternalLink size={28} />
+          <a className="text-button" href={recipe.source} target="_blank" rel="noreferrer">
+            Recipe source <ExternalLink size={16} />
           </a>
         ) : (
           <span>From our kitchen</span>
@@ -2742,15 +2790,15 @@ function IngredientMatch({
 
   return (
     <div className="ingredient-match">
-      <p className="ingredient-match-status">
-        {item.groceryItemId === undefined
-          ? automatic
+      {(item.groceryItemId !== undefined || automatic) && (
+        <p className="ingredient-match-status">
+          {item.groceryItemId === undefined && automatic
             ? `Auto-match: ${automatic.name}`
-            : "Auto-match on save · no match yet"
-          : linked
-            ? `Linked: ${linked.name}`
-            : "Leave unlinked (manual review)"}
-      </p>
+            : linked
+              ? `Linked: ${linked.name}`
+              : "Leave unlinked (manual review)"}
+        </p>
+      )}
       <label className="ingredient-match-search">
         <Search size={18} aria-hidden="true" />
         <input
@@ -2808,6 +2856,7 @@ function IngredientMatch({
 }
 
 function RecipeForm({
+  fullScreen,
   recipe,
   latestRecipe,
   clearError,
@@ -2821,6 +2870,7 @@ function RecipeForm({
   save,
   remove,
 }: {
+  fullScreen: boolean;
   recipe: RecipeDraft;
   latestRecipe?: Recipe;
   clearError: () => void;
@@ -2935,15 +2985,6 @@ function RecipeForm({
               onChange={(event) => setDraft({ ...draft, title: event.target.value })}
             />
           </label>
-          <label>
-            A few words about it
-            <textarea
-              maxLength={2000}
-              placeholder="What makes this one a keeper?"
-              value={draft.description}
-              onChange={(event) => setDraft({ ...draft, description: event.target.value })}
-            />
-          </label>
           <div className="form-grid three">
             <label>
               Servings
@@ -3035,14 +3076,9 @@ function RecipeForm({
                   if (event.currentTarget.form?.reportValidity()) void syncIngredients();
                 }}
               >
-                {syncing ? "Syncing ingredients…" : "Sync ingredients"}
+                {syncing ? "Syncing ingredients…" : "Grocery Linking"}
               </button>
             </div>
-            <p className="field-hint">
-              Link each ingredient to the product you buy. Automatic matching uses exact product or alternate
-              names. Sync uses AI for this recipe’s automatic ingredients only; review the results before
-              saving. Existing links, manual exclusions, and quantities stay unchanged.
-            </p>
             {syncMessage && (
               <p className={syncFailed ? "error" : "field-hint"} role={syncFailed ? "alert" : "status"}>
                 {syncMessage}
@@ -3197,6 +3233,15 @@ function RecipeForm({
               <Plus size={15} /> Add step
             </button>
           </div>
+          <label>
+            A few words about it
+            <textarea
+              maxLength={2000}
+              placeholder="What makes this one a keeper?"
+              value={draft.description}
+              onChange={(event) => setDraft({ ...draft, description: event.target.value })}
+            />
+          </label>
           {error && (
             <p className="error" role="alert">
               {error}
@@ -3248,7 +3293,11 @@ function RecipeForm({
         </div>
       </form>
       {groceryEditor && (
-        <Dialog title="Grocery item for ingredient" close={() => setGroceryEditor(null)}>
+        <Dialog
+          title="Grocery item for ingredient"
+          fullScreen={fullScreen}
+          close={() => setGroceryEditor(null)}
+        >
           <GroceryForm
             key={groceryEditor.item.id}
             item={groceryEditor.item}

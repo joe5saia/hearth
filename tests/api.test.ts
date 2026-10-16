@@ -207,6 +207,7 @@ beforeAll(async () => {
       .filter((s) => s.trim())
       .map((s) => db.prepare(s)),
   );
+  await db.prepare(await readFile("migrations/0010_shopping_packages.sql", "utf8")).run();
   expect(await db.prepare("SELECT * FROM meals").first()).toEqual(meal);
   await expect(db.prepare("DELETE FROM recipes WHERE id=?").bind(meal.recipeId).run()).rejects.toThrow();
 }, 30000);
@@ -688,17 +689,17 @@ describe("real Worker with disposable SQLite D1", () => {
       "Oil",
     ]);
     expect(checkKey(byId("rice"))).toBe(checkedKey);
-    expect(household.checks).toContainEqual({ key: checkedKey, checked: 0 });
+    expect(household.checks).toContainEqual({ key: checkedKey, checked: 0, packages: 1 });
     await put("meals", { ...meal, id: "second-meal", recipeId: "second", date: "2026-09-27", scale: 1.1 });
     household = await state();
     items = list();
     expect(checkKey(byId("rice"))).toBe(checkedKey);
-    expect(household.checks).toContainEqual({ key: checkedKey, checked: 0 });
+    expect(household.checks).toContainEqual({ key: checkedKey, checked: 0, packages: 1 });
     await put("groceries", { ...products[0], quantity: 750, name: "Renamed rice" });
     household = await state();
     items = list();
     expect(checkKey(byId("rice"))).toBe(checkedKey);
-    expect(household.checks).toContainEqual({ key: checkedKey, checked: 0 });
+    expect(household.checks).toContainEqual({ key: checkedKey, checked: 0, packages: 1 });
     await put("checks", { key: checkedKey, checked: 1 });
     expect((await state()).checks.some((entry) => entry.key === checkedKey)).toBe(false);
     expect(household.shoppingOrder).toEqual(order);
@@ -722,16 +723,35 @@ describe("real Worker with disposable SQLite D1", () => {
     const membership = () => db.prepare("SELECT * FROM checks WHERE key=?").bind(key).first();
 
     expect((await put("groceries", product)).status).toBe(200);
+    expect((await put("checks", { key, checked: 0, packages: 3, onlyIfAbsent: true })).status).toBe(200);
+    // Another client updates the amount after a recipe review was opened.
+    expect((await put("checks", { key, checked: 0, packages: 5 })).status).toBe(200);
+    expect((await put("checks", { key, checked: 0, packages: 2, onlyIfAbsent: true })).status).toBe(200);
+
+    const household = Schema.decodeUnknownSync(HouseholdSchema)(
+      await (await worker.dispatchFetch("http://localhost/api/household")).json(),
+    );
+
+    expect(household.checks).toContainEqual({ key, checked: 0, packages: 5 });
+    expect((await put("checks", { key, checked: 1, onlyIfAbsent: true })).status).toBe(400);
+    expect((await put("checks", { key: "legacy", checked: 0, onlyIfAbsent: true })).status).toBe(400);
+    expect((await put("checks", { key, checked: 0, packages: 3 })).status).toBe(200);
     expect((await put("checks", { key, checked: 0 })).status).toBe(200);
-    expect((await put("checks", { key, checked: 0 })).status).toBe(200);
-    expect(await membership()).toEqual({ key, checked: 0 });
+    expect(await membership()).toEqual({ key, checked: 0, packages: 3 });
+
+    for (const packages of [0, -1, 1.5, 1_000_001]) {
+      expect((await put("checks", { key, checked: 0, packages })).status).toBe(400);
+    }
+
+    expect(await membership()).toEqual({ key, checked: 0, packages: 3 });
     expect((await put("groceries", { ...product, name: "Renamed rice", quantity: 750 })).status).toBe(200);
-    expect(await membership()).toEqual({ key, checked: 0 });
+    expect(await membership()).toEqual({ key, checked: 0, packages: 3 });
 
     // Force the harmful ordering: deletion commits before the delayed list-add reaches D1.
     expect((await send(`groceries/${encodeURIComponent(product.id)}`, "DELETE", "")).status).toBe(200);
     expect(await membership()).toBeNull();
     const late = await put("checks", { key, checked: 0 });
+    expect((await put("checks", { key, checked: 0, packages: 2, onlyIfAbsent: true })).status).toBe(400);
     const orphan = await membership();
     expect((await put("groceries", product)).status).toBe(200);
     const revived = await membership();
@@ -742,7 +762,7 @@ describe("real Worker with disposable SQLite D1", () => {
 
     // A genuine addition to the recreated product must still work; removal is idempotent.
     expect((await put("checks", { key, checked: 0 })).status).toBe(200);
-    expect(await membership()).toEqual({ key, checked: 0 });
+    expect(await membership()).toEqual({ key, checked: 0, packages: 1 });
     expect((await put("checks", { key, checked: 1 })).status).toBe(200);
     expect((await put("checks", { key, checked: 1 })).status).toBe(200);
     expect(await membership()).toBeNull();
@@ -774,6 +794,7 @@ describe("real Worker with disposable SQLite D1", () => {
       expect(await db.prepare("SELECT * FROM checks WHERE key=?").bind(key).first()).toEqual({
         key,
         checked: 0,
+        packages: 1,
       });
       expect((await send(`groceries/${encodeURIComponent(id)}`, "DELETE", "")).status).toBe(200);
       expect((await put("checks", { key, checked: 0 })).status).toBe(400);
@@ -801,9 +822,9 @@ describe("real Worker with disposable SQLite D1", () => {
     for (let attempt = 0; attempt < 2; attempt++) {
       await db.prepare(sql).run();
       expect((await db.prepare("SELECT * FROM checks ORDER BY key").all()).results).toEqual([
-        legacyCatalog,
-        live,
-        legacy,
+        { ...legacyCatalog, packages: 1 },
+        { ...live, packages: 1 },
+        { ...legacy, packages: 1 },
       ]);
     }
   });
@@ -1425,7 +1446,7 @@ describe("real Worker with disposable SQLite D1", () => {
       recipes: [],
       meals: [],
       extras: [{ id: "snack", name: "Apples & peanut butter", checked: 1 }],
-      checks: [{ key: "range-ingredient-total", checked: 1 }],
+      checks: [{ key: "range-ingredient-total", checked: 1, packages: 1 }],
     });
     expect((await send("extras/snack", "DELETE", "{}")).status).toBe(200);
     const db = await worker.getD1Database("DB");
@@ -1445,7 +1466,7 @@ describe("real Worker with disposable SQLite D1", () => {
 
     const db = await worker.getD1Database("DB");
     expect((await db.prepare("SELECT * FROM checks").all()).results).toEqual([
-      { key: "keep-checked", checked: 1 },
+      { key: "keep-checked", checked: 1, packages: 1 },
     ]);
     expect(
       (await send("checks", "PUT", JSON.stringify({ key: "range-ingredient-total", checked: 1 }))).status,

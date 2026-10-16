@@ -8,7 +8,7 @@ import {
   MealSchema,
   RecipeSchema,
   ExtraSchema,
-  CheckSchema,
+  CheckWriteSchema,
   CollectionSchema,
   GroceryItemSchema,
   RenameAisleSchema,
@@ -141,7 +141,7 @@ function api(request: Request, db: D1Database, ai?: Ai, ctx?: ExecutionContext) 
     } else if (method === "DELETE" && path.startsWith("/api/extras/")) {
       yield* deleteExtra(db, yield* decodeId(path, "/api/extras/"));
     } else if (method === "PUT" && path === "/api/checks") {
-      yield* setShoppingChecked(db, yield* readJson(request, CheckSchema, "Invalid shopping item."));
+      yield* setShoppingChecked(db, yield* readJson(request, CheckWriteSchema, "Invalid shopping item."));
     } else if (method === "POST" && path === "/api/demo") {
       const today = yield* Schema.decodeUnknownEffect(DateSchema)(url.searchParams.get("today") ?? "").pipe(
         Effect.mapError(() => invalid("Choose a valid sample week.")),

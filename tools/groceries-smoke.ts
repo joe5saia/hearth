@@ -77,7 +77,8 @@ try {
   shopping();
   browser("set", "viewport", "390", "844", "2");
   browser("find", "role", "button", "click", "--name", "Add from recipes", "--exact");
-  check("!document.querySelector('.shopping-recipe-option') && document.querySelector('.shopping-recipe-options').textContent.includes('No recipes in your meal plan yet') && document.querySelector('.shopping-recipe-form .primary').disabled", "empty meal plan offers no recipes even when the recipe library is populated");
+  check("document.querySelectorAll('.shopping-recipe-option').length === 2 && document.querySelector('.shopping-recipe-form .primary').disabled", "empty meal plan still offers the entire recipe library without preselecting items");
+  check("document.querySelector('dialog').classList.contains('fullscreen') && document.querySelector('dialog').getBoundingClientRect().height === innerHeight && !document.querySelector('.shopping-recipe-fields > p.muted')", "mobile recipe picker fills the screen without helper copy");
   screenshot("shopping-recipes-empty-plan");
   browser("find", "role", "button", "click", "--name", "Cancel", "--exact");
   for (const [index, recipe] of recipes.entries()) await request("meals", "PUT", { id: `${prefix}-meal-${index}`, recipeId: recipe.id, date: index === 0 ? start : "2099-01-04", slot: "Dinner", scale: 1, note: "" });
@@ -91,8 +92,8 @@ try {
   shopping();
   browser("set", "viewport", "1280", "900", "2");
   browser("find", "role", "button", "click", "--name", "Add from recipes", "--exact");
-  check("document.querySelector('.shopping-recipe-form .primary').disabled && document.querySelectorAll('.shopping-recipe-option').length === 3", "recipe picker starts unselected with add disabled");
-  check("[...document.querySelectorAll('.shopping-recipe-option strong')].map(el => el.textContent).join('|') === 'Lime rice bowls|Rice for lunch|Earlier lunch'", "only planned recipes appear once, ordered by latest planned date including future and past meals");
+  check("document.querySelector('.shopping-recipe-form .primary').disabled && document.querySelectorAll('.shopping-recipe-option').length === 4", "recipe picker starts unselected with add disabled");
+  check("[...document.querySelectorAll('.shopping-recipe-option strong')].map(el => el.textContent).join('|') === 'Lime rice bowls|Rice for lunch|Earlier lunch|Unplanned recipe'", "planned recipes appear once by latest date, including future and past meals, followed by unplanned recipes");
   screenshot("shopping-recipes-default");
   browser("check", '.shopping-recipe-option:nth-child(1) input');
   browser("fill", '.shopping-recipe-form input[type=search]', "lunch");
@@ -102,7 +103,7 @@ try {
   browser("click", '.shopping-recipe-form input[type=search]');
   browser("press", "Control+a");
   browser("press", "Backspace");
-  browser("wait", "--fn", "document.querySelectorAll('.shopping-recipe-option').length === 3");
+  browser("wait", "--fn", "document.querySelectorAll('.shopping-recipe-option').length === 4");
   screenshot("shopping-recipes-selected-desktop");
   for (const width of [320, 390]) {
     browser("set", "viewport", String(width), "844", "2");
@@ -110,7 +111,9 @@ try {
   }
   screenshot("shopping-recipes-selected-narrow");
   browser("click", '.shopping-recipe-form .primary');
-  check("document.querySelectorAll('.shopping-review-item').length === 3 && [...document.querySelectorAll('.shopping-review-item input')].every(box => box.checked) && document.activeElement.textContent === 'Review items'", "review defaults every unique missing item to checked and focuses its heading");
+  check("document.querySelectorAll('.shopping-review-item').length === 3 && [...document.querySelectorAll('.shopping-review-item input[type=checkbox]')].every(box => box.checked) && document.activeElement.textContent === 'Review items'", "review defaults every unique missing item to checked and focuses its heading");
+  check("document.querySelector('[aria-label=\"Packages to buy for Fresh limes · 2 lb bag\"]').value === '' && document.querySelector('.shopping-recipe-form .primary').disabled", "incompatible count and weight require an explicit package count rather than guessing");
+  formFill("Packages to buy for Fresh limes · 2 lb bag", "2");
   assert.equal((await household()).checks.length, 1, "Review must not add items before confirmation.");
   browser("set", "viewport", "1280", "900", "2");
   screenshot("shopping-review-default-desktop");
@@ -118,19 +121,19 @@ try {
     browser("set", "viewport", String(width), "844", "2");
     check("document.documentElement.scrollWidth <= innerWidth && document.querySelector('dialog').scrollWidth <= document.querySelector('dialog').clientWidth && [...document.querySelectorAll('.shopping-review-item')].every(el => el.getBoundingClientRect().height >= 44)", `${width}px review fits with accessible item targets`);
   }
-  browser("uncheck", '.shopping-review-item:nth-child(1) input');
-  browser("uncheck", '.shopping-review-item:nth-child(2) input');
-  browser("uncheck", '.shopping-review-item:nth-child(3) input');
+  browser("uncheck", '.shopping-review-item:nth-child(1) input[type=checkbox]');
+  browser("uncheck", '.shopping-review-item:nth-child(2) input[type=checkbox]');
+  browser("uncheck", '.shopping-review-item:nth-child(3) input[type=checkbox]');
   check("document.querySelector('.shopping-recipe-form .primary').disabled && document.querySelector('.shopping-recipe-preview strong').textContent.includes('0 items to add')", "unchecking everything disables adding without changing the list");
   screenshot("shopping-review-none");
-  browser("check", '.shopping-review-item:nth-child(1) input');
-  browser("check", '.shopping-review-item:nth-child(2) input');
+  browser("check", '.shopping-review-item:nth-child(1) input[type=checkbox]');
+  browser("check", '.shopping-review-item:nth-child(2) input[type=checkbox]');
   screenshot("shopping-review-selected-narrow");
   browser("find", "role", "button", "click", "--name", "Back", "--exact");
   check("[...document.querySelectorAll('.shopping-recipe-option input')].filter(box => box.checked).length === 2 && document.activeElement.textContent === 'Choose recipes'", "Back preserves recipe selections and moves focus to the recipe step");
   browser("click", '.shopping-recipe-form .primary');
   check("!document.querySelector('.shopping-review-item:nth-child(3) input').checked && document.querySelector('.shopping-recipe-form .primary').textContent === 'Add 2 items'", "returning to review preserves unchecked items");
-  browser("find", "label", "Long-grain rice", "click", "--exact");
+  browser("uncheck", '.shopping-review-item:nth-child(2) input[type=checkbox]');
   browser("find", "role", "button", "click", "--name", "Back", "--exact");
   browser("uncheck", '.shopping-recipe-option:nth-child(1) input');
   browser("uncheck", '.shopping-recipe-option:nth-child(2) input');
@@ -142,13 +145,14 @@ try {
   browser("find", "role", "button", "click", "--name", "Add from recipes", "--exact");
   browser("check", '.shopping-recipe-option:nth-child(1) input');
   browser("click", '.shopping-recipe-form .primary');
-  browser("find", "label", "Whole-wheat bread", "click", "--exact");
+  formFill("Packages to buy for Fresh limes · 2 lb bag", "2");
+  browser("uncheck", '.shopping-review-item:nth-child(3) input[type=checkbox]');
   browser("eval", `(() => { const originalFetch = window.fetch; let rejectWrite = true; let rejectRefresh = true; window.reviewWrites = []; window.fetch = (input, init) => { if (String(input).endsWith('/api/checks')) { window.reviewWrites.push(JSON.parse(init.body).key); if (rejectWrite) { rejectWrite = false; return Promise.resolve(new Response(JSON.stringify({error:'First review item failed'}), {status:503})); } } if (String(input).endsWith('/api/household') && rejectRefresh) { rejectRefresh = false; return Promise.resolve(new Response(JSON.stringify({error:'Refresh failed'}), {status:503})); } return originalFetch(input, init); }; })()`);
   browser("click", '.shopping-recipe-form .primary');
   browser("wait", "--fn", "!!document.querySelector('.shopping-recipe-form [role=alert]') && !document.querySelector('.shopping-recipe-form .primary').disabled");
   check("document.querySelector('.shopping-recipe-form [role=alert]').textContent.includes('First review item failed') && document.querySelector('.shopping-recipe-form .primary').textContent === 'Add 1 item'", "later refresh failure must not hide an earlier unsaved review item");
   assert.deepEqual(JSON.parse(browser("eval", "window.reviewWrites")), [products[3], products[0]].map(item => JSON.stringify(["shopping-list", item.id])), "Only checked missing products generate writes, in catalog order.");
-  browser("find", "label", "Fresh limes · 2 lb bag", "click", "--exact");
+  browser("uncheck", '.shopping-review-item:nth-child(1) input[type=checkbox]');
   check("document.querySelector('.shopping-recipe-form .primary').disabled", "an unsaved failed item can be excluded rather than retried");
   browser("find", "role", "button", "click", "--name", "Cancel", "--exact");
   check("!document.querySelector('[role=alert]')", "Cancel clears the review error without undoing successful writes");
@@ -159,8 +163,10 @@ try {
   browser("check", '.shopping-recipe-option:nth-child(1) input');
   browser("check", '.shopping-recipe-option:nth-child(2) input');
   browser("click", '.shopping-recipe-form .primary');
-  check("[...document.querySelectorAll('.shopping-review-item input')].every(box => box.checked)", "a fresh flow resets review items to checked");
-  browser("find", "label", "Whole-wheat bread", "click", "--exact");
+  check("[...document.querySelectorAll('.shopping-review-item input[type=checkbox]')].every(box => box.checked)", "a fresh flow resets review items to checked");
+  formFill("Packages to buy for Fresh limes · 2 lb bag", "2");
+  formFill("Packages to buy for Long-grain rice", "3");
+  browser("uncheck", '.shopping-review-item:nth-child(3) input[type=checkbox]');
   // Reject one real browser request; other requests still exercise Worker/D1 persistence.
   browser("eval", `(() => { const originalFetch = window.fetch; let rejectWrite = true; window.reviewWrites = []; window.fetch = (input, init) => { if (String(input).endsWith('/api/checks')) { const key = JSON.parse(init.body).key; window.reviewWrites.push(key); if (rejectWrite && key === ${JSON.stringify(JSON.stringify(["shopping-list", products[3].id]))}) { rejectWrite = false; return Promise.resolve(new Response(JSON.stringify({error:'Recipe item save failed'}), {status:503, headers:{'Content-Type':'application/json'}})); } } return originalFetch(input, init); }; })()`);
   browser("click", '.shopping-recipe-form .primary');
@@ -175,7 +181,7 @@ try {
   const selectedKeys = (await household()).checks.filter(entry => entry.checked === 0).map(entry => entry.key).sort();
   assert.deepEqual(selectedKeys, [products[0], products[1], products[3]].map(item => JSON.stringify(["shopping-list", item.id])).sort(), "Only checked unique groceries persist; existing oil stays, unchecked bread and unrelated oats stay off-list.");
   check("document.querySelectorAll('.purchase-row').length === 3", "only reviewed additions appear on shopping list after reload");
-  check("[...document.querySelectorAll('.purchase-row')].find(el => el.textContent.includes('Long-grain rice')).textContent.includes('500 g') && [...document.querySelectorAll('.purchase-row')].find(el => el.textContent.includes('Fresh limes')).textContent.includes('2 lb') && !document.querySelector('.purchase-need')", "review additions retain catalog package sizes, not combined recipe quantities");
+  check("[...document.querySelectorAll('.purchase-row')].find(el => el.textContent.includes('Long-grain rice')).textContent.includes('3 × 500 g') && [...document.querySelectorAll('.purchase-row')].find(el => el.textContent.includes('Fresh limes')).textContent.includes('2 × 2 lb') && !document.querySelector('.purchase-need')", "review additions persist adjusted package counts without altering catalog package sizes");
   browser("find", "role", "button", "click", "--name", "Add from recipes", "--exact");
   browser("check", '.shopping-recipe-option:nth-child(1) input');
   browser("click", '.shopping-recipe-form .primary');
@@ -308,10 +314,11 @@ try {
   browser("set", "viewport", "390", "844", "2");
   check("document.querySelector('.grocery-form').scrollWidth <= document.querySelector('.grocery-form').clientWidth", "narrow product form fits inside recipe dialog");
   screenshot("grocery-product-form");
-  formFill("Package quantity", "0");
+  browser("select", 'select[aria-label="Package quantity"]', "custom");
+  formFill("Custom package quantity", "0");
   submit('.grocery-form button[type="submit"]');
   check("document.querySelector('.grocery-form [role=alert]').textContent.includes('positive')", "invalid package quantity keeps product draft");
-  formFill("Package quantity", "1");
+  formFill("Custom package quantity", "1");
   submit('.grocery-form button[type="submit"]');
   finishSave();
   check("document.querySelector('[aria-label=\"Ingredient 1 quantity\"]').value === '250' && [...document.querySelectorAll('.ingredient-match-status')][4].textContent.includes('Linked: Flat-leaf parsley')", "nested product creation preserves unsaved recipe edits and selects link");
@@ -428,8 +435,7 @@ try {
     // Start the independent drop check in a fresh document after Chromium's canceled gesture.
     browser("reload");
     browser("wait", ".shopping-summary");
-    browser("click", '[aria-label="Page options"]');
-    browser("find", "role", "button", "click", "--name", "Arrange route", "--exact");
+    check("location.hash.includes('mode=arrange') && !!document.querySelector('.route-editor')", "reload preserves the route editor instead of reopening arrange mode");
     point = dragPoints();
     await cdp("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x: point.x, y: point.y }] });
     browser("wait", "--fn", "!!document.querySelector('.is-dragging')");
@@ -501,10 +507,16 @@ try {
       input.dispatchEvent(new Event('input', { bubbles: true }));
     };
     const settle = () => new Promise(resolve => setTimeout(resolve, 400));
-    for (const label of ['Exit List Builder', 'Shopping mode']) {
+    for (const shop of [false, true]) {
       fill();
-      document.querySelector('[aria-label="' + label + '"]').click();
+      document.querySelector('[aria-label="Exit List Builder"]').click();
       await settle();
+      if (shop) {
+        document.querySelector('[aria-label="Shopping mode"]').click();
+        await settle();
+        document.querySelector('[aria-label="Exit shopping mode"]').click();
+        await settle();
+      }
       document.querySelector('[aria-label="List Builder"]').click();
       await settle();
       if (document.querySelector('[aria-label="Search grocery items"]').value || document.querySelectorAll('.purchase-row').length !== 6) throw new Error('Pending search survived mode change');
@@ -513,6 +525,8 @@ try {
     location.hash = '#recipes';
     await settle();
     location.hash = '#shopping';
+    await settle();
+    document.querySelector('[aria-label="List Builder"]').click();
     await settle();
     if (document.querySelector('[aria-label="Search grocery items"]').value || document.querySelectorAll('.purchase-row').length !== 6) throw new Error('Pending search survived navigation');
   })()`);
@@ -531,16 +545,19 @@ try {
   screenshot("list-builder-desktop");
   browser("fill", '[aria-label="Search grocery items"]', "rice");
   browser("wait", "--fn", "document.querySelectorAll('.purchase-row').length === 1");
+  browser("click", '[aria-label="Exit List Builder"]');
   browser("click", '[aria-label="Shopping mode"]');
   check("!document.querySelector('[aria-label=\"Search grocery items\"]') && document.querySelectorAll('.purchase-row').length === 2 && [...document.querySelectorAll('.purchase-row input')].every(box => !box.checked)", "Focus ignores builder search and shows only the manually selected groceries");
   browser("click", '[aria-label="Picked up Long-grain rice"]');
   browser("wait", "--fn", "!document.querySelector('.shopping-save-status')");
   check("!document.querySelector('[aria-label=\"Picked up Long-grain rice\"]')", "picking up an item removes it from the active list");
+  browser("click", '[aria-label="Exit shopping mode"]');
   browser("click", '[aria-label="List Builder"]');
   check("document.querySelector('[aria-label=\"Search grocery items\"]').value === '' && document.querySelectorAll('.purchase-row').length === 6", "reopening builder starts with an unfiltered catalog");
   check("document.querySelector('[aria-label=\"Off list Long-grain rice\"]').checked", "removed grocery is checked when revisiting List Builder");
   browser("uncheck", '[aria-label="Off list Long-grain rice"]');
   browser("wait", "--fn", "!document.querySelector('.shopping-save-status')");
+  browser("click", '[aria-label="Exit List Builder"]');
   await request("meals", "PUT", { ...(await household()).meals[0], scale: 7, date: "2099-02-01" });
   browser("reload");
   browser("wait", ".purchase-row");

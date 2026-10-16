@@ -450,6 +450,7 @@ beforeAll(async () => {
     "0006_meal_notes.sql",
     "0007_shopping_membership.sql",
     "0008_grocery_delete_unlink.sql",
+    "0010_shopping_packages.sql",
   ]) {
     const sql = await readFile(`migrations/${file}`, "utf8");
     await db.batch(
@@ -1136,8 +1137,12 @@ it("manages a collection, matched products, inclusive meal plan and shopping lif
   expect(riceItem.key).not.toBe(riceItem.checkKey);
   await success("set_shopping_checked", { key: riceItem.checkKey, checked: true });
   expect((await shopping()).items.find((i) => i.key === riceItem.key)?.checked).toBe(true);
+  await success("set_shopping_checked", { key: riceItem.checkKey, checked: false, packages: 3 });
   await success("set_shopping_checked", { key: riceItem.checkKey, checked: false });
-  expect((await shopping()).items.find((i) => i.key === riceItem.key)?.checked).toBe(false);
+  expect((await shopping()).items.find((i) => i.key === riceItem.key)).toMatchObject({
+    checked: false,
+    packages: 3,
+  });
   expect((await success("get_shopping_list", { start, end })).items.map((i) => i.key)).toEqual([
     riceItem.key,
   ]);
@@ -1145,7 +1150,7 @@ it("manages a collection, matched products, inclusive meal plan and shopping lif
   list = await shopping();
   expect(list.items.find((i) => i.key === riceItem.key)).toMatchObject({
     checked: false,
-    packages: 1,
+    packages: 3,
     needs: [],
   });
   expect(list.items.find((i) => i.key === riceItem.key)?.checkKey).toBe(riceItem.checkKey);
