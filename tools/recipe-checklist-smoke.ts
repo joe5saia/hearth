@@ -3,7 +3,7 @@ import { execFileSync } from "node:child_process";
 import { mkdir } from "node:fs/promises";
 import { resolve } from "node:path";
 import { Schema } from "effect";
-import { HouseholdSchema, type GroceryDraft, type RecipeDraft, type IngredientDraft } from "../src/domain.ts";
+import { addDays, HouseholdSchema, weekStart, type GroceryDraft, type IngredientDraft, type MealDraft, type RecipeDraft } from "../src/domain.ts";
 
 // Real browser + Worker/D1; fixture records are removed even on failure.
 const url = process.argv[2] ?? "http://localhost:5173";
@@ -14,7 +14,7 @@ const check = (expression: string, message: string) => {
   browser("eval", `(() => { if (!(${expression})) throw new Error(${JSON.stringify(message)}); return true; })()`);
   console.log(`PASS ${message}`);
 };
-const request = async (path: string, method = "GET", body?: GroceryDraft | RecipeDraft) => {
+const request = async (path: string, method = "GET", body?: GroceryDraft | RecipeDraft | MealDraft) => {
   const response = await fetch(`${url}/api/${path}`, { method, headers: { "Content-Type": "application/json" }, body: body ? JSON.stringify(body) : undefined });
   assert(response.ok, `${method} ${path}: ${response.status}`);
   return response;
@@ -25,7 +25,7 @@ const household = async () => {
   return value;
 };
 const original = await household();
-assert(!original.recipes.length && !original.groceries.length, "Use an empty disposable local household.");
+assert(!original.recipes.length && !original.groceries.length && !original.meals.length, "Use an empty disposable local household.");
 const prefix = `checklist-${crypto.randomUUID()}`;
 const groceries: GroceryDraft[] = [
   { id: `${prefix}-rice`, name: "Long-grain rice", aliases: ["rice", "white rice"], quantity: 500, unit: "g", aisle: "", url: "" },
@@ -58,6 +58,17 @@ const recipes = [
   ]),
   recipe("other", "Unselected recipe", [{ name: "rice", quantity: 9, unit: "kg" }]),
 ];
+// This week repeats and scales one recipe; each planned recipe still counts as one batch.
+const week = weekStart();
+const meal = (id: string, recipeId: string, date: string, scale = 1): MealDraft => ({ id: `${prefix}-${id}`, recipeId: `${prefix}-${recipeId}`, date, slot: "Dinner", scale, note: "" });
+const meals = [
+  meal("monday", "dinner", week),
+  meal("wednesday", "lunch", addDays(week, 2)),
+  meal("friday", "dinner", addDays(week, 4), 2),
+  meal("next-week", "other", addDays(week, 7)),
+];
+const totals = () => JSON.parse(browser("eval", "Object.fromEntries([...document.querySelectorAll('[aria-label=\"Ingredients needed\"] label')].map(row => [row.querySelector('strong').textContent, row.querySelector('strong + span').textContent]))"));
+const weekButton = "document.querySelector('.recipe-checklist-week .secondary')";
 const screenshot = (name: string) => {
   browser("eval", "new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)))");
   browser("screenshot", "--full", resolve(`.amp/in/artifacts/${name}.png`));
@@ -71,6 +82,7 @@ try {
   check("document.body.textContent.includes('No recipes yet') && document.querySelector('.primary').disabled", "empty household has guidance and cannot generate a checklist");
   for (const grocery of groceries) await request("groceries", "PUT", grocery);
   for (const item of recipes) await request("recipes", "PUT", item);
+  for (const item of meals) await request("meals", "PUT", item);
   const before = await household();
   browser("open", `${url}/#shopping`);
   browser("wait", '.shopping-controls a[href="#recipe-checklist"]');
@@ -88,6 +100,31 @@ try {
   browser("wait", '.recipe-checklist form .recipe-checklist-row');
   check("!document.querySelector('.sidebar') && document.querySelector('.primary').disabled", "new tab has a standalone, initially unselected recipe picker");
   screenshot("recipe-checklist-picker");
+  check(`${weekButton}.textContent.includes('(2 recipes)') && !${weekButton}.disabled`, "current meal-plan week offers its two distinct planned recipes");
+  browser("click", '[aria-label="Previous week"]');
+  check(`${weekButton}.disabled && ${weekButton}.textContent === 'No recipes planned this week'`, "week without planned recipes cannot generate a checklist");
+  browser("click", '[aria-label="Next week"]');
+  browser("click", '[aria-label="Next week"]');
+  check(`${weekButton}.textContent.includes('(1 recipe)')`, "next week offers only its planned recipe");
+  browser("click", ".recipe-checklist-week .secondary");
+  browser("wait", '[aria-label="Ingredients needed"]');
+  assert.deepEqual(totals(), { "Long-grain rice": "9 kg" });
+  console.log("PASS next week's checklist contains only next week's recipe");
+  browser("click", ".secondary");
+  browser("click", '[aria-label="Previous week"]');
+  browser("set", "viewport", "390", "844", "2");
+  check("document.documentElement.scrollWidth <= innerWidth && [...document.querySelectorAll('.recipe-checklist-week button')].every(button => button.getBoundingClientRect().height >= 44)", "narrow meal-plan week controls fit and have touch-sized targets");
+  screenshot("recipe-checklist-week-narrow");
+  browser("set", "viewport", "1280", "900", "2");
+  screenshot("recipe-checklist-week");
+  browser("click", ".recipe-checklist-week .secondary");
+  browser("wait", '[aria-label="Ingredients needed"]');
+  check("document.body.textContent.includes('Rice dinner (2 servings) · Rice lunch (2 servings)') && !document.body.textContent.includes('Unselected recipe')", "week checklist names this week's recipes and replaces the previous selection");
+  assert.deepEqual(totals(), { Butter: "0.75 lb", Lime: "5", "Long-grain rice": "1 kg", Milk: "1.25 l", "Olive oil": "280.95 ml", Parsley: "3 bunch", Salt: "10 g + 4.93 ml", Sugar: "1.25 cup" });
+  console.log("PASS this week's checklist totals one batch of each distinct planned recipe");
+  screenshot("recipe-checklist-week-totals");
+  browser("click", ".secondary");
+  browser("wait", ".recipe-checklist form");
   browser("find", "label", "Rice dinner", "check");
   browser("fill", 'input[type="search"]', "lunch");
   browser("find", "label", "Rice lunch", "check");
@@ -121,6 +158,7 @@ try {
   console.log("Recipe checklist browser smoke passed; household unchanged.");
 } finally {
   try { browser("close"); } finally {
+    for (const item of (await household()).meals.filter(item => item.id.startsWith(prefix))) await request(`meals/${encodeURIComponent(item.id)}`, "DELETE");
     const current = await household();
     for (const item of current.recipes.filter(item => item.id.startsWith(prefix))) await request(`recipes/${encodeURIComponent(item.id)}`, "DELETE");
     for (const grocery of current.groceries.filter(item => item.id.startsWith(prefix))) await request(`groceries/${encodeURIComponent(grocery.id)}`, "DELETE");

@@ -1048,6 +1048,7 @@ export function App() {
       <RecipeChecklist
         recipes={data.recipes}
         groceries={data.groceries}
+        meals={data.meals}
         loaded={loaded}
         error={error}
         search={search}

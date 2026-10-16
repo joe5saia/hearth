@@ -1,5 +1,6 @@
 import { useState } from "react";
-import { displayAmount, matchesRecipeSearch, type Household } from "./domain";
+import { ChevronLeft, ChevronRight } from "lucide-react";
+import { addDays, displayAmount, matchesRecipeSearch, weekStart, type Household } from "./domain";
 import { ingredientTotals } from "./ingredient-totals";
 import { ShareLink } from "./ShareLink";
 import "./recipe-checklist.css";
@@ -8,6 +9,7 @@ import "./recipe-checklist.css";
 export function RecipeChecklist({
   recipes,
   groceries,
+  meals,
   loaded,
   error,
   search,
@@ -16,7 +18,7 @@ export function RecipeChecklist({
   setSelected,
   showList,
   setShowList,
-}: Pick<Household, "recipes" | "groceries"> & {
+}: Pick<Household, "recipes" | "groceries" | "meals"> & {
   loaded: boolean;
   error: string;
   search: string;
@@ -27,6 +29,18 @@ export function RecipeChecklist({
   setShowList: (showList: boolean) => void;
 }) {
   const [checked, setChecked] = useState<string[]>([]);
+  const [week, setWeek] = useState(weekStart);
+  const weekEnd = addDays(week, 6);
+
+  // Each planned recipe counts once, in meal-plan order, like a manual selection.
+  const planned = [
+    ...new Set(
+      meals.flatMap((meal) =>
+        meal.recipeId && meal.date >= week && meal.date <= weekEnd ? [meal.recipeId] : [],
+      ),
+    ),
+  ];
+
   const chosen = recipes.filter((recipe) => selected.includes(recipe.id));
   const rows = ingredientTotals({ recipes: chosen, groceries });
   const visible = recipes.filter((recipe) => matchesRecipeSearch(recipe, search));
@@ -91,6 +105,48 @@ export function RecipeChecklist({
             setShowList(true);
           }}
         >
+          <section className="recipe-checklist-week" aria-label="Meal plan week">
+            <strong>From your meal plan</strong>
+            <div className="week-navigation">
+              <button
+                type="button"
+                className="icon-button"
+                aria-label="Previous week"
+                onClick={() => setWeek(addDays(week, -7))}
+              >
+                <ChevronLeft size={17} />
+              </button>
+              <h2>
+                {new Intl.DateTimeFormat("en-US", {
+                  month: "short",
+                  day: "numeric",
+                  year: "numeric",
+                }).formatRange(new Date(`${week}T12:00:00`), new Date(`${weekEnd}T12:00:00`))}
+              </h2>
+              <button
+                type="button"
+                className="icon-button"
+                aria-label="Next week"
+                onClick={() => setWeek(addDays(week, 7))}
+              >
+                <ChevronRight size={17} />
+              </button>
+            </div>
+            <button
+              type="button"
+              className="secondary"
+              disabled={!planned.length}
+              onClick={() => {
+                setSelected(planned);
+                setChecked([]);
+                setShowList(true);
+              }}
+            >
+              {planned.length
+                ? `Show this week’s ingredients (${planned.length} ${planned.length === 1 ? "recipe" : "recipes"})`
+                : "No recipes planned this week"}
+            </button>
+          </section>
           <label className="recipe-checklist-search">
             Search recipes
             <input type="search" value={search} onChange={(event) => setSearch(event.target.value)} />

@@ -9,6 +9,7 @@
 }
 .recipe-checklist header,
 .recipe-checklist form,
+.recipe-checklist-week,
 .recipe-checklist-search {
   display: grid;
   gap: 12px;
@@ -43,4 +44,12 @@
 }
 .recipe-checklist [aria-label="Ingredients needed"] .recipe-checklist-row:has(:checked) strong {
   text-decoration: line-through;
+}
+.recipe-checklist-week {
+  padding-bottom: 16px;
+  border-bottom: 1px solid var(--line);
+}
+.recipe-checklist-week .week-navigation h2 {
+  min-width: 0;
+  padding: 0 4px;
 }
