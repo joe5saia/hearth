@@ -182,10 +182,10 @@ async function commonNavigation(page: Page, touch: boolean, label: string, captu
     assert.equal(await page.locator(".week-picker[open]").count(), 0);
     assert(await trigger.evaluate((element: HTMLElement) => element === document.activeElement));
     await activate(trigger, touch);
-    await date.fill("2030-01-06");
+    await date.fill("2030-01-04");
     await activate(page.getByRole("button", { name: "Go to week", exact: true }), touch);
     assert.equal(await page.locator(".week-picker[open]").count(), 0);
-    assert.equal(await page.locator(".week-picker h2").textContent(), "Dec 31, 2029 – Jan 6, 2030");
+    assert.equal(await page.locator(".week-picker h2").textContent(), "Dec 29, 2029 – Jan 4, 2030");
     await activate(trigger, touch);
     await activate(page.getByRole("button", { name: "This week", exact: true }), touch);
     assert.equal(await page.locator(".week-picker h2").textContent(), currentWeek);

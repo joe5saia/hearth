@@ -28,11 +28,11 @@ const id = () => crypto.randomUUID();
 const collection = { id: id(), name: "Navigation smoke collection" };
 const grocery = { id: id(), name: "Navigation smoke lentils", unit: "g", quantity: 500, url: "", aisle: "Pantry", aliases: ["Navigation lentils", "Brown lentils"] };
 const recipe = { id: id(), title: "Navigation smoke lentil soup", description: "Disposable browser fixture", servings: 3, minutes: 20, category: collection.name, photo: "", source: "", rating: "neutral", ingredients: [{ name: grocery.name, quantity: 250, unit: "g", groceryItemId: grocery.id }], instructions: ["Simmer until tender."] };
-const meal = { id: id(), recipeId: recipe.id, date: "2026-11-04", slot: "Dinner", scale: 1.5, note: "Saved household meal" };
+const meal = { id: id(), recipeId: recipe.id, date: "2026-11-02", slot: "Dinner", scale: 1.5, note: "Saved household meal" };
 const noteMeal = { ...meal, id: id(), recipeId: null, note: "Navigation smoke note-only control" };
 const edgeMeals = [
-  { ...noteMeal, id: id(), date: "2026-11-02", note: "Navigation first-column meal" },
-  { ...noteMeal, id: id(), date: "2026-11-08", note: "Navigation final-row meal" },
+  { ...noteMeal, id: id(), date: "2026-10-31", note: "Navigation first-column meal" },
+  { ...noteMeal, id: id(), date: "2026-11-06", note: "Navigation final-row meal" },
 ];
 async function api(path: string, method: string, body?: unknown) {
   const response = await fetch(`${root}/api/${path}`, { method, headers: { "Content-Type": "application/json" }, body: body === undefined ? undefined : JSON.stringify(body) });
@@ -94,7 +94,7 @@ try {
           await cdp.send("Input.dispatchTouchEvent", { type: cancel ? "touchCancel" : "touchEnd", touchPoints: [] });
         };
         try {
-          await open("#plan?week=2026-11-02");
+          await open("#plan?week=2026-10-31");
           await card.tap();
           await expect(dialog()).toHaveAttribute("aria-label", "Recipe details");
           await expect(dialog().getByRole("button", { name: "Edit recipe", exact: true })).toHaveText("Edit");
@@ -192,7 +192,7 @@ try {
         } finally { await api("groceries", "PUT", grocery); }
       });
       await check("nested editors keep the outer scroll lock and Back restores page scrolling", async () => {
-        await open("#plan?week=2026-11-02");
+        await open("#plan?week=2026-10-31");
         const bodyStyle = await page.evaluate(() => document.body.style.cssText);
         await page.locator(".meal-card").filter({ hasText: recipe.title }).click();
         await dialog().getByRole("button", { name: "Edit recipe", exact: true }).click();
@@ -216,7 +216,7 @@ try {
       await check("meal actions remain pointer-accessible at the calendar's first column and final row", async () => {
         try {
           for (const entry of edgeMeals) {
-            await open("#plan?week=2026-11-02");
+            await open("#plan?week=2026-10-31");
             const toggle = page.getByRole("button", { name: `Actions for meal ${entry.note}`, exact: true });
             await toggle.scrollIntoViewIfNeeded();
             await toggle.click();
@@ -311,16 +311,16 @@ try {
         }
       });
       await check("selected meal-plan week, Back/Forward, direct open and reload", async () => {
-        await open("#plan?week=2026-11-02");
-        await expect(page.getByRole("heading", { name: "Nov 2 – Nov 8, 2026" })).toBeVisible();
+        await open("#plan?week=2026-10-31");
+        await expect(page.getByRole("heading", { name: "Oct 31 – Nov 6, 2026" })).toBeVisible();
         await page.getByRole("button", { name: "Next week", exact: true }).click();
-        await expect(page).toHaveURL(/week=2026-11-09/);
+        await expect(page).toHaveURL(/week=2026-11-07/);
         await page.goBack();
-        await expect(page.getByRole("heading", { name: "Nov 2 – Nov 8, 2026" })).toBeVisible();
+        await expect(page.getByRole("heading", { name: "Oct 31 – Nov 6, 2026" })).toBeVisible();
         await page.goForward();
-        await expect(page.getByRole("heading", { name: "Nov 9 – Nov 15, 2026" })).toBeVisible();
+        await expect(page.getByRole("heading", { name: "Nov 7 – Nov 13, 2026" })).toBeVisible();
         await page.reload();
-        await expect(page.getByRole("heading", { name: "Nov 9 – Nov 15, 2026" })).toBeVisible();
+        await expect(page.getByRole("heading", { name: "Nov 7 – Nov 13, 2026" })).toBeVisible();
         await shot("plan");
       });
       await check("shopping focus, builder, arrange, hidden checks and navigation history", async () => {
@@ -350,7 +350,7 @@ try {
         await expect(page.getByRole("button", { name: "Done arranging", exact: true })).toHaveAttribute("aria-pressed", "true");
       });
       await check("recipe details, saved meal context, scaling and editor Back", async () => {
-        await open(`#plan?week=2026-11-02&view=recipe&id=${recipe.id}&meal=${meal.id}&scale=2`);
+        await open(`#plan?week=2026-10-31&view=recipe&id=${recipe.id}&meal=${meal.id}&scale=2`);
         await expect(dialog().locator("h1")).toHaveText(recipe.title);
         await expect(dialog().getByLabel("Preview recipe scale")).toHaveValue("2");
         await expect(dialog()).toContainText("6 servings");
@@ -392,7 +392,7 @@ try {
       });
       await check("all saved entity and flow links hydrate from household data", async () => {
         for (const [hash, title] of [
-          [`#plan?week=2026-11-02&view=meal&id=${meal.id}`, "Edit meal"],
+          [`#plan?week=2026-10-31&view=meal&id=${meal.id}`, "Edit meal"],
           [`#groceries?view=grocery&id=${grocery.id}`, "Grocery item"],
           [`#recipes?view=collection&id=${collection.id}`, "Edit collection"],
           [`#recipes?view=editor&id=${recipe.id}`, "Edit recipe"],
@@ -403,7 +403,7 @@ try {
           ["#recipes?view=editor", "Add a recipe"],
           ["#groceries?view=grocery", "Grocery item"],
           ["#recipes?view=collection", "Add collection"],
-          [`#plan?week=2026-11-02&view=meal&date=2026-11-06&recipe=${recipe.id}`, "Add a meal"],
+          [`#plan?week=2026-10-31&view=meal&date=2026-11-06&recipe=${recipe.id}`, "Add a meal"],
         ]) {
           await open(hash);
           await expect(dialog()).toHaveAttribute("aria-label", title);
@@ -411,7 +411,7 @@ try {
         }
       });
       await check("nested meal draft survives preview Back, never leaks into URL/history or reload", async () => {
-        await open(`#plan?week=2026-11-02&view=meal&date=2026-11-06&recipe=${recipe.id}`);
+        await open(`#plan?week=2026-10-31&view=meal&date=2026-11-06&recipe=${recipe.id}`);
         await dialog().getByLabel(/A note for this meal/).fill("PRIVATE DRAFT DO NOT SHARE");
         await dialog().getByRole("button", { name: /View recipe/ }).click();
         await expect(dialog()).toHaveAttribute("aria-label", "Recipe details");
@@ -462,9 +462,9 @@ try {
         await expect(rows).toHaveText(oldest);
       });
       await check("UI navigation creates shareable meal links; saved edits close to a reloadable page", async () => {
-        await open("#plan?week=2026-11-02");
+        await open("#plan?week=2026-10-31");
         await page.locator(".meal-card").filter({ hasText: recipe.title }).click();
-        await expect(page).toHaveURL(`${root}/#plan?week=2026-11-02&view=recipe&id=${recipe.id}&meal=${meal.id}`);
+        await expect(page).toHaveURL(`${root}/#plan?week=2026-10-31&view=recipe&id=${recipe.id}&meal=${meal.id}`);
         await expect(dialog().getByRole("button", { name: "Edit meal", exact: true })).toHaveCount(0);
         await dialog().getByRole("button", { name: "Close dialog" }).click();
         await page.getByRole("button", { name: `Actions for meal ${recipe.title}`, exact: true }).click();
@@ -478,9 +478,9 @@ try {
         await dialog().getByLabel(/A note for this meal/).fill("Saved by navigation E2E");
         await dialog().getByRole("button", { name: "Save", exact: true }).click();
         await expect(dialog()).toHaveCount(0);
-        await expect(page).toHaveURL(`${root}/#plan?week=2026-11-02`);
+        await expect(page).toHaveURL(`${root}/#plan?week=2026-10-31`);
         await page.reload();
-        await open(`#plan?week=2026-11-02&view=meal&id=${meal.id}`);
+        await open(`#plan?week=2026-10-31&view=meal&id=${meal.id}`);
         await expect(dialog().getByLabel(/A note for this meal/)).toHaveValue("Saved by navigation E2E");
         await api("meals", "PUT", meal);
       });
@@ -488,7 +488,7 @@ try {
         const replacement = { ...recipe, id: id(), title: "Navigation replacement dinner" };
         try {
           await api("recipes", "PUT", replacement);
-          await open(`#plan?week=2026-11-02&view=meal&id=${meal.id}`);
+          await open(`#plan?week=2026-10-31&view=meal&id=${meal.id}`);
           await page.reload();
           await dialog().getByLabel(/A note for this meal/).fill("Keep this meal note");
           await dialog().getByRole("button", { name: "Change recipe", exact: true }).click();
@@ -514,7 +514,7 @@ try {
         }
       });
       await check("Back during a pending save keeps the user's destination after the write completes", async () => {
-        await open("#plan?week=2026-11-02");
+        await open("#plan?week=2026-10-31");
         await page.getByRole("button", { name: `Actions for meal ${recipe.title}`, exact: true }).click();
         await page.getByRole("button", { name: "Edit meal", exact: true }).click();
         await dialog().getByLabel(/A note for this meal/).fill("Pending navigation save");
@@ -532,7 +532,7 @@ try {
           release?.();
           await expect(page.getByText("Meal plan updated", { exact: true })).toBeVisible();
           await expect(dialog()).toHaveCount(0);
-          await expect(page).toHaveURL(`${root}/#plan?week=2026-11-02`);
+          await expect(page).toHaveURL(`${root}/#plan?week=2026-10-31`);
           const saved = Schema.decodeUnknownSync(HouseholdSchema)(await (await fetch(`${root}/api/household`)).json());
           assert.equal(saved.meals.find((item) => item.id === meal.id)?.note, "Pending navigation save");
         } finally {
@@ -568,7 +568,7 @@ try {
       await check("share affordance delivers exact recipe, plan and shopping links without credentials", async () => {
         // Exercise the UI-to-platform boundary on both engines; real native sheet needs an Apple device.
         await page.evaluate(() => Object.defineProperty(navigator, "share", { configurable: true, value: async (payload: ShareData) => { window.shared = payload; } }));
-        for (const hash of [`#recipes?view=recipe&id=${recipe.id}`, "#plan?week=2026-11-02", "#shopping?hideChecked=1"]) {
+        for (const hash of [`#recipes?view=recipe&id=${recipe.id}`, "#plan?week=2026-10-31", "#shopping?hideChecked=1"]) {
           await open(hash);
           await page.evaluate(() => Object.defineProperty(navigator, "share", { configurable: true, value: async (payload: ShareData) => { window.shared = payload; } }));
           await page.getByRole("button", { name: "Share link", exact: true }).last().click();
@@ -580,10 +580,10 @@ try {
       });
       if (profile === "desktop") await check("clipboard fallback copies a reusable link", async () => {
         await context.grantPermissions(["clipboard-read", "clipboard-write"]);
-        await open("#plan?week=2026-11-02");
+        await open("#plan?week=2026-10-31");
         await page.evaluate(() => Object.defineProperty(navigator, "share", { configurable: true, value: undefined }));
         await page.getByRole("button", { name: "Share link", exact: true }).click();
-        await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe(`${root}/#plan?week=2026-11-02`);
+        await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe(`${root}/#plan?week=2026-10-31`);
       });
       if (profile !== "desktop") assert(await page.evaluate(() => matchMedia("(pointer: coarse)").matches), "Touch profile required");
       assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false, "No page overflow");

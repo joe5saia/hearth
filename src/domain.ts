@@ -339,11 +339,11 @@ export function addDays(key: string, days: number): CalendarDate {
   return dateKey(date);
 }
 
-/** Returns the local Monday for the supplied date, defaulting to today. */
+/** Returns the local Saturday that starts the household's Saturday–Friday week, defaulting to today. */
 export function weekStart(key: string = dateKey(new Date())): CalendarDate {
   const day = new Date(`${key}T12:00:00`).getDay();
 
-  return addDays(key, -((day + 6) % 7));
+  return addDays(key, -((day + 1) % 7));
 }
 
 /** Finds an open dinner from today within the week, falling back to the starting date when full. */

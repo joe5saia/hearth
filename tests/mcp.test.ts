@@ -1311,24 +1311,24 @@ it("does not derive shopping needs from scaled meals and seeds only an empty hou
     for (const recipe of recipes) await success("delete_recipe", { id: recipe.id });
   }
 
-  // 2033-04-04 is Monday; samples are placed in the containing Monday-based week.
+  // 2033-04-04 is Monday; samples are placed in the containing Saturday–Friday week.
   await success("add_demo_data", { today: "2033-04-04" });
   const recipes = await success("search_recipes", {});
-  const meals = await success("list_meals", { start: "2033-04-04", end: "2033-04-10" });
-  const shopping = await success("get_shopping_list", { start: "2033-04-04", end: "2033-04-10" });
+  const meals = await success("list_meals", { start: "2033-04-02", end: "2033-04-08" });
+  const shopping = await success("get_shopping_list", { start: "2033-04-02", end: "2033-04-08" });
   expect(recipes.pagination.total).toBeGreaterThan(0);
   expect(meals.meals.map((meal) => meal.date)).toEqual([
+    "2033-04-02",
+    "2033-04-03",
     "2033-04-04",
     "2033-04-05",
-    "2033-04-06",
     "2033-04-07",
-    "2033-04-09",
   ]);
   expect(shopping.extras).toContainEqual({ id: "sample-extra", name: "Greek yogurt", checked: 0 });
   expect((await call("add_demo_data", { today: "2033-04-04" })).isError).toBe(true);
   expect(await success("search_recipes", {})).toEqual(recipes);
-  expect(await success("list_meals", { start: "2033-04-04", end: "2033-04-10" })).toEqual(meals);
-  expect(await success("get_shopping_list", { start: "2033-04-04", end: "2033-04-10" })).toEqual(shopping);
+  expect(await success("list_meals", { start: "2033-04-02", end: "2033-04-08" })).toEqual(meals);
+  expect(await success("get_shopping_list", { start: "2033-04-02", end: "2033-04-08" })).toEqual(shopping);
 });
 
 it("exports MCP tool failures even under HTTP 200 and never exports OAuth credentials or search text", async () => {

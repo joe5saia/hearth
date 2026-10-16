@@ -232,15 +232,15 @@ export const sampleRecipes = Schema.decodeSync(Schema.Array(RecipeSchema))([
   },
 ]);
 
-/** Creates starter meals relative to the Monday of the supplied local calendar date. */
+/** Creates starter meals relative to the Saturday week start containing the supplied local calendar date. */
 export function sampleMeals(today: string) {
-  const monday = weekStart(today);
+  const start = weekStart(today);
 
   return Schema.decodeSync(Schema.Array(MealSchema))([
     {
       id: "sample-1",
       recipeId: "lemon-chicken",
-      date: monday,
+      date: start,
       slot: "Dinner",
       scale: 1,
       note: "With a big green salad",
@@ -248,7 +248,7 @@ export function sampleMeals(today: string) {
     {
       id: "sample-2",
       recipeId: "tomato-pasta",
-      date: addDays(monday, 1),
+      date: addDays(start, 1),
       slot: "Dinner",
       scale: 1.5,
       note: "Extra for tomorrow’s lunch",
@@ -256,16 +256,16 @@ export function sampleMeals(today: string) {
     {
       id: "sample-3",
       recipeId: "grain-bowl",
-      date: addDays(monday, 2),
+      date: addDays(start, 2),
       slot: "Lunch",
       scale: 2,
       note: "Add chicken to Alex’s bowl",
     },
-    { id: "sample-4", recipeId: "salmon", date: addDays(monday, 3), slot: "Dinner", scale: 1, note: "" },
+    { id: "sample-4", recipeId: "salmon", date: addDays(start, 3), slot: "Dinner", scale: 1, note: "" },
     {
       id: "sample-5",
       recipeId: "tacos",
-      date: addDays(monday, 5),
+      date: addDays(start, 5),
       slot: "Dinner",
       scale: 1,
       note: "Taco night!",
