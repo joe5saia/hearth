@@ -437,6 +437,30 @@ try {
         await open(`#groceries?search=${encodeURIComponent(grocery.name)}`);
         await expect(page.getByRole("button", { name: `Edit grocery item ${grocery.name}` })).toBeVisible();
       });
+      await check("recipe sort by title or addition order is shareable and follows Back", async () => {
+        const titles = new Map([...original.recipes.map((entry) => [entry.id, entry.title] as const), [recipe.id, recipe.title]]);
+        const oldest = [...original.recipesAdded, recipe.id].map((entry) => titles.get(entry) ?? entry);
+        const az = [...titles.values()].sort((a, b) => a.localeCompare(b, undefined, { sensitivity: "base", numeric: true }));
+        const rows = page.locator(".recipe-row h2");
+        const sort = page.getByLabel("Sort recipes");
+        await open("#recipes");
+        await expect(sort).toHaveValue("az");
+        await expect(rows).toHaveText(az);
+        await sort.selectOption("newest");
+        await expect(page).toHaveURL(`${root}/#recipes?sort=newest`);
+        await expect(rows).toHaveText([...oldest].reverse());
+        await sort.selectOption("za");
+        await expect(rows).toHaveText([...az].reverse());
+        await page.goBack();
+        await expect(sort).toHaveValue("newest");
+        await expect(rows.first()).toHaveText(recipe.title);
+        await open(`#recipes?collection=${collection.id}&sort=oldest`);
+        await page.reload();
+        await expect(sort).toHaveValue("oldest");
+        await expect(rows).toHaveText([recipe.title]);
+        await open("#recipes?sort=oldest");
+        await expect(rows).toHaveText(oldest);
+      });
       await check("UI navigation creates shareable meal links; saved edits close to a reloadable page", async () => {
         await open("#plan?week=2026-11-02");
         await page.locator(".meal-card").filter({ hasText: recipe.title }).click();

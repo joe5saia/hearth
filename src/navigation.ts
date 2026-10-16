@@ -15,6 +15,12 @@ export type View =
   | "chatgpt"
   | "shopping-recipes";
 
+/** Recipe list orders, in menu order; "az" is the default and is omitted from URLs. */
+export const recipeSorts = ["az", "za", "newest", "oldest"] as const;
+
+/** Recipe list order: by title, or by when the recipe was added. */
+export type RecipeSort = (typeof recipeSorts)[number];
+
 /** Saved navigation state only; unsaved household drafts do not belong in routes. */
 export type Route = {
   page: Page;
@@ -22,6 +28,7 @@ export type Route = {
   mode: "list" | "focus" | "builder" | "arrange";
   hideChecked: boolean;
   collection: string;
+  sort: RecipeSort;
   search: string;
   selected: string[];
   checklist: boolean;
@@ -55,6 +62,7 @@ export function readRoute(hash = location.hash): Route {
   const mode = params.get("mode");
   const view = params.get("view");
   const date = params.get("date");
+  const sort = params.get("sort");
   const scale = Number(params.get("scale"));
 
   return {
@@ -63,6 +71,7 @@ export function readRoute(hash = location.hash): Route {
     mode: mode === "focus" || mode === "builder" || mode === "arrange" ? mode : "list",
     hideChecked: params.get("hideChecked") === "1",
     collection: params.get("collection") || "all",
+    sort: recipeSorts.find((candidate) => candidate === sort) ?? "az",
     search: params.get("search") || "",
     selected: params.getAll("selected"),
     checklist: params.get("checklist") === "1",
@@ -92,6 +101,8 @@ export function routeHash(route: Route): string {
 
     if (route.search) params.set("search", route.search);
   }
+
+  if (route.page === "recipes" && route.sort !== "az") params.set("sort", route.sort);
 
   if (route.page === "shopping" && route.mode === "builder" && route.search)
     params.set("search", route.search);

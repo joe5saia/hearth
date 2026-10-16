@@ -302,6 +302,8 @@ export type ShoppingOrder = typeof ShoppingOrderSchema.Type;
 export const HouseholdSchema = Schema.Struct({
   collections: Schema.Array(CollectionSchema),
   recipes: Schema.Array(RecipeSchema),
+  /** Recipe IDs from oldest to newest addition; editing a recipe keeps its place. */
+  recipesAdded: Schema.Array(RecipeId),
   meals: Schema.Array(MealSchema),
   extras: Schema.Array(ExtraSchema),
   checks: Schema.Array(CheckSchema),

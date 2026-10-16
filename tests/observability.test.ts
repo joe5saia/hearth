@@ -166,7 +166,7 @@ it("exports correlated request, D1 and decode spans without household content", 
   expect(requestSpans.find((s) => s.name === "db.call")?.parentSpanId).toBe(household.spanId);
   expect(events.find((e) => e.requestId === requestId && e.event === "database_call")).toMatchObject({
     operation: "household",
-    batchSize: 7,
+    batchSize: 8,
     rowsWritten: 0,
   });
   expect(events.find((e) => e.requestId === requestId && e.event === "household_response")).toMatchObject({

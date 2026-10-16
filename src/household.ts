@@ -8,6 +8,7 @@ import {
   CheckWriteSchema,
   ShoppingOrderSchema,
   DateSchema,
+  RecipeId,
   type Collection,
   type Meal,
   type Extra,
@@ -35,10 +36,12 @@ function mealStatement(db: D1Database, meal: Meal) {
 /** Loads and decodes a single transaction snapshot, retaining each collection's SQL ordering. */
 export const getHousehold = (db: D1Database) =>
   Effect.gen(function* () {
-    // One batch keeps all seven reads in the same transaction snapshot.
+    // One batch keeps all eight reads in the same transaction snapshot.
     const snapshot = yield* database(() =>
       db.batch([
         db.prepare("SELECT * FROM recipes ORDER BY title"),
+        // Recipe writes upsert in place, so rowid order is addition order; data imports copy rows in rowid order.
+        db.prepare("SELECT id FROM recipes ORDER BY rowid"),
         db.prepare("SELECT * FROM meals ORDER BY date,slot,id"),
         db.prepare("SELECT * FROM extras ORDER BY rowid"),
         db.prepare("SELECT * FROM checks"),
@@ -48,7 +51,7 @@ export const getHousehold = (db: D1Database) =>
       ]),
     );
 
-    const [recipes, meals, extras, checks, collections, groceries, shoppingOrder] = snapshot;
+    const [recipes, recipesAdded, meals, extras, checks, collections, groceries, shoppingOrder] = snapshot;
 
     yield* record("household_snapshot", {
       recipes: recipes.results.length,
@@ -70,6 +73,9 @@ export const getHousehold = (db: D1Database) =>
 
       return Schema.decodeUnknownSync(HouseholdSchema)({
         recipes: recipes.results.map(parseRecipe),
+        recipesAdded: Schema.decodeUnknownSync(Schema.Array(Schema.Struct({ id: RecipeId })))(
+          recipesAdded.results,
+        ).map((row) => row.id),
         meals: meals.results,
         extras: extras.results,
         checks: checks.results,

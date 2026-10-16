@@ -7,7 +7,7 @@ import { ShoppingRecipeForm } from "./ShoppingRecipeForm";
 import { RecipeChecklist } from "./RecipeChecklist";
 import { MealCard } from "./MealCard";
 import { ChatGPTSetup } from "./ChatGPTSetup";
-import { readRoute, routeHash, type Page, type Route } from "./navigation";
+import { readRoute, recipeSorts, routeHash, type Page, type Route } from "./navigation";
 import { ShareLink } from "./ShareLink";
 import { FeedbackForm } from "./FeedbackForm";
 import { feedbackURL, type FeedbackInput } from "./feedback-contract";
@@ -119,6 +119,7 @@ type Modal =
 const emptyHousehold: Household = {
   collections: [],
   recipes: [],
+  recipesAdded: [],
   meals: [],
   extras: [],
   checks: [],
@@ -317,7 +318,7 @@ export function App() {
   const routeRef = useRef(route);
   const entries = useRef(new Map<string, Route>());
   const lastHistoryEvent = useRef("");
-  const { page, week, search, hideChecked, collection: collectionFilter } = route;
+  const { page, week, search, hideChecked, collection: collectionFilter, sort: recipeSort } = route;
   const shoppingMode = route.mode === "focus";
   const listBuilder = route.mode === "builder";
   const arranging = route.mode === "arrange";
@@ -390,6 +391,10 @@ export function App() {
   const setWeek = (week: string) => updateRoute({ week });
   const setSearch = (search: string) => updateRoute({ search }, true);
   const setCollectionFilter = (collection: string) => updateRoute({ collection });
+
+  const setRecipeSort = (sort: string) =>
+    updateRoute({ sort: recipeSorts.find((candidate) => candidate === sort) ?? "az" });
+
   const setHideChecked = (hideChecked: boolean) => updateRoute({ hideChecked });
 
   const setModal = (next: Modal | null) => {
@@ -955,13 +960,30 @@ export function App() {
 
   const selectedCollection = data.collections.find((collection) => collection.id === collectionFilter);
 
-  const matchingRecipes = data.recipes.filter(
-    (recipe) =>
-      matchesRecipeSearch(recipe, search) &&
-      (collectionFilter === "uncollected"
-        ? !recipe.category
-        : !selectedCollection || recipe.category === selectedCollection.name),
+  const addedOrder = useMemo(
+    () => new Map(data.recipesAdded.map((id, index) => [id, index])),
+    [data.recipesAdded],
   );
+
+  const matchingRecipes = data.recipes
+    .filter(
+      (recipe) =>
+        matchesRecipeSearch(recipe, search) &&
+        (collectionFilter === "uncollected"
+          ? !recipe.category
+          : !selectedCollection || recipe.category === selectedCollection.name),
+    )
+    .sort((a, b) => {
+      const byTitle = a.title.localeCompare(b.title, undefined, { sensitivity: "base", numeric: true });
+
+      if (recipeSort === "az") return byTitle;
+
+      if (recipeSort === "za") return -byTitle;
+
+      const added = (addedOrder.get(a.id) ?? addedOrder.size) - (addedOrder.get(b.id) ?? addedOrder.size);
+
+      return (recipeSort === "newest" ? -added : added) || byTitle;
+    });
 
   const catalog = useMemo(
     () => shoppingList(data.groceries, data.shoppingOrder, data.checks),
@@ -1485,6 +1507,19 @@ export function App() {
                       ))}
                     </select>
                     <ChevronDown size={16} aria-hidden="true" />
+                  </label>
+                  <label>
+                    <span className="sr-only">Sort</span>
+                    <select
+                      aria-label="Sort recipes"
+                      value={recipeSort}
+                      onChange={(event) => setRecipeSort(event.target.value)}
+                    >
+                      <option value="az">A–Z</option>
+                      <option value="za">Z–A</option>
+                      <option value="newest">Newest added</option>
+                      <option value="oldest">Oldest added</option>
+                    </select>
                   </label>
                 </div>
                 <p className="muted small">

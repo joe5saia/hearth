@@ -1271,6 +1271,7 @@ describe("real Worker with disposable SQLite D1", () => {
       groceries: [],
       shoppingOrder: { aisles: [], items: [] },
       recipes: [],
+      recipesAdded: [],
       meals: [],
       extras: [],
       checks: [],
@@ -1341,6 +1342,34 @@ describe("real Worker with disposable SQLite D1", () => {
     expect((await send(`recipes/${sampleRecipes[0].id}`, "DELETE", "{}")).status).toBe(200);
     expect(await db.prepare("SELECT count(*) AS count FROM recipes").first()).toEqual({ count: 0 });
   });
+
+  it("reports recipe addition order independently of titles, edits, ratings and deletions", async () => {
+    const [lemon, pasta, bowl, salmon] = sampleRecipes;
+
+    const snapshot = async () =>
+      Schema.decodeUnknownSync(HouseholdSchema)(
+        await (await worker.dispatchFetch("http://localhost/api/household")).json(),
+      );
+
+    for (const recipe of [pasta, lemon, bowl])
+      expect((await send("recipes", "PUT", JSON.stringify(recipe))).status).toBe(200);
+    let household = await snapshot();
+    expect(household.recipes.map((recipe) => recipe.id)).toEqual([bowl.id, lemon.id, pasta.id]);
+    expect(household.recipesAdded).toEqual([pasta.id, lemon.id, bowl.id]);
+
+    expect((await send("recipes", "PUT", JSON.stringify({ ...pasta, title: "Aardvark pasta" }))).status).toBe(
+      200,
+    );
+    expect((await send(`recipes/rating/${lemon.id}`, "PUT", JSON.stringify({ rating: "up" }))).status).toBe(
+      200,
+    );
+    expect((await send(`recipes/${bowl.id}`, "DELETE", "{}")).status).toBe(200);
+    expect((await send("recipes", "PUT", JSON.stringify(salmon))).status).toBe(200);
+    household = await snapshot();
+    expect(household.recipes.map((recipe) => recipe.id)).toEqual([pasta.id, salmon.id, lemon.id]);
+    expect(household.recipesAdded).toEqual([pasta.id, lemon.id, salmon.id]);
+  });
+
   it("persists recipe-free notes, validates them, and converts entries without affecting other meals", async () => {
     const note = Schema.decodeUnknownSync(MealSchema)({
       ...meal,
@@ -1444,6 +1473,7 @@ describe("real Worker with disposable SQLite D1", () => {
       groceries: [],
       shoppingOrder: { aisles: [], items: [] },
       recipes: [],
+      recipesAdded: [],
       meals: [],
       extras: [{ id: "snack", name: "Apples & peanut butter", checked: 1 }],
       checks: [{ key: "range-ingredient-total", checked: 1, packages: 1 }],
@@ -1761,6 +1791,7 @@ describe("real Worker with disposable SQLite D1", () => {
         groceries: [],
         shoppingOrder: { aisles: [], items: [] },
         recipes: [],
+        recipesAdded: [],
         meals: [],
         extras: [],
         checks: [],
