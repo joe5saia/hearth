@@ -26,7 +26,6 @@ export type Route = {
   page: Page;
   week: string;
   mode: "list" | "focus" | "builder" | "arrange";
-  hideChecked: boolean;
   collection: string;
   sort: RecipeSort;
   search: string;
@@ -69,7 +68,6 @@ export function readRoute(hash = location.hash): Route {
     page: pages.find((candidate) => candidate === page) ?? "plan",
     week: week && validDate(week) ? weekStart(week) : weekStart(),
     mode: mode === "focus" || mode === "builder" || mode === "arrange" ? mode : "list",
-    hideChecked: params.get("hideChecked") === "1",
     collection: params.get("collection") || "all",
     sort: recipeSorts.find((candidate) => candidate === sort) ?? "az",
     search: params.get("search") || "",
@@ -92,8 +90,6 @@ export function routeHash(route: Route): string {
 
   if (route.page === "shopping") {
     if (route.mode !== "list") params.set("mode", route.mode);
-
-    if (route.hideChecked) params.set("hideChecked", "1");
   }
 
   if (route.page === "recipes" || route.page === "groceries" || route.page === "recipe-checklist") {

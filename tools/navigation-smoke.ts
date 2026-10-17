@@ -323,13 +323,13 @@ try {
         await expect(page.getByRole("heading", { name: "Nov 7 – Nov 13, 2026" })).toBeVisible();
         await shot("plan");
       });
-      await check("shopping focus, builder, arrange, hidden checks and navigation history", async () => {
-        await open("#shopping?mode=focus&hideChecked=1");
+      await check("shopping focus, builder, arrange and navigation history", async () => {
+        await open("#shopping?mode=focus");
         await expect(page.getByRole("button", { name: "Exit shopping mode", exact: true })).toHaveAttribute("aria-pressed", "true");
         await expect(page.locator(".shopping-summary button, .shopping-summary a")).toHaveCount(1);
         await shot("shopping");
         await page.getByRole("button", { name: "Exit shopping mode", exact: true }).click();
-        await expect(page.getByRole("button", { name: "Show checked items", exact: true })).toHaveAttribute("aria-pressed", "true");
+        await expect(page.getByRole("button", { name: /(Hide|Show) checked/ })).toHaveCount(0);
         await page.getByRole("button", { name: "List Builder", exact: true }).click();
         await expect(page).toHaveURL(/mode=builder/);
         await page.goBack();
@@ -568,7 +568,7 @@ try {
       await check("share affordance delivers exact recipe, plan and shopping links without credentials", async () => {
         // Exercise the UI-to-platform boundary on both engines; real native sheet needs an Apple device.
         await page.evaluate(() => Object.defineProperty(navigator, "share", { configurable: true, value: async (payload: ShareData) => { window.shared = payload; } }));
-        for (const hash of [`#recipes?view=recipe&id=${recipe.id}`, "#plan?week=2026-10-31", "#shopping?hideChecked=1"]) {
+        for (const hash of [`#recipes?view=recipe&id=${recipe.id}`, "#plan?week=2026-10-31", "#shopping?mode=arrange"]) {
           await open(hash);
           await page.evaluate(() => Object.defineProperty(navigator, "share", { configurable: true, value: async (payload: ShareData) => { window.shared = payload; } }));
           await page.getByRole("button", { name: "Share link", exact: true }).last().click();
@@ -576,7 +576,7 @@ try {
         }
         await page.evaluate(() => history.replaceState(history.state, "", `${location.pathname}?auth-secret=DO-NOT-SHARE${location.hash}&token=DO-NOT-SHARE`));
         await page.getByRole("button", { name: "Share link", exact: true }).click();
-        await expect.poll(() => page.evaluate(() => window.shared?.url)).toBe(`${root}/#shopping?hideChecked=1`);
+        await expect.poll(() => page.evaluate(() => window.shared?.url)).toBe(`${root}/#shopping?mode=arrange`);
       });
       if (profile === "desktop") await check("clipboard fallback copies a reusable link", async () => {
         await context.grantPermissions(["clipboard-read", "clipboard-write"]);

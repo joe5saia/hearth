@@ -56,7 +56,6 @@ export function ShoppingItems({
   shoppingMode,
   listBuilder,
   arranging,
-  hideChecked,
   checked,
   toggle,
   saveOrder,
@@ -70,7 +69,6 @@ export function ShoppingItems({
   shoppingMode: boolean;
   listBuilder: boolean;
   arranging: boolean;
-  hideChecked: boolean;
   checked: (item: ShoppingItem) => boolean;
   toggle: (item: ShoppingItem) => void;
   saveOrder: (order: ShoppingOrder) => Promise<boolean>;
@@ -534,10 +532,9 @@ export function ShoppingItems({
         <div className="purchase-groups">
           {groups.map((aisle) => {
             const all = items.filter((item) => item.grocery?.aisle === aisle);
-            const visible = all.filter((item) => !hideChecked || !checked(item));
-            const aisleItems = visible.flatMap((item) => (item.grocery ? [item.grocery] : []));
+            const aisleItems = all.flatMap((item) => (item.grocery ? [item.grocery] : []));
 
-            if (!visible.length) return null;
+            if (!all.length) return null;
 
             return (
               <section
@@ -552,7 +549,7 @@ export function ShoppingItems({
                     {all.filter(checked).length} / {all.length}
                   </span>
                 </div>
-                {visible.map((item, position) => {
+                {all.map((item, position) => {
                   const isDragging = dragging !== null && dragging.id === item.grocery?.id;
 
                   const isTarget =

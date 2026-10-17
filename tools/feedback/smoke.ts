@@ -39,7 +39,7 @@ try {
     const submissions: unknown[] = [];
     page.on("pageerror", (error: Error) => errors.push(error.message));
     page.on("request", request => { if (new URL(request.url()).pathname === "/api/feedback") submissions.push(request.postDataJSON()); });
-    await page.goto(`${url}/?source=feedback-smoke&access_token=disposable-query-credential#shopping?mode=arrange&hideChecked=1`);
+    await page.goto(`${url}/?source=feedback-smoke&access_token=disposable-query-credential#shopping?mode=arrange`);
     await page.getByRole("heading", { name: "Shopping list", exact: true }).waitFor();
     await page.getByLabel("Page options", { exact: true }).waitFor();
     // The header precedes household hydration, which canonicalizes the initial route.
@@ -72,7 +72,7 @@ try {
     assert(!JSON.stringify(deviceDraft).includes("disposable-query-credential") && !JSON.stringify(deviceDraft).includes("disposable-fragment-credential"), "URL credential parameters redacted before draft persistence");
     assert.equal(new URL(deviceDraft.context.page.url).searchParams.get("source"), "feedback-smoke");
     assert.equal(new URL(deviceDraft.context.page.url).searchParams.get("access_token"), "[redacted]");
-    assert(new URL(deviceDraft.context.page.url).hash.includes("mode=arrange") && new URL(deviceDraft.context.page.url).hash.includes("hideChecked=1"), "Full navigation query/hash preserved");
+    assert(new URL(deviceDraft.context.page.url).hash.includes("mode=arrange"), "Full navigation query/hash preserved");
     await field.press("Escape");
     await page.waitForFunction(() => !document.querySelector("dialog"));
     await page.evaluate(() => sessionStorage.removeItem("hearth-feedback-draft"));
@@ -83,7 +83,7 @@ try {
     assert.equal(privateSearchDraft.context.page.view.search, "[redacted]");
     assert(!JSON.stringify(privateSearchDraft).includes("disposable-search-credential"), "Structured search cannot reintroduce a redacted credential");
     await field.press("Escape");
-    await page.goto(`${url}/?source=feedback-smoke#shopping?mode=arrange&hideChecked=1`);
+    await page.goto(`${url}/?source=feedback-smoke#shopping?mode=arrange`);
     await page.evaluate(ticket => {
       if (ticket) sessionStorage.setItem("hearth-feedback-draft", JSON.stringify(ticket));
       else sessionStorage.removeItem("hearth-feedback-draft");

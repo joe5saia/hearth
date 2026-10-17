@@ -320,7 +320,7 @@ export function App() {
   const routeRef = useRef(route);
   const entries = useRef(new Map<string, Route>());
   const lastHistoryEvent = useRef("");
-  const { page, week, search, hideChecked, collection: collectionFilter, sort: recipeSort } = route;
+  const { page, week, search, collection: collectionFilter, sort: recipeSort } = route;
   const shoppingMode = route.mode === "focus";
   const listBuilder = route.mode === "builder";
   const arranging = route.mode === "arrange";
@@ -400,8 +400,6 @@ export function App() {
 
   const setRecipeSort = (sort: string) =>
     updateRoute({ sort: recipeSorts.find((candidate) => candidate === sort) ?? "az" });
-
-  const setHideChecked = (hideChecked: boolean) => updateRoute({ hideChecked });
 
   const setModal = (next: Modal | null) => {
     // Feedback is transient, not a shareable view. Do not rewrite its originating URL.
@@ -1198,7 +1196,8 @@ export function App() {
                         view: {
                           week: capturedRoute.week,
                           mode: capturedRoute.mode,
-                          hideChecked: capturedRoute.hideChecked,
+                          // Feedback schema v2 still carries the retired Hide checked toggle.
+                          hideChecked: false,
                           collection: capturedRoute.collection.slice(0, 200),
                           search: capturedRoute.search.slice(0, 300),
                           selected: capturedRoute.selected.slice(0, 100).map((id) => id.slice(0, 200)),
@@ -1729,16 +1728,6 @@ export function App() {
                         {listBuilder ? "Exit Builder" : "List Builder"}
                       </button>
                     )}
-                    {!listBuilder && !shoppingMode && (
-                      <button
-                        className={`secondary ${hideChecked ? "selected" : ""}`}
-                        aria-label={hideChecked ? "Show checked items" : "Hide checked items"}
-                        aria-pressed={hideChecked}
-                        onClick={() => setHideChecked(!hideChecked)}
-                      >
-                        <SlidersHorizontal size={16} /> {hideChecked ? "Show checked" : "Hide checked"}
-                      </button>
-                    )}
                   </div>
                 </div>
                 {listBuilder && (
@@ -1769,7 +1758,6 @@ export function App() {
                       shoppingMode={shoppingMode || listBuilder}
                       listBuilder={listBuilder}
                       arranging={arranging}
-                      hideChecked={listBuilder ? false : hideChecked}
                       checked={(item) => isChecked(checkKey(item))}
                       toggle={(item) => {
                         const key = checkKey(item);
@@ -1925,37 +1913,32 @@ export function App() {
                         </div>
                       )}
                       <div className="extra-items">
-                        {data.extras.map((item) =>
-                          hideChecked && item.checked ? null : (
-                            <div className={`extra-item ${item.checked ? "checked" : ""}`} key={item.id}>
-                              <label>
-                                <input
-                                  type="checkbox"
-                                  checked={!!item.checked}
-                                  disabled={busy}
-                                  onChange={() =>
-                                    mutate("extras", "PUT", { ...item, checked: item.checked ? 0 : 1 })
-                                  }
-                                />
-                                <span>{item.name}</span>
-                              </label>
-                              <button
-                                className="icon-button"
-                                aria-label={`Remove ${item.name}`}
+                        {data.extras.map((item) => (
+                          <div className={`extra-item ${item.checked ? "checked" : ""}`} key={item.id}>
+                            <label>
+                              <input
+                                type="checkbox"
+                                checked={!!item.checked}
                                 disabled={busy}
-                                onClick={() =>
-                                  mutate(`extras/${encodeURIComponent(item.id)}`, "DELETE", undefined)
+                                onChange={() =>
+                                  mutate("extras", "PUT", { ...item, checked: item.checked ? 0 : 1 })
                                 }
-                              >
-                                <X size={15} />
-                              </button>
-                            </div>
-                          ),
-                        )}
+                              />
+                              <span>{item.name}</span>
+                            </label>
+                            <button
+                              className="icon-button"
+                              aria-label={`Remove ${item.name}`}
+                              disabled={busy}
+                              onClick={() =>
+                                mutate(`extras/${encodeURIComponent(item.id)}`, "DELETE", undefined)
+                              }
+                            >
+                              <X size={15} />
+                            </button>
+                          </div>
+                        ))}
                       </div>
-                      {hideChecked && data.extras.length > 0 && data.extras.every((item) => item.checked) && (
-                        <p className="extras-complete">All household extras are checked.</p>
-                      )}
                     </section>
                   </aside>
                 </div>
