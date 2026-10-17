@@ -49,6 +49,17 @@ export function MealCard({
     const box = panel.getBoundingClientRect();
     panel.style.left = `${Math.max(16, Math.min(button.right - box.width, innerWidth - box.width - 16))}px`;
     panel.style.top = `${Math.max(16, Math.min(button.bottom, innerHeight - box.height - 16))}px`;
+
+    const dismissOnMove = () => {
+      const current = anchor.getBoundingClientRect();
+
+      // Chromium can deliver a queued scroll after activation without moving the anchor.
+      if (current.x !== button.x || current.y !== button.y) setMenu(false);
+    };
+
+    window.addEventListener("scroll", dismissOnMove, true);
+
+    return () => window.removeEventListener("scroll", dismissOnMove, true);
   }, [menu]);
 
   const cancelGesture = () => {
@@ -77,7 +88,8 @@ export function MealCard({
       cancelGesture();
       setDragging(false);
       setOffset(0);
-      setMenu(false);
+
+      if (event.type !== "scroll") setMenu(false);
     };
 
     // Opening a dialog mid-hold retargets the compatibility click into the new dialog.

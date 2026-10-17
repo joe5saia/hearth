@@ -76,6 +76,51 @@ try {
         await page.screenshot({ path: resolve(artifacts, `navigation-${profile}-${name}.png`) });
       };
       const dialog = () => page.locator("dialog[open]");
+      if (profile === "touch") await check("scrolled iPhone SE meal actions survive activation and dismiss only when moved", async () => {
+        await open("#plan?week=2026-11-02");
+        const toggle = page.getByRole("button", { name: `Actions for meal ${recipe.title}`, exact: true });
+        const nextFrame = () => page.evaluate(() => new Promise<void>(done => requestAnimationFrame(() => requestAnimationFrame(() => done()))));
+        await toggle.evaluate(element => element.scrollIntoView({ block: "center" }));
+        await nextFrame();
+        assert(await page.evaluate(() => scrollY) > 0, "Regression requires a scrolled small screen");
+        // Chromium's pointer activation can queue a same-position scroll after opening.
+        // Cover it as well as native touch; neither should close an anchored menu.
+        for (const input of ["click", "tap"] as const) {
+          await toggle[input]();
+          // Re-deliver a queued scroll at the current position deterministically.
+          await page.evaluate(() => document.dispatchEvent(new Event("scroll")));
+          await nextFrame();
+          await expect(toggle).toHaveAttribute("aria-expanded", "true");
+          const edit = page.getByRole("button", { name: "Edit meal", exact: true });
+          await expect(edit).toBeVisible();
+          if (input === "click") await shot("scrolled-meal-actions");
+          await edit[input]();
+          await expect(dialog()).toHaveAttribute("aria-label", "Edit meal");
+          await expect(dialog().getByLabel(/A note for this meal/)).toHaveValue(meal.note);
+          await dialog().getByRole("button", { name: "Close dialog", exact: true })[input]();
+          await expect(dialog()).toHaveCount(0);
+        }
+        await toggle.tap();
+        await nextFrame();
+        await expect(toggle).toHaveAttribute("aria-expanded", "true");
+        const before = await toggle.boundingBox();
+        assert(before);
+        await page.evaluate(() => scrollBy(0, -60));
+        await expect.poll(async () => (await toggle.boundingBox())?.y).not.toBe(before.y);
+        await expect(toggle).toHaveAttribute("aria-expanded", "false");
+        await expect(page.locator(".meal-actions")).toHaveCount(0);
+        await toggle.tap();
+        await expect(toggle).toHaveAttribute("aria-expanded", "true");
+        await page.touchscreen.tap(8, 300);
+        await expect(toggle).toHaveAttribute("aria-expanded", "false");
+        await toggle.tap();
+        await expect(toggle).toHaveAttribute("aria-expanded", "true");
+        const viewport = page.viewportSize();
+        assert(viewport);
+        await page.setViewportSize({ ...viewport, width: viewport.width + 1 });
+        await expect(toggle).toHaveAttribute("aria-expanded", "false");
+        await page.setViewportSize(viewport);
+      });
       if (profile === "touch") await check("native touch tap, swipe, cancellation, scrolling, hold-to-edit and exact meal deletion", async () => {
         const cdp = await context.newCDPSession(page);
         const card = page.locator(".meal-card").filter({ hasText: recipe.title });
@@ -108,6 +153,10 @@ try {
           await expect(remove).toBeVisible();
           await expect(dialog()).toHaveCount(0);
           await shot("swipe-delete");
+          await page.evaluate(() => document.dispatchEvent(new Event("scroll")));
+          await expect(remove).toBeHidden();
+          await touch(-110, 0);
+          await expect(remove).toBeVisible();
           await touch(110, 0);
           await expect(remove).toBeHidden();
           await touch(-110, 0, 160, true);
@@ -119,6 +168,14 @@ try {
           assert(await page.evaluate(() => scrollY) > beforeScroll, "Vertical touch on a card must scroll the page");
           await expect(dialog()).toHaveCount(0);
           await expect(remove).toBeHidden();
+          await card.scrollIntoViewIfNeeded();
+          const heldBox = await card.boundingBox();
+          assert(heldBox);
+          await cdp.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x: heldBox.x + heldBox.width / 2, y: heldBox.y + heldBox.height / 2 }] });
+          await page.evaluate(() => document.dispatchEvent(new Event("scroll")));
+          await page.waitForTimeout(650);
+          await expect(dialog()).toHaveCount(0);
+          await cdp.send("Input.dispatchTouchEvent", { type: "touchCancel", touchPoints: [] });
           await touch(0, 0, 650);
           await expect(dialog()).toHaveAttribute("aria-label", "Edit meal");
           await shot("hold-edit");
