@@ -136,6 +136,32 @@ function options(
 
             if (url.pathname === "/recipes/6") throw new Error("private upstream fetch detail");
 
+            if (url.pathname === "/recipes/7") {
+              if (url.searchParams.get("unlocked_article_code") !== "test")
+                return new Response("Denied", { status: 403 });
+              const hop = Number(url.searchParams.get("hop") ?? 0);
+
+              if (hop < 3) {
+                url.searchParams.set("hop", String(hop + 1));
+
+                return new Response(null, {
+                  status: hop === 0 ? 301 : hop === 1 ? 307 : 308,
+                  headers: { Location: hop === 0 ? url.href : `${url.pathname}${url.search}` },
+                });
+              }
+            }
+
+            if (url.pathname === "/recipes/8")
+              return new Response(null, { status: 302, headers: { Location: "/recipes/8" } });
+
+            if (url.pathname === "/recipes/9")
+              return new Response(null, {
+                status: 303,
+                headers: { Location: url.searchParams.get("to") ?? "/recipes/3" },
+              });
+
+            if (url.pathname === "/recipes/10") return new Response(null, { status: 302 });
+
             return new Response(await readFile("tests/fixtures/nyt-coq-au-vin.html", "utf8"));
           }
 
@@ -1682,7 +1708,22 @@ describe("real Worker with disposable SQLite D1", () => {
     expect(stored.instructions).toEqual(result.recipe.instructions);
     expect((await send(`recipes/${result.recipe.id}`, "DELETE", "{}")).status).toBe(200);
   });
-  it("rejects unsupported URLs, blocked pages, redirects, missing recipe data, and oversized pages", async () => {
+  it("imports through three same-site redirects while preserving gift access and the original source", async () => {
+    const source = "https://cooking.nytimes.com/recipes/7?unlocked_article_code=test&smid=share";
+    const response = await send("recipes/import", "POST", JSON.stringify({ url: source }));
+
+    expect(response.status).toBe(200);
+
+    const result = Schema.decodeUnknownSync(
+      Schema.Struct({ recipe: RecipeSchema, warnings: Schema.Array(Schema.String) }),
+    )(await response.json());
+
+    expect(result.recipe).toMatchObject({ title: "Coq au Vin", source, minutes: 120, servings: 4 });
+    expect(result.recipe.ingredients).toHaveLength(20);
+    const db = await worker.getD1Database("DB");
+    expect(await db.prepare("SELECT count(*) AS count FROM recipes").first()).toEqual({ count: 0 });
+  });
+  it("rejects unsafe or excessive redirects, blocked pages, missing recipe data, and oversized pages", async () => {
     for (const url of [
       "http://localhost/",
       "https://cooking.nytimes.com.evil.test/recipes/1",
@@ -1690,6 +1731,17 @@ describe("real Worker with disposable SQLite D1", () => {
       "https://cooking.nytimes.com/recipes/3",
       "https://cooking.nytimes.com/recipes/4",
       "https://cooking.nytimes.com/recipes/5",
+      "https://cooking.nytimes.com/recipes/7?unlocked_article_code=test&hop=-1",
+      "https://cooking.nytimes.com/recipes/8",
+      "https://cooking.nytimes.com/recipes/9",
+      "https://cooking.nytimes.com/recipes/10",
+      ...[
+        "https://cooking.nytimes.com.evil.test/recipes/1",
+        "http://cooking.nytimes.com/recipes/1",
+        "https://cooking.nytimes.com:8443/recipes/1",
+        "https://user:password@cooking.nytimes.com/recipes/1",
+        "https://cooking.nytimes.com/account",
+      ].map((target) => `https://cooking.nytimes.com/recipes/9?to=${encodeURIComponent(target)}`),
     ]) {
       const response = await send("recipes/import", "POST", JSON.stringify({ url }));
 

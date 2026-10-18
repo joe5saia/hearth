@@ -253,19 +253,31 @@ export function parseRecipeHtml(html: string, source: string) {
   );
 }
 
-/** Fetches only an allowed NYT page without redirects, bounded to 20 seconds and 5 MB. */
+/** Fetches an allowed NYT page with at most three validated redirects, bounded to 20 seconds and 5 MB. */
 export async function importRecipe(source: string) {
-  const url = nytRecipeUrl(source);
+  let url = nytRecipeUrl(source);
 
-  // Never follow redirects: an allowed public URL must not fetch an arbitrary host.
   let response: Response;
 
   try {
-    response = await fetch(url, {
-      redirect: "manual",
-      signal: AbortSignal.timeout(20000),
-      headers: { Accept: "text/html" },
-    });
+    const signal = AbortSignal.timeout(20000);
+
+    for (let redirects = 0; ; redirects++) {
+      response = await fetch(url, {
+        redirect: "manual",
+        signal,
+        headers: { Accept: "text/html" },
+      });
+
+      if (![301, 302, 303, 307, 308].includes(response.status)) break;
+      const location = response.headers.get("Location");
+      await response.body?.cancel();
+
+      if (!location || redirects >= 3) throw new Error("NYT redirect limit or missing destination.");
+
+      // Resolve NYT's destination as supplied, then validate every hop before fetching it.
+      url = nytRecipeUrl(new URL(location, url).href);
+    }
   } catch {
     throw new RecipeImportError(
       "NYT couldn’t be read. Try an unlocked share link or add the recipe manually.",
