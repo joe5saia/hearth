@@ -26,7 +26,7 @@
     "zod": "4.6.5"
   },
   "devDependencies": {
-    "@ampcode/plugin": "0.0.0-20260928002026-g40f3f5f",
+    "@ampcode/plugin": "0.0.0-20261010103843-g390d027",
     "@cloudflare/vite-plugin": "2.0.0-beta.sha-52b0dc0e9",
     "@cloudflare/workers-types": "5.20260927.1",
     "@effect/platform-node": "4.0.0-rc.117",

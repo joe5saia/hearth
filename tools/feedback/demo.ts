@@ -60,7 +60,7 @@ const server = createServer(async (request, response) => {
       }
       const headers = new Headers();
       for (const [key, value] of Object.entries(request.headers)) if (typeof value === "string") headers.set(key, value);
-      const result = await worker.dispatchFetch(url, { method: request.method, headers, body: chunks.length ? Buffer.concat(chunks) : undefined });
+      const result = await worker.dispatchFetch(url, { method: request.method, headers: [...headers], body: chunks.length ? Buffer.concat(chunks) : undefined });
       response.writeHead(result.status, Object.fromEntries(result.headers));
       response.end(Buffer.from(await result.arrayBuffer()));
       return;

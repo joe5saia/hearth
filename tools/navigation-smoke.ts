@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { mkdir } from "node:fs/promises";
 import { resolve } from "node:path";
 import { Schema } from "effect";
-import { HouseholdSchema } from "../src/domain.ts";
+import { HouseholdSchema, RecipeId } from "../src/domain.ts";
 
 // Supplied by ui:setup alongside the browser runtime below.
 // @ts-ignore Browser declarations exist only after task ui:setup, outside the checkout.
@@ -27,7 +27,7 @@ const original = Schema.decodeUnknownSync(HouseholdSchema)(await (await fetch(`$
 const id = () => crypto.randomUUID();
 const collection = { id: id(), name: "Navigation smoke collection" };
 const grocery = { id: id(), name: "Navigation smoke lentils", unit: "g", quantity: 500, url: "", aisle: "Pantry", aliases: ["Navigation lentils", "Brown lentils"] };
-const recipe = { id: id(), title: "Navigation smoke lentil soup", description: "Disposable browser fixture", servings: 3, minutes: 20, category: collection.name, photo: "", source: "", rating: "neutral", ingredients: [{ name: grocery.name, quantity: 250, unit: "g", groceryItemId: grocery.id }], instructions: ["Simmer until tender."] };
+const recipe = { id: RecipeId.make(id()), title: "Navigation smoke lentil soup", description: "Disposable browser fixture", servings: 3, minutes: 20, category: collection.name, photo: "", source: "", rating: "neutral", ingredients: [{ name: grocery.name, quantity: 250, unit: "g", groceryItemId: grocery.id }], instructions: ["Simmer until tender."] };
 const meal = { id: id(), recipeId: recipe.id, date: "2026-11-02", slot: "Dinner", scale: 1.5, note: "Saved household meal" };
 const noteMeal = { ...meal, id: id(), recipeId: null, note: "Navigation smoke note-only control" };
 const edgeMeals = [

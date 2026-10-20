@@ -5,8 +5,7 @@ import { Schema } from "effect";
 import { FeedbackDraftSchema, FeedbackInputSchema, FeedbackSchema } from "../../src/feedback-contract.ts";
 
 // Supplied by task ui:setup, not a production dependency.
-// @ts-expect-error External UI runtime.
-const { chromium, webkit, devices } = await import("/tmp/hearth-ui/node_modules/playwright/index.mjs");
+const { default: { chromium, webkit, devices } } = await import("/tmp/hearth-ui/node_modules/playwright/index.js");
 const live = process.argv.includes("--live-intake");
 assert(process.argv.slice(2).every(arg => arg === "--live-intake"));
 const url = "http://127.0.0.1:8790";
@@ -65,11 +64,14 @@ try {
     assert((await field.inputValue()).endsWith("\n"), `${name} Shift+Enter keeps a new line`);
     await field.dispatchEvent("keydown", { key: "Enter", isComposing: true });
     assert.equal(await page.evaluate(() => sessionStorage.getItem("hearth-feedback-attempt")), null, `${name} IME Enter does not submit`);
-    const deviceDraft = JSON.parse(await page.evaluate(() => sessionStorage.getItem("hearth-feedback-draft")));
+    const deviceDraftStorage = await page.evaluate(() => sessionStorage.getItem("hearth-feedback-draft"));
+    assert(deviceDraftStorage !== null, `${name} device draft persisted`);
+    const deviceDraftRaw = JSON.parse(deviceDraftStorage);
+    const deviceDraft = Schema.decodeUnknownSync(FeedbackDraftSchema)(deviceDraftRaw);
     assert.equal(deviceDraft.context.browser.viewport.width, await page.evaluate(() => innerWidth));
     assert.equal(deviceDraft.context.browser.userAgent, await page.evaluate(() => navigator.userAgent));
     if (name !== "desktop") assert.equal(deviceDraft.context.browser.display, "standalone");
-    assert(!JSON.stringify(deviceDraft).includes("disposable-query-credential") && !JSON.stringify(deviceDraft).includes("disposable-fragment-credential"), "URL credential parameters redacted before draft persistence");
+    assert(!JSON.stringify(deviceDraftRaw).includes("disposable-query-credential") && !JSON.stringify(deviceDraftRaw).includes("disposable-fragment-credential"), "URL credential parameters redacted before draft persistence");
     assert.equal(new URL(deviceDraft.context.page.url).searchParams.get("source"), "feedback-smoke");
     assert.equal(new URL(deviceDraft.context.page.url).searchParams.get("access_token"), "[redacted]");
     assert(new URL(deviceDraft.context.page.url).hash.includes("mode=arrange"), "Full navigation query/hash preserved");
@@ -79,9 +81,12 @@ try {
     await page.goto(`${url}/#groceries?search=Bearer+disposable-search-credential`);
     await open();
     await field.fill("Privacy check, not submitted");
-    const privateSearchDraft = JSON.parse(await page.evaluate(() => sessionStorage.getItem("hearth-feedback-draft")));
+    const privateSearchStorage = await page.evaluate(() => sessionStorage.getItem("hearth-feedback-draft"));
+    assert(privateSearchStorage !== null, `${name} private search draft persisted`);
+    const privateSearchRaw = JSON.parse(privateSearchStorage);
+    const privateSearchDraft = Schema.decodeUnknownSync(FeedbackDraftSchema)(privateSearchRaw);
     assert.equal(privateSearchDraft.context.page.view.search, "[redacted]");
-    assert(!JSON.stringify(privateSearchDraft).includes("disposable-search-credential"), "Structured search cannot reintroduce a redacted credential");
+    assert(!JSON.stringify(privateSearchRaw).includes("disposable-search-credential"), "Structured search cannot reintroduce a redacted credential");
     await field.press("Escape");
     await page.goto(`${url}/?source=feedback-smoke#shopping?mode=arrange`);
     await page.evaluate(ticket => {
@@ -98,61 +103,67 @@ try {
       assert((await field.inputValue()).includes("\n"), "Shift+Enter adds a line without submitting");
     }
     await page.screenshot({ path: `${artifacts}/feedback-${name}.png` });
-    let draft = Schema.decodeUnknownSync(FeedbackDraftSchema)(JSON.parse(await page.evaluate(() => sessionStorage.getItem("hearth-feedback-draft"))));
-    {
-      assert.equal(draft.context.page.name, "shopping");
-      assert.equal(draft.context.page.view.mode, "arrange");
-      // Real HTTP-boundary failure: no mocked component/dependency, no external event yet.
-      let releaseFault: () => void = () => {};
-      const gate = new Promise<void>(resolve => { releaseFault = resolve; });
-      await page.route("**/api/feedback", async route => {
-        await gate;
-        await route.fulfill({ status: 503, contentType: "application/json", body: JSON.stringify({ error: "Temporary validation outage. Retry safely with this draft." }) });
-      });
-      const beforeSubmission = Date.now();
-      await field.press("Enter");
-      await page.getByRole("button", { name: "Sending…" }).waitFor();
-      draft = Schema.decodeUnknownSync(FeedbackInputSchema)(JSON.parse(await page.evaluate(() => sessionStorage.getItem("hearth-feedback-draft"))));
-      if (!savedTicket) assert(Date.parse(draft.clientSubmittedAt) >= beforeSubmission && Date.parse(draft.clientSubmittedAt) <= Date.now(), "Client timestamp captures first submission, not dialog opening");
-      assert(await page.getByRole("button", { name: "Sending…" }).isDisabled());
-      await page.screenshot({ path: `${artifacts}/feedback-${name}-sending.png` });
-      releaseFault();
-      await page.getByRole("alert").filter({ hasText: "Temporary validation outage" }).waitFor();
-      assert.equal(await field.inputValue(), draft.request);
-      const newTicket = page.getByRole("button", { name: "Start a new ticket" });
-      await newTicket.scrollIntoViewIfNeeded();
-      const actionBounds = await newTicket.boundingBox();
-      const dialogBounds = await page.getByRole("dialog").boundingBox();
-      assert(actionBounds.height >= 44);
-      assert(actionBounds.y >= dialogBounds.y && actionBounds.y + actionBounds.height <= dialogBounds.y + dialogBounds.height, "New-ticket action is reachable inside the scrollable dialog");
-      await page.screenshot({ path: `${artifacts}/feedback-${name}-error.png` });
-      await page.goto(`${url}/#shopping`);
-      await page.locator(".shopping-layout").waitFor();
-      await page.reload();
-      await open();
-      assert.equal(await field.inputValue(), draft.request);
-      assert(await field.getAttribute("readonly") !== null, "Attempt identity survives reload");
-      assert.deepEqual(JSON.parse(await page.evaluate(() => sessionStorage.getItem("hearth-feedback-draft"))), draft);
-      await page.unroute("**/api/feedback");
-    }
+    const draftStorage = await page.evaluate(() => sessionStorage.getItem("hearth-feedback-draft"));
+    assert(draftStorage !== null, `${name} draft persisted before submission`);
+    const draft = Schema.decodeUnknownSync(FeedbackDraftSchema)(JSON.parse(draftStorage));
+    assert.equal(draft.context.page.name, "shopping");
+    assert.equal(draft.context.page.view.mode, "arrange");
+    // Real HTTP-boundary failure: no mocked component/dependency, no external event yet.
+    let releaseFault: () => void = () => {};
+    const gate = new Promise<void>(resolve => { releaseFault = resolve; });
+    await page.route("**/api/feedback", async route => {
+      await gate;
+      await route.fulfill({ status: 503, contentType: "application/json", body: JSON.stringify({ error: "Temporary validation outage. Retry safely with this draft." }) });
+    });
+    const beforeSubmission = Date.now();
+    await field.press("Enter");
+    await page.getByRole("button", { name: "Sending…" }).waitFor();
+    const submittedStorage = await page.evaluate(() => sessionStorage.getItem("hearth-feedback-draft"));
+    assert(submittedStorage !== null, `${name} submitted draft persisted`);
+    const submittedRaw = JSON.parse(submittedStorage);
+    const submitted = Schema.decodeUnknownSync(FeedbackInputSchema)(submittedRaw);
+    if (!savedTicket) assert(Date.parse(submitted.clientSubmittedAt) >= beforeSubmission && Date.parse(submitted.clientSubmittedAt) <= Date.now(), "Client timestamp captures first submission, not dialog opening");
+    assert(await page.getByRole("button", { name: "Sending…" }).isDisabled());
+    await page.screenshot({ path: `${artifacts}/feedback-${name}-sending.png` });
+    releaseFault();
+    await page.getByRole("alert").filter({ hasText: "Temporary validation outage" }).waitFor();
+    assert.equal(await field.inputValue(), submitted.request);
+    const newTicket = page.getByRole("button", { name: "Start a new ticket" });
+    await newTicket.scrollIntoViewIfNeeded();
+    const actionBounds = await newTicket.boundingBox();
+    const dialogBounds = await page.getByRole("dialog").boundingBox();
+    assert(actionBounds !== null, `${name} new-ticket action has a bounding box`);
+    assert(dialogBounds !== null, `${name} dialog has a bounding box`);
+    assert(actionBounds.height >= 44);
+    assert(actionBounds.y >= dialogBounds.y && actionBounds.y + actionBounds.height <= dialogBounds.y + dialogBounds.height, "New-ticket action is reachable inside the scrollable dialog");
+    await page.screenshot({ path: `${artifacts}/feedback-${name}-error.png` });
+    await page.goto(`${url}/#shopping`);
+    await page.locator(".shopping-layout").waitFor();
+    await page.reload();
+    await open();
+    assert.equal(await field.inputValue(), submitted.request);
+    assert(await field.getAttribute("readonly") !== null, "Attempt identity survives reload");
+    const reloadedStorage = await page.evaluate(() => sessionStorage.getItem("hearth-feedback-draft"));
+    assert(reloadedStorage !== null, `${name} submitted draft survived reload`);
+    assert.deepEqual(JSON.parse(reloadedStorage), submittedRaw);
+    await page.unroute("**/api/feedback");
     if (live) {
       // Persist validation identity before the external effect, including uncertain HTTP outcomes.
-      await writeFile(".amp/feedback-state/validation-ticket-v2.json", JSON.stringify(draft), { mode: 0o600 });
+      await writeFile(".amp/feedback-state/validation-ticket-v2.json", JSON.stringify(submitted), { mode: 0o600 });
       await field.press("Enter");
       await page.getByRole("heading", { name: "On its way to Amp" }).waitFor();
-      assert.deepEqual(submissions[0], submissions[1], "Retry keeps exact request, timestamp and originating page/device context after navigation/reload");
       await page.screenshot({ path: `${artifacts}/feedback-${name}-success.png` });
       assert.equal(await page.evaluate(() => sessionStorage.getItem("hearth-feedback-draft")), null);
       await page.getByRole("button", { name: "Done", exact: true }).click();
       // Closing restores focus on the next animation frame, not synchronously with click.
       await page.waitForFunction(() => document.activeElement?.getAttribute("aria-label") === "Page options");
       assert(await page.getByLabel("Page options", { exact: true }).evaluate(element => element === document.activeElement), "Focus returns to entry point");
-      savedTicket = draft;
+      savedTicket = submitted;
       const envelope = Schema.decodeUnknownSync(FeedbackSchema)(JSON.parse(await readFile(".amp/feedback-state/validation-envelope-v2.json", "utf8")));
-      assert.deepEqual(envelope.context, draft.context);
-      assert.equal(envelope.clientSubmittedAt, draft.clientSubmittedAt);
+      assert.deepEqual(envelope.context, submitted.context);
+      assert.equal(envelope.clientSubmittedAt, submitted.clientSubmittedAt);
       assert.equal(envelope.delivery.identity, null, "Local demo does not invent an authenticated user");
-      assert.equal(envelope.delivery.correlation.operationId, draft.id);
+      assert.equal(envelope.delivery.correlation.operationId, submitted.id);
       assert(envelope.delivery.build !== "unversioned");
       await writeFile(`${artifacts}/feedback-payload-v2.json`, JSON.stringify(envelope, null, 2));
     } else {
@@ -160,6 +171,8 @@ try {
       await page.getByRole("alert").filter({ hasText: "isn’t connected" }).waitFor();
       await page.getByLabel("Close dialog").click();
     }
+    assert.equal(submissions.length, 2, `${name} captured initial submission and retry`);
+    assert.deepEqual(submissions[0], submissions[1], "Retry keeps exact request, timestamp and originating page/device context after navigation/reload");
     assert.deepEqual(errors, [], `${name} browser errors`);
     assert(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), `${name} no page overflow`);
     console.log(`PASS ${name}: labelled dialog, focus, Enter/Shift+Enter, preserved context and draft, ${live ? "real Worker/Amp acknowledgement" : "honest disconnected state"}${name === "desktop" ? "" : ", coarse pointer and standalone display emulation"}`);
