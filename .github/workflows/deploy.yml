@@ -29,7 +29,7 @@ jobs:
           package-manager-cache: false
       - name: Install dependencies
         run: npm ci
-      - name: Type check
+      - name: Type check main project (tsrs)
         run: npx task typecheck
       - name: Integration smoke tests
         run: npx task test

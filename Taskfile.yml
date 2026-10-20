@@ -107,8 +107,14 @@ tasks:
       - task: format:check
       - task: test
   typecheck:
-    desc: Check TypeScript types
+    desc: Check the main TypeScript project with tsrs (Linux or Apple Silicon)
     cmds: [npm run check]
+  typecheck:tsc:
+    desc: Compare the main project with incumbent TypeScript (not a replacement for the tsrs gate)
+    cmds: [npm run check:tsc]
+  typecheck:pilot:
+    desc: Compare checker coverage, deliberate-error diagnostics, and fresh-process timing (temporarily edits source; optional -- report.json)
+    cmds: ["node tools/tsrs-pilot.ts {{.CLI_ARGS}}"]
   typecheck:tools:
     desc: Check first-party tooling types (run ui:setup first for external browser declarations)
     cmds: [npx tsc --noEmit --project tsconfig.tools.json]

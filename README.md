@@ -485,6 +485,13 @@ Use `npx task audit:production` to check production dependencies and `npx task a
 Individual checks are available as `typecheck`, `lint`, `format:check`, and `test`; use
 `npx task format` to apply formatting.
 
+The main `typecheck` gate uses pinned **tsrs** with the unchanged root tsconfig on Linux
+x64/arm64 (GNU/musl) and Apple Silicon; Windows and Intel Mac are not supported by this
+checker release. Use `npx task typecheck:tsc` for an explicit incumbent TypeScript comparison.
+The separate `npx task typecheck:tools` still uses tsc; its compiler is not part of this
+migration. TypeScript dependencies and Vite/Alchemy tooling remain
+installed. See the [migration scope, evidence, cache safety, and rollback](docs/tsrs-pilot.md).
+
 ## Performance monitoring and tracing
 
 [The Axiom plan and runbook](OBSERVABILITY.md) covers the server-first rollout, measured operations,
