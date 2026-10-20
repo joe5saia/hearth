@@ -19,6 +19,7 @@
     "tools/matching-eval.ts",
     "tools/mcp-preview.ts",
     "tools/production-data-smoke.ts",
+    "tools/recipe-import-smoke.ts",
     "tools/feedback/secrets.ts"
   ]
 }

@@ -412,13 +412,19 @@ beforeAll(async () => {
               return Response.json({ ingested: 1, failed: 0 });
             }
 
-            if (req.url === "https://cooking.nytimes.com/recipes/1021434-coq-au-vin")
+            if (new URL(req.url).hostname === "cloudflare-dns.com")
+              return Response.json({ Status: 0, Answer: [{ type: 1, data: "1.1.1.1" }] });
+
+            if (
+              req.url === "https://cooking.nytimes.com/recipes/1021434-coq-au-vin" ||
+              req.url === "https://recipes.example.com/coq-au-vin"
+            )
               return new Response(await readFile("tests/fixtures/nyt-coq-au-vin.html", "utf8"));
 
             if (req.url === "https://cooking.nytimes.com/recipes/999-redirect")
               return new Response(null, {
                 status: 302,
-                headers: { Location: "https://example.com/private" },
+                headers: { Location: "https://127.0.0.1/private" },
               });
 
             if (req.url === "https://saiaai.cloudflareaccess.com/cdn-cgi/access/certs")
@@ -1253,24 +1259,29 @@ it("saves, lists, edits and deletes note-only meals through RPC without shopping
   expect((await success("list_meals", range)).meals).toEqual([]);
 });
 
-it("imports an unsaved NYT draft, refuses unsafe URLs, and saves the reviewed draft", async () => {
+it("imports an unsaved non-NYT draft, refuses unsafe URLs, and saves the reviewed draft", async () => {
   const before = (await success("search_recipes", {})).pagination.total;
 
   const imported = await success("import_recipe", {
-    url: "https://cooking.nytimes.com/recipes/1021434-coq-au-vin",
+    url: "https://recipes.example.com/coq-au-vin",
   });
 
-  expect(imported.recipe).toMatchObject({ title: "Coq au Vin", servings: 4, minutes: 120 });
+  expect(imported.recipe).toMatchObject({
+    title: "Coq au Vin",
+    servings: 4,
+    minutes: 120,
+    source: "https://recipes.example.com/coq-au-vin",
+  });
   expect(imported.recipe).not.toHaveProperty("id");
   expect(imported.recipe.ingredients.length).toBeGreaterThan(5);
   expect(imported.recipe.instructions.length).toBeGreaterThan(1);
   expect(imported.warnings).toEqual(expect.any(Array));
 
-  for (const url of ["https://example.com/recipes/1", "http://cooking.nytimes.com/recipes/1"])
+  for (const url of ["https://127.0.0.1/recipes/1", "http://cooking.nytimes.com/recipes/1"])
     expect((await call("import_recipe", { url })).isError).toBe(true);
   const redirected = await call("import_recipe", { url: "https://cooking.nytimes.com/recipes/999-redirect" });
   expect(redirected.isError).toBe(true);
-  expect(redirected.content[0].text).toContain("NYT couldn’t be read");
+  expect(redirected.content[0].text).toContain("The recipe page couldn’t be read");
   expect((await success("search_recipes", {})).pagination.total).toBe(before);
 
   const {

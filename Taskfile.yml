@@ -118,6 +118,9 @@ tasks:
   test:
     desc: Run local integration smoke tests (optional -- test paths or Vitest flags)
     cmds: ["npm test -- {{.CLI_ARGS}}"]
+  recipes:import:smoke:
+    desc: Live non-NYT URL import/save round-trips in disposable Worker/D1 (-- private-sources.json private-report.json)
+    cmds: ["node tools/recipe-import-smoke.ts {{.CLI_ARGS}}"]
   telemetry:smoke:
     desc: Built-SPA browser E2E with disposable Worker/D1 (optional -- --live sends validation data to Axiom; requires authorization and agent-browser)
     cmds:

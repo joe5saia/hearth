@@ -17,6 +17,7 @@
     "@modelcontextprotocol/server": "2.2.0",
     "effect": "4.0.0-rc.117",
     "entities": "8.1.0",
+    "ipaddr.js": "2.2.0",
     "jose": "6.2.12",
     "lucide-react": "1.48.0",
     "react": "19.3.0",

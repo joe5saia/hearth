@@ -130,6 +130,7 @@ export function previewConfig(worker: string, db: Database, audience: string, cl
     name: worker,
     entrypoint: resolve(workerRuntime.main),
     compatibilityDate: workerRuntime.compatibilityDate,
+    compatibilityFlags: ["global_fetch_strictly_public"],
     assets: {
       notFoundHandling: workerRuntime.assets.notFoundHandling,
       runWorkerFirst: workerRuntime.assets.runWorkerFirst,

@@ -112,7 +112,10 @@ export const Website = Cloudflare.Worker(
       main: workerRuntime.main,
       access,
       domain: dev ? undefined : "hearth.joesaia.trade",
-      compatibility: { date: workerRuntime.compatibilityDate },
+      compatibility: {
+        date: workerRuntime.compatibilityDate,
+        flags: ["global_fetch_strictly_public"],
+      },
       dev: { port: Number(process.env.HEARTH_DEV_PORT ?? 8787) },
       assets: workerRuntime.assets,
       env: dev

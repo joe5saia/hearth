@@ -1,36 +1,49 @@
-import { Option, Schema } from "effect";
+import { Effect, Option, Schema } from "effect";
 import { decodeHTML } from "entities";
+import ipaddr from "ipaddr.js";
 import type { Unit } from "./domain";
 
 /** An application-authored import failure whose message is safe for household members. */
 export class RecipeImportError extends Error {}
 
-const Step = Schema.Struct({ text: Schema.String });
+interface RecipeStep {
+  readonly text?: string;
+  readonly itemListElement?: readonly (string | RecipeStep)[];
+}
+
+const Step: Schema.Codec<RecipeStep> = Schema.Struct({
+  text: Schema.optional(Schema.String),
+  itemListElement: Schema.optional(Schema.Array(Schema.Union([Schema.String, Schema.suspend(() => Step)]))),
+}).check(Schema.makeFilter((step) => Boolean(plainText(step.text ?? "") || step.itemListElement?.length)));
+
+const Instructions = Schema.Union([Schema.String, Step, Schema.Array(Schema.Union([Schema.String, Step]))]);
 
 const Image = Schema.Union([Schema.String, Schema.Struct({ url: Schema.String })]);
+
+// Optional publisher metadata is decoded independently: a malformed photo or time
+// must not invalidate otherwise complete ingredients and instructions.
+const OptionalText = Schema.optional(Schema.String).pipe(
+  Schema.catchDecoding(() => Effect.succeed(Option.some(undefined))),
+);
 
 const RecipeData = Schema.Struct({
   "@type": Schema.Union([Schema.Literal("Recipe"), Schema.Array(Schema.String)]),
   name: Schema.String,
-  description: Schema.optional(Schema.String),
-  recipeYield: Schema.Union([Schema.String, Schema.Number, Schema.Array(Schema.String)]),
-  totalTime: Schema.String,
-  image: Schema.optional(Schema.Union([Image, Schema.Array(Image)])),
-  recipeIngredient: Schema.Array(Schema.String),
-  recipeInstructions: Schema.Array(
-    Schema.Union([
-      Schema.String,
-      Step,
-      Schema.Struct({ itemListElement: Schema.Array(Schema.Union([Schema.String, Step])) }),
-    ]),
+  description: OptionalText,
+  recipeYield: Schema.optional(
+    Schema.Union([Schema.String, Schema.Number, Schema.Array(Schema.String)]),
+  ).pipe(Schema.catchDecoding(() => Effect.succeed(Option.some(undefined)))),
+  totalTime: OptionalText,
+  prepTime: OptionalText,
+  cookTime: OptionalText,
+  image: Schema.optional(Schema.Union([Image, Schema.Array(Image)])).pipe(
+    Schema.catchDecoding(() => Effect.succeed(Option.some(undefined))),
   ),
+  recipeIngredient: Schema.Array(Schema.String),
+  recipeInstructions: Instructions,
 });
 
-const Document = Schema.Union([
-  RecipeData,
-  Schema.Array(Schema.Unknown),
-  Schema.Struct({ "@graph": Schema.Array(Schema.Unknown) }),
-]);
+const Graph = Schema.Struct({ "@graph": Schema.Array(Schema.Unknown) });
 
 const plainText = (text: string) =>
   decodeHTML(text.replace(/<[^>]*>/g, " "))
@@ -141,31 +154,327 @@ export function parseIngredient(line: string) {
   };
 }
 
-/** Accepts only credential-free HTTPS NYT recipe URLs, without fetching them. */
-export function nytRecipeUrl(source: string): URL {
+/** Accepts credential-free HTTPS public hostnames, never IP literals or local names. DNS is checked before fetching. */
+export function recipeUrl(source: string): URL {
   let url: URL;
 
   try {
     url = new URL(source);
   } catch {
-    throw new RecipeImportError("Use an https://cooking.nytimes.com/recipes/… URL.");
+    throw new RecipeImportError("Use an HTTPS recipe link from a public website.");
   }
 
   if (
     url.protocol !== "https:" ||
-    url.hostname !== "cooking.nytimes.com" ||
     url.port ||
     url.username ||
     url.password ||
-    !/^\/recipes\/\d+(?:-[a-z0-9-]+)?\/?$/.test(url.pathname)
+    !/^(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,63}$/.test(url.hostname) ||
+    /(?:^|\.)(?:localhost|local|internal|home|lan|test|invalid|example|onion)$/.test(url.hostname)
   )
-    throw new RecipeImportError("Use an https://cooking.nytimes.com/recipes/… URL.");
+    throw new RecipeImportError("Use an HTTPS recipe link from a public website.");
 
   return url;
 }
 
-/** Reads the first complete supported JSON-LD recipe, preserving ingredient review warnings. */
-export function parseRecipeHtml(html: string, source: string) {
+const DnsResponse = Schema.Struct({
+  Status: Schema.Literal(0),
+  Answer: Schema.optional(Schema.Array(Schema.Struct({ type: Schema.Number, data: Schema.String }))),
+});
+
+async function publicHost(url: URL, signal: AbortSignal) {
+  // Check both address families, including CNAME answers, before every redirect hop.
+  // Workers' public fetch is the network boundary; do not attach a private-network/VPC binding here.
+  const answers = await Promise.all(
+    ["A", "AAAA"].map(async (type) => {
+      const dns = await fetch(
+        `https://cloudflare-dns.com/dns-query?name=${encodeURIComponent(url.hostname)}&type=${type}`,
+        {
+          headers: { Accept: "application/dns-json" },
+          redirect: "manual",
+          signal,
+        },
+      );
+
+      if (!dns.ok) throw new Error("DNS unavailable");
+
+      return Schema.decodeUnknownSync(DnsResponse)(await dns.json()).Answer ?? [];
+    }),
+  );
+
+  const addresses = answers.flat().filter((answer) => answer.type === 1 || answer.type === 28);
+
+  if (
+    !addresses.length ||
+    addresses.some(({ data }) => !ipaddr.isValid(data) || ipaddr.parse(data).range() !== "unicast")
+  )
+    throw new Error("Non-public destination");
+}
+
+function durationMinutes(value = "") {
+  const duration = value.match(
+    /^P(?:0Y)?(?:0M)?(?:(\d+(?:\.\d+)?)D)?(?:T(?:(\d+(?:\.\d+)?)H)?(?:(\d+(?:\.\d+)?)M)?(?:(\d+(?:\.\d+)?)S)?)?$/i,
+  );
+
+  return duration
+    ? Math.ceil(
+        Number(duration[1] ?? 0) * 1440 +
+          Number(duration[2] ?? 0) * 60 +
+          Number(duration[3] ?? 0) +
+          Number(duration[4] ?? 0) / 60,
+      )
+    : 0;
+}
+
+function instructionText(value: typeof Instructions.Type, depth = 0): string[] {
+  if (depth > 10)
+    throw new RecipeImportError("This recipe has unsupported instruction nesting. Please add it manually.");
+
+  if (Schema.is(Schema.String)(value)) return [plainText(value)].filter(Boolean);
+
+  if (Schema.is(Schema.Array(Schema.Union([Schema.String, Step])))(value))
+    return value.flatMap((item) => instructionText(item, depth + 1));
+
+  return value.itemListElement?.length
+    ? instructionText(value.itemListElement, depth + 1)
+    : instructionText(value.text ?? "", depth + 1);
+}
+
+function recipeDraft(data: typeof RecipeData.Type, source: string) {
+  const instructions = instructionText(data.recipeInstructions);
+
+  // Collection pages and partial metadata must never become apparently complete recipes.
+  if (
+    !plainText(data.name) ||
+    !data.recipeIngredient.length ||
+    data.recipeIngredient.some((line) => !plainText(line)) ||
+    !instructions.length
+  )
+    return;
+
+  const minutes =
+    durationMinutes(data.totalTime) || durationMinutes(data.prepTime) + durationMinutes(data.cookTime);
+
+  const yieldText = String(Array.isArray(data.recipeYield) ? data.recipeYield[0] : (data.recipeYield ?? ""));
+  const servings = Number(yieldText.match(/\d+(?:\.\d+)?/)?.[0] ?? 0);
+  const ingredients = data.recipeIngredient.map(parseIngredient);
+  const image = Schema.is(Schema.Array(Image))(data.image) ? data.image[0] : data.image;
+
+  const warnings = ingredients.flatMap((item, index) =>
+    item.review
+      ? [
+          `Review ingredient ${index + 1}: “${data.recipeIngredient[index]}”. Its original wording is preserved; set the quantity and unit before saving.`,
+        ]
+      : [],
+  );
+
+  const validTime = minutes > 0 && minutes <= 10000;
+  const validYield = servings > 0 && servings <= 100;
+
+  if (!validTime)
+    warnings.push(
+      "The page did not provide a usable total time. Time is set to 1 minute as a placeholder; correct it before saving.",
+    );
+
+  if (!validYield)
+    warnings.push(
+      "The page did not provide usable servings. Servings are set to 1 as a placeholder; correct them before saving.",
+    );
+  let photo = "";
+
+  try {
+    const candidate = new URL(Schema.is(Schema.String)(image) ? image : (image?.url ?? ""), source);
+
+    if (
+      image &&
+      ["https:", "http:"].includes(candidate.protocol) &&
+      !candidate.username &&
+      !candidate.password
+    )
+      photo = candidate.href;
+  } catch {
+    /* An optional unusable image must not discard a complete recipe. */
+  }
+
+  return {
+    recipe: {
+      id: crypto.randomUUID(),
+      title: plainText(data.name),
+      description: plainText(data.description ?? ""),
+      servings: validYield ? servings : 1,
+      minutes: validTime ? minutes : 1,
+      category: "",
+      source,
+      photo,
+      rating: "neutral" as const,
+      ingredients: ingredients.map((item, index) => ({
+        ...item.ingredient,
+        originalText: plainText(data.recipeIngredient[index]),
+      })),
+      instructions,
+    },
+    warnings,
+  };
+}
+
+async function structuredHtml(html: string) {
+  const fields = {
+    name: new Array<string>(),
+    recipeYield: new Array<string>(),
+    totalTime: new Array<string>(),
+    prepTime: new Array<string>(),
+    cookTime: new Array<string>(),
+    description: new Array<string>(),
+    image: new Array<string>(),
+    recipeIngredient: new Array<string>(),
+    recipeInstructions: new Array<string>(),
+  };
+
+  let seen = false;
+  let active = false;
+  let nested = 0;
+  let excluded = 0;
+
+  const voidTags = new Set([
+    "area",
+    "base",
+    "br",
+    "col",
+    "embed",
+    "hr",
+    "img",
+    "input",
+    "link",
+    "meta",
+    "param",
+    "source",
+    "track",
+    "wbr",
+  ]);
+
+  const rewriter = new HTMLRewriter().on("[itemscope], [class]", {
+    element(element) {
+      const classes = (element.getAttribute("class") ?? "").split(/\s+/);
+      const types = (element.getAttribute("itemtype") ?? "").split(/\s+/);
+      const microdata = element.getAttribute("itemscope") !== null;
+
+      const recipe =
+        classes.some((name) => name === "h-recipe" || name === "hrecipe") ||
+        (microdata && types.some((type) => /^https?:\/\/schema.org\/Recipe$/.test(type)));
+
+      if (voidTags.has(element.tagName)) return;
+
+      if (!seen && recipe) {
+        seen = true;
+        active = true;
+        element.onEndTag(() => {
+          active = false;
+        });
+
+        return;
+      }
+
+      const microformat = classes.some(
+        (name) => /^h-[a-z]/.test(name) || ["hrecipe", "vcard", "hreview", "hentry"].includes(name),
+      );
+
+      if (!active || (!microdata && !microformat)) return;
+
+      // Descendant entities own their properties, not the outer recipe. Only
+      // explicitly linked instruction sections/steps contribute instruction text.
+      const properties = (element.getAttribute("itemprop") ?? "").split(/\s+/);
+
+      const instruction =
+        microdata &&
+        !microformat &&
+        excluded === 0 &&
+        (properties.includes("recipeInstructions") ||
+          (nested > 0 && properties.includes("itemListElement"))) &&
+        types.some((type) => /^https?:\/\/schema.org\/(?:HowToStep|HowToSection|ItemList)$/.test(type));
+
+      nested++;
+
+      if (!instruction) excluded++;
+      element.onEndTag(() => {
+        nested--;
+
+        if (!instruction) excluded--;
+      });
+    },
+  });
+
+  const classes = new Map(
+    Object.entries({
+      name: ".p-name, .fn",
+      recipeYield: ".p-yield, .yield",
+      recipeInstructions: ".e-instructions, .instructions",
+      recipeIngredient: ".p-ingredient, .ingredient",
+    }),
+  );
+
+  for (const [key, values] of Object.entries(fields)) {
+    const extra = classes.get(key);
+    const selector = `[itemprop~="${key}"]${extra ? `, ${extra}` : ""}`;
+    let value: string | undefined;
+    let attribute = false;
+    const owned = () => active && excluded === 0 && (nested === 0 || key === "recipeInstructions");
+    rewriter.on(selector, {
+      element(element) {
+        if (!owned() || value !== undefined) return;
+
+        const content =
+          element.getAttribute("content") ??
+          element.getAttribute("datetime") ??
+          (key === "image" ? element.getAttribute("src") : null);
+
+        attribute = content !== null;
+        value = content ?? "";
+
+        if (["meta", "img", "br", "link"].includes(element.tagName)) {
+          values.push(value);
+          value = undefined;
+
+          return;
+        }
+
+        element.onEndTag(() => {
+          if (value !== undefined) values.push(value);
+          value = undefined;
+        });
+      },
+      text(chunk) {
+        if (owned() && value !== undefined && !attribute) value += chunk.text;
+      },
+    });
+
+    if (key === "recipeInstructions")
+      rewriter.on("p, li, br", {
+        element() {
+          if (owned() && value !== undefined && !attribute) value += "\n\n";
+        },
+      });
+  }
+
+  await rewriter.transform(new Response(html)).text();
+
+  return {
+    "@type": "Recipe" as const,
+    name: fields.name[0] ?? "",
+    description: fields.description[0],
+    image: fields.image[0],
+    recipeYield: fields.recipeYield[0],
+    totalTime: fields.totalTime[0],
+    prepTime: fields.prepTime[0],
+    cookTime: fields.cookTime[0],
+    recipeIngredient: fields.recipeIngredient,
+    recipeInstructions: fields.recipeInstructions.flatMap((value) =>
+      value.split("\n\n").map(plainText).filter(Boolean),
+    ),
+  };
+}
+
+/** Reads JSON-LD or structured HTML into an unsaved draft; missing timing/yield require review. */
+export async function parseRecipeHtml(html: string, source: string) {
   const scripts = html.matchAll(
     /<script\b[^>]*\btype\s*=\s*["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script\s*>/gi,
   );
@@ -179,83 +488,39 @@ export function parseRecipeHtml(html: string, source: string) {
       continue;
     }
 
-    const document = Schema.decodeUnknownOption(Document)(json);
+    const candidates: unknown[] = [json];
 
-    if (Option.isNone(document)) continue;
-    const value = document.value;
+    while (candidates.length) {
+      const candidate = candidates.shift();
 
-    const candidates = Schema.is(Schema.Array(Schema.Unknown))(value)
-      ? value
-      : "@graph" in value
-        ? value["@graph"]
-        : [value];
+      if (Schema.is(Schema.Array(Schema.Unknown))(candidate)) {
+        candidates.push(...candidate);
+        continue;
+      }
 
-    for (const candidate of candidates) {
+      const graph = Schema.decodeUnknownOption(Graph)(candidate);
+
+      if (Option.isSome(graph)) candidates.push(...graph.value["@graph"]);
       const parsed = Schema.decodeUnknownOption(RecipeData)(candidate);
 
       if (Option.isNone(parsed) || !parsed.value["@type"].includes("Recipe")) continue;
-      const data = parsed.value;
-      const duration = data.totalTime.match(/^P(?:(\d+)D)?(?:T(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?)?$/);
+      const draft = recipeDraft(parsed.value, source);
 
-      const minutes = duration
-        ? Math.ceil(
-            Number(duration[1] ?? 0) * 1440 +
-              Number(duration[2] ?? 0) * 60 +
-              Number(duration[3] ?? 0) +
-              Number(duration[4] ?? 0) / 60,
-          )
-        : 0;
-
-      const servings = Number(String(data.recipeYield).match(/^\d+(?:\.\d+)?/)?.[0] ?? 0);
-      const ingredients = data.recipeIngredient.map(parseIngredient);
-      const image = Schema.is(Schema.Array(Image))(data.image) ? data.image[0] : data.image;
-
-      const warnings = ingredients.flatMap((item, index) =>
-        item.review
-          ? [
-              `Review ingredient ${index + 1}: “${data.recipeIngredient[index]}”. Its original wording is preserved; set the quantity and unit before saving.`,
-            ]
-          : [],
-      );
-
-      return {
-        recipe: {
-          id: crypto.randomUUID(),
-          title: plainText(data.name),
-          description: plainText(data.description ?? ""),
-          servings,
-          minutes,
-          category: "",
-          source,
-          photo: Schema.is(Schema.String)(image) ? image : (image?.url ?? ""),
-          rating: "neutral" as const,
-          ingredients: ingredients.map((item, index) => ({
-            ...item.ingredient,
-            originalText: plainText(data.recipeIngredient[index]),
-          })),
-          instructions: data.recipeInstructions.flatMap((step) => {
-            if (Schema.is(Schema.String)(step)) return [plainText(step)];
-
-            if ("text" in step) return [plainText(step.text)];
-
-            return step.itemListElement.map((item) =>
-              plainText(Schema.is(Schema.String)(item) ? item : item.text),
-            );
-          }),
-        },
-        warnings,
-      };
+      if (draft) return draft;
     }
   }
 
+  const draft = recipeDraft(await structuredHtml(html), source);
+
+  if (draft) return draft;
   throw new RecipeImportError(
-    "NYT did not provide a complete recipe on this page. Try an unlocked share link or add it manually.",
+    "No supported recipe data was found. Use an individual recipe page, try an unlocked share link, or add the recipe manually.",
   );
 }
 
-/** Fetches an allowed NYT page with at most three validated redirects, bounded to 20 seconds and 5 MB. */
+/** Fetches a public recipe page with at most three revalidated redirects, bounded to 20 seconds and 5 MB. */
 export async function importRecipe(source: string) {
-  let url = nytRecipeUrl(source);
+  let url = recipeUrl(source);
 
   let response: Response;
 
@@ -263,6 +528,7 @@ export async function importRecipe(source: string) {
     const signal = AbortSignal.timeout(20000);
 
     for (let redirects = 0; ; redirects++) {
+      await publicHost(url, signal);
       response = await fetch(url, {
         redirect: "manual",
         signal,
@@ -273,25 +539,24 @@ export async function importRecipe(source: string) {
       const location = response.headers.get("Location");
       await response.body?.cancel();
 
-      if (!location || redirects >= 3) throw new Error("NYT redirect limit or missing destination.");
+      if (!location || redirects >= 3) throw new Error("Recipe redirect limit or missing destination.");
 
-      // Resolve NYT's destination as supplied, then validate every hop before fetching it.
-      url = nytRecipeUrl(new URL(location, url).href);
+      url = recipeUrl(new URL(location, url).href);
     }
   } catch {
     throw new RecipeImportError(
-      "NYT couldn’t be read. Try an unlocked share link or add the recipe manually.",
+      "The recipe page couldn’t be read. Try an unlocked share link or add the recipe manually.",
     );
   }
 
   if (!response.ok)
     throw new RecipeImportError(
-      "NYT couldn’t be read. Try an unlocked share link or add the recipe manually.",
+      "The recipe page couldn’t be read. Try an unlocked share link or add the recipe manually.",
     );
 
   if (!response.body)
     throw new RecipeImportError(
-      "NYT returned an empty page. Try an unlocked share link or add the recipe manually.",
+      "The recipe page was empty. Try another recipe link or add the recipe manually.",
     );
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
@@ -314,7 +579,7 @@ export async function importRecipe(source: string) {
     if (size > 5_000_000) throw new RecipeImportError("This recipe page is too large to import.");
 
     throw new RecipeImportError(
-      "NYT couldn’t be read. Try an unlocked share link or add the recipe manually.",
+      "The recipe page couldn’t be read. Try an unlocked share link or add the recipe manually.",
     );
   } finally {
     // Cleanup failure must not replace the read result or its classified public failure.

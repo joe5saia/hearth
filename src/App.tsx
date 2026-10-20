@@ -2852,7 +2852,7 @@ function RecipeImport({ imported }: { imported: (recipe: Recipe, warnings: reado
         submit();
       }}
     >
-      <p>Paste a NYT Cooking recipe link. We’ll fill in the recipe for you to review and save.</p>
+      <p>Paste a recipe link. We’ll try to fill in a draft for you to review and save.</p>
       <label>
         Recipe URL
         <input
@@ -2860,14 +2860,15 @@ function RecipeImport({ imported }: { imported: (recipe: Recipe, warnings: reado
           required
           autoFocus
           maxLength={4000}
-          placeholder="https://cooking.nytimes.com/recipes/…"
+          placeholder="https://example.com/recipe/…"
           value={url}
           disabled={loading}
           onChange={(event) => setUrl(event.target.value)}
         />
       </label>
       <p className="field-hint">
-        Unlocked share links are supported. Your original link is kept with the recipe.
+        Works with sites that share structured recipe data. Some sites block imports. NYT unlocked share links
+        are supported, and your original link is kept.
       </p>
       {error && (
         <p className="error" role="alert">

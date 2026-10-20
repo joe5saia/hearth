@@ -100,6 +100,7 @@ function options(
         modules: true,
         script,
         compatibilityDate: "2026-09-08",
+        compatibilityFlags: ["global_fetch_strictly_public"],
         d1Databases: ["DB"],
         bindings: {
           LOCAL_DEV: local,
@@ -122,6 +123,153 @@ function options(
             });
 
             return new Response(null, { status: feedbackStatus });
+          }
+
+          // A missing URL/DNS guard must produce a successful import here, not a
+          // swallowed outbound assertion that could masquerade as safe rejection.
+          if (
+            [
+              "localhost",
+              "127.0.0.1",
+              "[::ffff:7f00:1]",
+              "private.example.com",
+              "mixed.example.com",
+              "no-dns.example.com",
+            ].includes(url.hostname)
+          )
+            return new Response(await readFile("tests/fixtures/nyt-coq-au-vin.html", "utf8"));
+
+          if (url.hostname === "cloudflare-dns.com") {
+            const name = url.searchParams.get("name");
+            const ipv6 = url.searchParams.get("type") === "AAAA";
+
+            if (name === "no-dns.example.com") return Response.json({ Status: 3 });
+
+            return Response.json({
+              Status: 0,
+              Answer: [
+                {
+                  type: ipv6 ? 28 : 1,
+                  data:
+                    name === "private.example.com"
+                      ? ipv6
+                        ? "fd00::1"
+                        : "10.0.0.1"
+                      : name === "mixed.example.com" && ipv6
+                        ? "::ffff:127.0.0.1"
+                        : ipv6
+                          ? "2606:4700:4700::1111"
+                          : "1.1.1.1",
+                },
+              ],
+            });
+          }
+
+          if (url.hostname === "recipes.example.com") {
+            if (url.pathname === "/redirect")
+              return new Response(null, {
+                status: 302,
+                headers: { Location: "https://private.example.com/recipe" },
+              });
+
+            if (url.pathname === "/canonical")
+              return new Response(null, { status: 301, headers: { Location: "/jsonld" } });
+
+            if (url.pathname === "/html")
+              return new Response(
+                `<div itemscope itemtype="https://schema.org/Recipe" class="h-recipe"><h2 itemprop="name" class="p-name">Structured soup</h2><span itemprop="recipeYield">Serves 6</span><time itemprop="totalTime" datetime="About an hour">About an hour</time><ul><li itemprop="recipeIngredient" class="p-ingredient">1/2 cup lentils</li><li itemprop="recipeIngredient">Salt to taste</li></ul><div class="e-instructions"><p>Rinse the lentils.</p><p>Simmer until tender.</p></div></div><div class="h-recipe"><span class="p-name">Unrelated recipe</span><span class="p-ingredient">9 cups sugar</span></div>`,
+              );
+
+            if (url.pathname === "/nested-microdata")
+              return new Response(
+                `<article itemscope itemtype="https://schema.org/Recipe"><div itemprop="author" itemscope itemtype="https://schema.org/Person"><span itemprop="name">Alice</span></div><h2 itemprop="name">Scoped soup</h2><span itemprop="recipeIngredient">2 cups lentils</span><div itemprop="recipeInstructions" itemscope itemtype="https://schema.org/HowToSection"><div itemprop="itemListElement" itemscope itemtype="https://schema.org/HowToStep"><p itemprop="text">Simmer until tender.</p></div><aside itemscope itemtype="https://schema.org/Review"><p>Unrelated review.</p></aside></div><aside itemscope itemtype="https://schema.org/Recipe"><h3 itemprop="name">Unrelated cake</h3><span itemprop="recipeIngredient">9 cups sugar</span><p itemprop="recipeInstructions">Bake the cake.</p></aside></article>`,
+              );
+
+            if (url.pathname === "/nested-microformat")
+              return new Response(
+                `<article class="h-recipe"><div class="p-author h-card"><span class="p-name">Alice</span></div><h2 class="p-name">Scoped soup</h2><span class="p-ingredient">2 cups lentils</span><div class="e-instructions"><p>Simmer until tender.</p><aside class="h-review"><p>Unrelated review.</p></aside></div><aside class="hrecipe"><h3 class="fn">Unrelated cake</h3><span class="ingredient">9 cups sugar</span><p class="instructions">Bake the cake.</p></aside></article>`,
+              );
+
+            if (/^\/(?:instructions|metadata)-/.test(url.pathname)) {
+              const recipe = {
+                "@type": "Recipe",
+                name: "Metadata soup",
+                recipeIngredient: ["2 cups lentils"],
+                recipeInstructions: [{ text: "Simmer until tender." }],
+              };
+
+              const variants = {
+                "/instructions-mixed": {
+                  recipeInstructions: [{ text: "Rinse." }, { name: "Bake until done." }],
+                },
+                "/instructions-fallback": {
+                  recipeInstructions: [{ text: "Rinse." }, { name: "Bake until done." }],
+                },
+                "/instructions-empty-children": {
+                  recipeInstructions: [{ text: "Simmer until tender.", itemListElement: [] }],
+                },
+                "/metadata-absent": {},
+                "/metadata-null": {
+                  description: null,
+                  recipeYield: null,
+                  totalTime: null,
+                  prepTime: null,
+                  cookTime: null,
+                  image: null,
+                },
+                "/metadata-malformed": {
+                  description: {},
+                  recipeYield: { value: 4 },
+                  totalTime: 45,
+                  prepTime: [],
+                  cookTime: {},
+                  image: { contentUrl: "/photo.jpg" },
+                },
+                "/metadata-fallback": {
+                  recipeYield: 3,
+                  totalTime: null,
+                  prepTime: "PT8M",
+                  cookTime: "PT21M",
+                  image: "/soup.jpg",
+                },
+              };
+
+              return new Response(
+                `<script type="application/ld+json">${JSON.stringify({ ...recipe, ...Object.entries(variants).find(([path]) => path === url.pathname)?.[1] })}</script>${url.pathname === "/instructions-fallback" ? `<script type="application/ld+json">${JSON.stringify(recipe)}</script>` : ""}`,
+              );
+            }
+
+            if (url.pathname === "/empty")
+              return new Response(
+                `<script type="application/ld+json">{"@type":"Recipe","name":"Collection","recipeIngredient":[],"recipeInstructions":[]}</script>`,
+              );
+
+            return new Response(
+              `<script type="application/ld+json">not json</script><script type="application/ld+json">${JSON.stringify(
+                {
+                  "@graph": [
+                    { "@type": "Recipe", name: "Incomplete" },
+                    {
+                      "@type": ["Recipe"],
+                      name: "Weeknight beans",
+                      prepTime: "PT7M",
+                      cookTime: "PT23M",
+                      image: "/beans.jpg",
+                      recipeIngredient: ["1 1/2 cups beans", "2 tablespoons olive oil"],
+                      recipeInstructions: [
+                        {
+                          "@type": "HowToSection",
+                          itemListElement: [
+                            { "@type": "HowToSection", itemListElement: [{ text: "Rinse &amp; drain." }] },
+                            { text: "Cook for\n23 minutes." },
+                          ],
+                        },
+                      ],
+                    },
+                  ],
+                },
+              )}</script>`,
+            );
           }
 
           if (url.hostname === "cooking.nytimes.com") {
@@ -1674,7 +1822,7 @@ describe("real Worker with disposable SQLite D1", () => {
 
     const response = await send("recipes/import", "POST", JSON.stringify({ url: source }));
 
-    expect(response.status).toBe(200);
+    expect(response.status, await response.clone().text()).toBe(200);
 
     const result = Schema.decodeUnknownSync(
       Schema.Struct({ recipe: RecipeSchema, warnings: Schema.Array(Schema.String) }),
@@ -1723,9 +1871,114 @@ describe("real Worker with disposable SQLite D1", () => {
     const db = await worker.getD1Database("DB");
     expect(await db.prepare("SELECT count(*) AS count FROM recipes").first()).toEqual({ count: 0 });
   });
-  it("rejects unsafe or excessive redirects, blocked pages, missing recipe data, and oversized pages", async () => {
+  it("imports non-NYT structured drafts and follows safe redirects without saving until reviewed", async () => {
+    const db = await worker.getD1Database("DB");
+
+    for (const path of ["jsonld", "canonical", "html"]) {
+      const source = `https://recipes.example.com/${path}`;
+      const response = await send("recipes/import", "POST", JSON.stringify({ url: source }));
+      expect(response.status).toBe(200);
+
+      const result = Schema.decodeUnknownSync(
+        Schema.Struct({ recipe: RecipeSchema, warnings: Schema.Array(Schema.String) }),
+      )(await response.json());
+
+      expect(await db.prepare("SELECT count(*) AS count FROM recipes").first()).toEqual({ count: 0 });
+      expect(result.recipe.source).toBe(source);
+
+      if (path === "html") {
+        expect(result.recipe).toMatchObject({ title: "Structured soup", servings: 6, minutes: 1 });
+        expect(result.recipe.ingredients).toHaveLength(2);
+        expect(result.recipe.ingredients[0]).toMatchObject({
+          quantity: 0.5,
+          unit: "cup",
+          name: "lentils",
+          originalText: "1/2 cup lentils",
+        });
+        expect(result.recipe.instructions).toEqual(["Rinse the lentils.", "Simmer until tender."]);
+        expect(result.warnings.join(" ")).toContain("placeholder");
+      } else {
+        expect(result.recipe).toMatchObject({
+          title: "Weeknight beans",
+          minutes: 30,
+          servings: 1,
+          photo: "https://recipes.example.com/beans.jpg",
+        });
+        expect(result.recipe.instructions).toEqual(["Rinse & drain.", "Cook for 23 minutes."]);
+        expect(result.recipe.ingredients[0]).toMatchObject({ quantity: 1.5, unit: "cup", name: "beans" });
+        expect(result.warnings.join(" ")).toContain("Servings are set to 1 as a placeholder");
+      }
+
+      expect((await send("recipes", "PUT", JSON.stringify(result.recipe))).status).toBe(200);
+
+      const household = Schema.decodeUnknownSync(HouseholdSchema)(
+        await (await worker.dispatchFetch("http://localhost/api/household")).json(),
+      );
+
+      expect(household.recipes.find((recipe) => recipe.id === result.recipe.id)).toMatchObject(result.recipe);
+      expect((await send(`recipes/${result.recipe.id}`, "DELETE", "{}")).status).toBe(200);
+    }
+  });
+  it("keeps recipe entity ownership and complete instructions while recovering optional metadata", async () => {
+    const db = await worker.getD1Database("DB");
+
+    for (const path of [
+      "nested-microdata",
+      "nested-microformat",
+      "instructions-fallback",
+      "instructions-empty-children",
+      "metadata-absent",
+      "metadata-null",
+      "metadata-malformed",
+      "metadata-fallback",
+    ]) {
+      const source = `https://recipes.example.com/${path}`;
+      const response = await send("recipes/import", "POST", JSON.stringify({ url: source }));
+      expect(response.status, path).toBe(200);
+
+      const result = Schema.decodeUnknownSync(
+        Schema.Struct({ recipe: RecipeSchema, warnings: Schema.Array(Schema.String) }),
+      )(await response.json());
+
+      expect(result.recipe).toMatchObject({
+        title: path.startsWith("nested-") ? "Scoped soup" : "Metadata soup",
+        source,
+        description: "",
+        servings: path === "metadata-fallback" ? 3 : 1,
+        minutes: path === "metadata-fallback" ? 29 : 1,
+        photo: path === "metadata-fallback" ? "https://recipes.example.com/soup.jpg" : "",
+        ingredients: [{ quantity: 2, unit: "cup", name: "lentils", originalText: "2 cups lentils" }],
+        instructions: ["Simmer until tender."],
+      });
+      expect(result.warnings.filter((warning) => warning.includes("placeholder"))).toHaveLength(
+        path === "metadata-fallback" ? 0 : 2,
+      );
+      expect(await db.prepare("SELECT count(*) AS count FROM recipes").first()).toEqual({ count: 0 });
+      expect((await send("recipes", "PUT", JSON.stringify(result.recipe))).status).toBe(200);
+
+      const household = Schema.decodeUnknownSync(HouseholdSchema)(
+        await (await worker.dispatchFetch("http://localhost/api/household")).json(),
+      );
+
+      expect(household.recipes.find((recipe) => recipe.id === result.recipe.id)).toMatchObject(result.recipe);
+      expect((await send(`recipes/${result.recipe.id}`, "DELETE", "{}")).status).toBe(200);
+    }
+  });
+  it("rejects unsafe DNS destinations and URLs, excessive redirects, blocked or incomplete pages, and oversized pages", async () => {
     for (const url of [
       "http://localhost/",
+      "https://localhost/",
+      "https://127.0.0.1/",
+      "https://2130706433/",
+      "https://[::ffff:127.0.0.1]/",
+      "https://user:password@recipes.example.com/recipe",
+      "https://recipes.example.com:8443/recipe",
+      "https://private.example.com/recipe",
+      "https://mixed.example.com/recipe",
+      "https://no-dns.example.com/recipe",
+      "https://recipes.example.com/redirect",
+      "https://recipes.example.com/empty",
+      "https://recipes.example.com/instructions-mixed",
       "https://cooking.nytimes.com.evil.test/recipes/1",
       "https://cooking.nytimes.com/recipes/2",
       "https://cooking.nytimes.com/recipes/3",
@@ -1740,7 +1993,7 @@ describe("real Worker with disposable SQLite D1", () => {
         "http://cooking.nytimes.com/recipes/1",
         "https://cooking.nytimes.com:8443/recipes/1",
         "https://user:password@cooking.nytimes.com/recipes/1",
-        "https://cooking.nytimes.com/account",
+        "https://private.example.com/recipe",
       ].map((target) => `https://cooking.nytimes.com/recipes/9?to=${encodeURIComponent(target)}`),
     ]) {
       const response = await send("recipes/import", "POST", JSON.stringify({ url }));
@@ -1760,7 +2013,7 @@ describe("real Worker with disposable SQLite D1", () => {
     expect(rejected.status).toBe(400);
     expect(rejected.headers.get("Cache-Control")).toBe("no-store");
     expect(await rejected.json()).toEqual({
-      error: "NYT couldn’t be read. Try an unlocked share link or add the recipe manually.",
+      error: "The recipe page couldn’t be read. Try an unlocked share link or add the recipe manually.",
     });
     const db = await worker.getD1Database("DB");
     expect(await db.prepare("SELECT count(*) AS count FROM recipes").first()).toEqual({ count: 0 });
