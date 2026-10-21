@@ -1,6 +1,6 @@
-import { useId, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { Schema } from "effect";
-import { Link2, Pencil, Plus, RefreshCw, Search, X } from "lucide-react";
+import { ChevronDown, Link2, Pencil, Plus, RefreshCw, Search, X } from "lucide-react";
 import { displayAmount, units, UnitSchema, type GroceryDraft, type GroceryItem, type Recipe } from "./domain";
 import type { MatchReport } from "./domain";
 import "./grocery-manager.css";
@@ -23,7 +23,11 @@ export function GroceryForm({ item, aisles, busy, error, save, cancel, remove }:
   const [editingAlias, setEditingAlias] = useState<number | null>(null);
   const returnToAlias = useRef<number | null>(null);
   const [amount, setAmount] = useState(String(item.quantity));
-  const [customAmount, setCustomAmount] = useState(false);
+  const [amountOpen, setAmountOpen] = useState(false);
+  const [activeAmount, setActiveAmount] = useState<number | null>(null);
+  const amountId = useId();
+  const amountInput = useRef<HTMLInputElement>(null);
+  const amountList = useRef<HTMLDivElement>(null);
   const [pending, setPending] = useState(false);
   const [failure, setFailure] = useState("");
   const locked = busy || pending;
@@ -38,6 +42,32 @@ export function GroceryForm({ item, aisles, busy, error, save, cancel, remove }:
   const activeAisleIndex = activeAisle === null ? -1 : matchingAisles.indexOf(activeAisle);
   const canCreateAisle = !!aisleQuery && !aisles.some((aisle) => aisle.toLowerCase() === aisleQuery);
   const showAisles = aislesOpen && !locked;
+  const showAmounts = amountOpen && !locked;
+
+  useEffect(() => {
+    const list = amountList.current;
+    const option = activeAmount === null ? null : document.getElementById(`${amountId}-${activeAmount}`);
+
+    if (!showAmounts || !list || !option) return;
+    // Move only this list, never the containing dialog, when navigating by keyboard.
+    const top = option.offsetTop;
+
+    if (top < list.scrollTop) list.scrollTop = top;
+    else if (top + option.offsetHeight > list.scrollTop + list.clientHeight)
+      list.scrollTop = top + option.offsetHeight - list.clientHeight;
+  }, [showAmounts, activeAmount, amountId]);
+
+  function openAmounts() {
+    setActiveAmount(Math.max(1, Math.min(1000, Math.round(Number(amount)) || 1)));
+    setAmountOpen(true);
+  }
+
+  function selectAmount(value: number) {
+    setAmount(String(value));
+    amountInput.current?.focus();
+    setAmountOpen(false);
+    setActiveAmount(null);
+  }
 
   function selectAisle(aisle: string, create = false) {
     setDraft({ ...draft, aisle });
@@ -67,6 +97,11 @@ export function GroceryForm({ item, aisles, busy, error, save, cancel, remove }:
   return (
     <form
       className="modal-form grocery-form"
+      onClick={(event) => {
+        // Collapse after pointer release so recentering the dialog cannot turn a field click into a backdrop click.
+        if (event.target instanceof Element && !event.target.closest(".quantity-picker"))
+          setAmountOpen(false);
+      }}
       onSubmit={(event) => {
         event.preventDefault();
 
@@ -242,28 +277,114 @@ export function GroceryForm({ item, aisles, busy, error, save, cancel, remove }:
         <section className="grocery-packaging" aria-label="Packaging">
           <h3>Packaging</h3>
           <div className="form-grid">
-            <label>
-              Package quantity
-              <select
-                aria-label="Package quantity"
-                value={customAmount ? "custom" : amount}
-                disabled={locked}
-                onChange={(event) => {
-                  setCustomAmount(event.target.value === "custom");
+            <div
+              className="quantity-picker"
+              onKeyDown={(event) => {
+                if (event.key === "Tab") setAmountOpen(false);
+                else if (event.key === "Escape" && showAmounts) {
+                  event.preventDefault();
+                  event.stopPropagation();
+                  amountInput.current?.focus();
+                  setAmountOpen(false);
+                }
+              }}
+            >
+              <label htmlFor={amountId}>Package quantity</label>
+              <div className="quantity-input">
+                <input
+                  id={amountId}
+                  ref={amountInput}
+                  role="combobox"
+                  aria-autocomplete="none"
+                  aria-expanded={showAmounts}
+                  aria-controls={showAmounts ? `${amountId}-list` : undefined}
+                  aria-activedescendant={
+                    showAmounts && activeAmount !== null ? `${amountId}-${activeAmount}` : undefined
+                  }
+                  inputMode="decimal"
+                  autoComplete="off"
+                  required
+                  value={amount}
+                  disabled={locked}
+                  onFocus={(event) => event.currentTarget.select()}
+                  onClick={(event) => {
+                    event.currentTarget.select();
+                    openAmounts();
+                  }}
+                  onChange={(event) => {
+                    setAmount(event.target.value);
+                    const value = Number(event.target.value);
+                    setActiveAmount(Number.isInteger(value) && value >= 1 && value <= 1000 ? value : null);
+                    setAmountOpen(true);
+                  }}
+                  onKeyDown={(event) => {
+                    if (event.nativeEvent.isComposing) return;
+                    const step = { ArrowDown: 1, ArrowUp: -1, PageDown: 5, PageUp: -5 }[event.key];
 
-                  if (event.target.value !== "custom") setAmount(event.target.value);
-                }}
-              >
-                {[...new Set([0.5, 1, 2, 4, 6, 8, 12, 16, 24, 32, 100, 250, 500, 1000, item.quantity])]
-                  .sort((a, b) => a - b)
-                  .map((value) => (
-                    <option key={value} value={value}>
+                    if (step !== undefined || (showAmounts && ["Home", "End"].includes(event.key))) {
+                      event.preventDefault();
+                      setAmountOpen(true);
+                      setActiveAmount(
+                        event.key === "Home"
+                          ? 1
+                          : event.key === "End"
+                            ? 1000
+                            : Math.max(
+                                1,
+                                Math.min(
+                                  1000,
+                                  (activeAmount ?? (Math.round(Number(amount)) || 1)) + (step ?? 0),
+                                ),
+                              ),
+                      );
+                    } else if (event.key === "Enter" && showAmounts) {
+                      event.preventDefault();
+
+                      if (activeAmount !== null) selectAmount(activeAmount);
+                      else setAmountOpen(false);
+                    }
+                  }}
+                />
+                <button
+                  type="button"
+                  aria-label={showAmounts ? "Hide package quantities" : "Show package quantities"}
+                  aria-controls={showAmounts ? `${amountId}-list` : undefined}
+                  aria-expanded={showAmounts}
+                  disabled={locked}
+                  onClick={() => {
+                    if (showAmounts) setAmountOpen(false);
+                    else openAmounts();
+                  }}
+                >
+                  <ChevronDown size={18} aria-hidden="true" />
+                </button>
+              </div>
+              {showAmounts && (
+                <div
+                  ref={amountList}
+                  id={`${amountId}-list`}
+                  role="listbox"
+                  aria-label="Package quantities"
+                  className="quantity-list"
+                >
+                  {Array.from({ length: 1000 }, (_, index) => index + 1).map((value) => (
+                    <button
+                      key={value}
+                      id={`${amountId}-${value}`}
+                      type="button"
+                      role="option"
+                      aria-selected={Number(amount) === value}
+                      className={activeAmount === value ? "is-active" : ""}
+                      tabIndex={-1}
+                      onMouseDown={(event) => event.preventDefault()}
+                      onClick={() => selectAmount(value)}
+                    >
                       {value}
-                    </option>
+                    </button>
                   ))}
-                <option value="custom">Custom…</option>
-              </select>
-            </label>
+                </div>
+              )}
+            </div>
             <label>
               Package unit
               <select
@@ -283,21 +404,6 @@ export function GroceryForm({ item, aisles, busy, error, save, cancel, remove }:
               </select>
             </label>
           </div>
-          {customAmount && (
-            <label>
-              Custom package quantity
-              <input
-                type="number"
-                required
-                min="0"
-                max="1000000"
-                step="any"
-                value={amount}
-                disabled={locked}
-                onChange={(event) => setAmount(event.target.value)}
-              />
-            </label>
-          )}
           <p className="field-hint">Use the size of one package. Counts are never converted to weight.</p>
         </section>
         <section className="grocery-alternatives" aria-label="Alternative ingredient names">

@@ -191,6 +191,59 @@
 .grocery-alternatives input {
   width: 100%;
 }
+.quantity-picker {
+  display: grid;
+  align-content: start;
+  gap: 9px;
+  min-width: 0;
+}
+.quantity-input {
+  display: flex;
+  position: relative;
+}
+.quantity-input input {
+  width: 100%;
+  min-width: 0;
+  padding-right: 48px;
+}
+.quantity-input button {
+  position: absolute;
+  right: 0;
+  top: 0;
+  bottom: 0;
+  width: 44px;
+  min-height: 44px;
+  display: grid;
+  place-items: center;
+  border: 0;
+  background: transparent;
+}
+.quantity-list {
+  position: relative;
+  max-height: 220px;
+  overflow-y: auto;
+  overscroll-behavior-y: contain;
+  touch-action: pan-y;
+  scrollbar-gutter: stable;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+}
+.quantity-list button {
+  display: block;
+  width: 100%;
+  min-height: 44px;
+  padding: 10px 12px;
+  border: 0;
+  border-radius: 0;
+  background: #fffefa;
+  text-align: left;
+}
+.quantity-list button:hover,
+.quantity-list button.is-active,
+.quantity-list button[aria-selected="true"] {
+  background: #edf0e8;
+  color: var(--olive);
+}
 .aisle-picker {
   display: grid;
   gap: 9px;
