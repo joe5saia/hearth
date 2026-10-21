@@ -78,7 +78,9 @@ try {
   browser("wait", ".recipe-form");
   check("(() => { const dialog = document.querySelector('dialog[open]'); const rect = dialog.getBoundingClientRect(); const footer = dialog.querySelector('.form-actions').getBoundingClientRect(); return dialog.classList.contains('fullscreen') && rect.x === 0 && rect.y === 0 && rect.width === innerWidth && rect.height === innerHeight && footer.bottom <= innerHeight; })()", "mobile recipe editor fills viewport with visible save actions");
   browser("screenshot", resolve(".amp/in/artifacts/recipe-editor-mobile.png"));
+  browser("click", '.ingredient-editor:has([aria-label="Ingredient 1 name"]) summary');
   browser("fill", '[aria-label="Grocery item for ingredient 1"]', "");
+  check("document.querySelector('.ingredient-match-results > button').textContent.trim() === 'New Product' && !!document.querySelector('.ingredient-match-results > button svg') && ![...document.querySelectorAll('.ingredient-link-editor > button')].some(el => el.textContent.includes('New'))", "New Product is the first search action with a plus icon, not a standalone button");
   check("(() => { const results = [...document.querySelectorAll('.ingredient-match-results strong')]; return results[0].textContent.includes('Kraft') && results[1].textContent.includes('BelGioioso') && new Set(results.map(o=>o.textContent)).size === results.length; })()", "editor suggestions lead search results in Jev order without duplicates");
   browser("fill", '[aria-label="Grocery item for ingredient 1"]', "  cHiCkEn  ");
   check("(() => { const names = [...document.querySelectorAll('.ingredient-match-results strong')].map(el => el.textContent); return names.length === 2 && names.includes('Organic Chicken Breast') && names.includes('Boneless poultry portions'); })()", "contains search is case-insensitive, trims spaces and includes aliases but excludes unrelated products");
@@ -90,6 +92,11 @@ try {
   browser("fill", '[aria-label="Grocery item for ingredient 1"]', "no-such-product");
   check("document.querySelector('.ingredient-match-results [role=status]').textContent.includes('No grocery items match') && !document.querySelector('.ingredient-match-results strong')", "search explains empty results");
   browser("screenshot", resolve(".amp/in/artifacts/ingredient-search-empty-mobile.png"));
+  browser("click", ".ingredient-match-results > .ingredient-create");
+  browser("wait", ".grocery-form");
+  check("[...document.querySelectorAll('.grocery-form input')].some(el => el.value === 'Grated Parmesan')", "New Product opens the ingredient-prefilled product editor even with no search matches");
+  browser("find", "role", "button", "click", "--name", "Cancel", "--exact");
+  check("!!document.querySelector('.recipe-form') && !document.querySelector('.grocery-form') && document.querySelector('[aria-label=\"Ingredient 1 quantity\"]').value === '0.25' && !document.querySelector('.ingredient-match-results')", "canceling product creation preserves the recipe draft and closes the search dropdown");
   browser("fill", '[aria-label="Grocery item for ingredient 1"]', "poultry");
   browser("click", ".ingredient-match-results button:has(strong)");
   check("document.querySelector('.ingredient-match-status').textContent.includes('Linked: Boneless poultry portions') && !document.querySelector('.ingredient-match-results')", "choosing a result updates the draft and closes the results");
@@ -101,6 +108,7 @@ try {
   await request("recipes", "PUT", recipe);
   openRecipe();
   browser("find", "role", "button", "click", "--name", "Edit recipe", "--exact");
+  browser("click", '.ingredient-editor:has([aria-label="Ingredient 1 name"]) summary');
   browser("fill", '[aria-label="Grocery item for ingredient 1"]', "BelGioioso");
   browser("click", ".ingredient-match-results button:has(strong)");
   browser("click", ".recipe-form .form-actions .primary");
@@ -112,10 +120,12 @@ try {
   openRecipe();
   browser("find", "role", "button", "click", "--name", "Edit recipe", "--exact");
   browser("fill", '[aria-label="Ingredient 1 name"]', "Different ingredient");
+  browser("click", '.ingredient-editor:has([aria-label="Ingredient 1 name"]) summary');
   browser("fill", '[aria-label="Grocery item for ingredient 1"]', "");
   check("!document.querySelector('.ingredient-match-results').textContent.includes('Potential match')", "renaming an ingredient clears stale suggestions");
   browser("press", "Escape");
   check("!!document.querySelector('.recipe-form') && !document.querySelector('.ingredient-match-results')", "Escape dismisses search without closing recipe editor");
+  browser("click", '.ingredient-editor:has([aria-label="Ingredient 2 name"]) summary');
   browser("fill", '[aria-label="Grocery item for ingredient 2"]', "");
   browser("eval", "document.querySelector('.ingredient-match-results > button:last-of-type').scrollIntoView({block:'center'})");
   browser("find", "role", "button", "click", "--name", "Leave unlinked (manual review)", "--exact");
@@ -134,6 +144,7 @@ try {
   browser("find", "role", "button", "click", "--name", "Edit recipe", "--exact");
   check("!document.querySelector('dialog[open]').classList.contains('fullscreen')", "desktop recipe editor retains centered dialog");
   browser("find", "label", "Time (minutes)", "fill", "47");
+  browser("click", '.ingredient-editor:has([aria-label="Ingredient 1 name"]) summary');
   browser("fill", '[aria-label="Grocery item for ingredient 1"]', "chicken");
   browser("eval", "document.querySelector('.ingredient-match').scrollIntoView({block:'center'})");
   browser("screenshot", resolve(".amp/in/artifacts/ingredient-search-desktop.png"));
@@ -165,6 +176,36 @@ try {
   assert.equal(recovered.minutes, 47);
   assert.equal(recovered.ingredients[0].groceryItemId, products[0].id);
   console.log("PASS refreshed retry keeps background matches and the user's other edits");
+
+  await request("recipes", "PUT", recipe);
+  openRecipe();
+  browser("find", "role", "button", "click", "--name", "Edit recipe", "--exact");
+  browser("find", "label", "Recipe name", "fill", "Broccoli bites with lemon and Parmesan");
+  browser("find", "label", "Servings", "fill", "3.5");
+  browser("fill", '[aria-label="Ingredient 1 name"]', "Finely grated Parmesan cheese");
+  browser("fill", '[aria-label="Ingredient 1 quantity"]', "1.75");
+  browser("select", '[aria-label="Ingredient 1 unit"]', "tbsp");
+  browser("fill", '[aria-label="Step 1"]', "Mix gently, then bake until golden. Rest for 5 minutes before serving.");
+  browser("find", "role", "button", "click", "--name", "Add step", "--exact");
+  browser("fill", '[aria-label="Step 2"]', "Serve with lemon.");
+  browser("click", ".recipe-edit-about > summary");
+  browser("find", "label", "A few words about it", "fill", "A bright lunch.");
+  browser("eval", "document.querySelector('.recipe-edit-about .form-details > summary').scrollIntoView({block:'center'})");
+  browser("click", ".recipe-edit-about .form-details > summary");
+  browser("find", "label", "Source URL", "fill", "https://example.com/broccoli-bites");
+  browser("click", ".recipe-form .form-actions .primary");
+  browser("wait", "--fn", "!document.querySelector('.recipe-form')");
+  const edited = (await household()).recipes[0];
+  assert.equal(edited.title, "Broccoli bites with lemon and Parmesan");
+  assert.equal(edited.servings, 3.5);
+  assert.equal(edited.ingredients[0].name, "Finely grated Parmesan cheese");
+  assert.equal(edited.ingredients[0].quantity, 1.75);
+  assert.equal(edited.ingredients[0].unit, "tbsp");
+  assert.deepEqual(edited.ingredients[1], recipe.ingredients[1]);
+  assert.deepEqual(edited.instructions, ["Mix gently, then bake until golden. Rest for 5 minutes before serving.", "Serve with lemon."]);
+  assert.equal(edited.description, "A bright lunch.");
+  assert.equal(edited.source, "https://example.com/broccoli-bites");
+  console.log("PASS inline recipe fields, added step and collapsed metadata persist through Worker/SQLite without changing other ingredients");
 
   // Detail selection also submits its loaded ingredient baseline, so unrelated matches survive.
   await request("recipes", "PUT", recipe);

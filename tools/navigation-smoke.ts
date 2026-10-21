@@ -239,6 +239,7 @@ try {
           assert.deepEqual(canceled.groceries.find(item => item.id === grocery.id), product);
           await open(`#recipes?view=editor&id=${recipe.id}`);
           await dialog().getByLabel("Recipe name", { exact: true }).fill("Unsaved nested recipe");
+          await dialog().locator(".ingredient-link-editor > summary").first().click();
           await dialog().getByRole("button", { name: "Edit product", exact: true }).click();
           const nested = page.getByRole("dialog", { name: "Grocery item for ingredient", exact: true });
           await expect(nested.getByRole("heading", { name: "Packaging", exact: true })).toBeVisible();
@@ -253,6 +254,7 @@ try {
         const bodyStyle = await page.evaluate(() => document.body.style.cssText);
         await page.locator(".meal-card").filter({ hasText: recipe.title }).click();
         await dialog().getByRole("button", { name: "Edit recipe", exact: true }).click();
+        await dialog().locator(".ingredient-link-editor > summary").first().click();
         await dialog().getByRole("button", { name: "Edit product", exact: true }).click();
         const nested = page.getByRole("dialog", { name: "Grocery item for ingredient", exact: true });
         await nested.getByRole("button", { name: "Cancel", exact: true }).click();

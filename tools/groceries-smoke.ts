@@ -315,7 +315,10 @@ try {
   submit('[aria-label="Edit recipe Lime rice bowls"]');
   browser("wait", '[aria-label="Ingredient 1 quantity"]');
   browser("fill", '[aria-label="Ingredient 1 quantity"]', "250");
-  browser("click", '.ingredient-editor:has([aria-label="Ingredient 5 name"]) .ingredient-link-editor > button');
+  browser("eval", "document.querySelector('.ingredient-editor:has([aria-label=\"Ingredient 5 name\"]) summary').scrollIntoView({block:'center'})");
+  browser("click", '.ingredient-editor:has([aria-label="Ingredient 5 name"]) summary');
+  browser("fill", '[aria-label="Grocery item for ingredient 5"]', "");
+  browser("click", '.ingredient-editor:has([aria-label="Ingredient 5 name"]) .ingredient-create');
   browser("wait", ".grocery-form");
   check("[...document.querySelectorAll('.aisle-list [role=option]')].map(el => el.textContent).join('|') === '10|Bakery|Produce'", "nested product creation shares the current full aisle catalog");
   formFill("Store product name", "Flat-leaf parsley");

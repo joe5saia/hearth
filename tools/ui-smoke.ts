@@ -325,7 +325,9 @@ async function commonNavigation(page: Page, touch: boolean, label: string, captu
     const editor = page.getByRole("dialog", { name: "Add a recipe" }); await editor.waitFor();
     await editor.getByLabel("Recipe name").fill("UNSAVED UI smoke recipe");
     await editor.getByLabel("Ingredient 1 name").fill("temporary ingredient");
-    await editor.getByRole("button", { name: "New product" }).click();
+    await editor.locator(".ingredient-link-editor > summary").click();
+    await editor.getByLabel("Grocery item for ingredient 1", { exact: true }).focus();
+    await editor.getByRole("button", { name: "New Product", exact: true }).click();
     await editor.locator(".grocery-form, form").last().waitFor();
     await auditLayout(page, touch);
     await editor.getByRole("button", { name: /cancel/i }).last().click().catch(async () => {

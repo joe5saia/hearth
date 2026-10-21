@@ -223,6 +223,7 @@ try {
     await saveVisible("Save recipe");
     await capture("mobile-editor");
     await dialog().getByLabel("Recipe name", { exact: true }).fill(recipeName);
+    await click(dialog().getByText("About this recipe", { exact: true }));
     await dialog().getByLabel("A few words about it").fill("A bright, quick dinner with rice and lemon.");
     await dialog().getByLabel("Servings", { exact: true }).fill("2");
     await dialog().getByLabel("Time (minutes)").fill("20");
@@ -235,6 +236,7 @@ try {
     await dialog().getByLabel("Ingredient 1 name", { exact: true }).fill("brown rice");
     await dialog().getByLabel("Ingredient 1 quantity").fill("150");
     await dialog().getByLabel("Ingredient 1 unit").selectOption("g");
+    await click(dialog().locator(".ingredient-link-editor > summary").first());
     await dialog().getByLabel("Grocery item for ingredient 1").selectOption(product.id);
     await click(dialog().getByRole("button", { name: "Edit product", exact: true }));
     await click(dialog().getByRole("button", { name: "Add Alternative", exact: true }));

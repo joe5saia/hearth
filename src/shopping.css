@@ -389,11 +389,7 @@
 }
 .ingredient-link-editor {
   grid-column: 1 / -1;
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 8px;
-  padding-bottom: 8px;
+  display: block;
 }
 .ingredient-match {
   flex: 1 1 200px;
@@ -442,6 +438,13 @@
   border-radius: 0;
   border-bottom: 1px solid var(--line);
   gap: 4px;
+}
+.ingredient-match-results > .ingredient-create {
+  flex-direction: row;
+  justify-content: flex-start;
+  gap: 8px;
+  color: var(--olive);
+  font-weight: 500;
 }
 .ingredient-match-results > button:hover,
 .ingredient-match-results > button:focus-visible {

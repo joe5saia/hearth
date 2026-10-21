@@ -2889,11 +2889,15 @@ function IngredientMatch({
   groceries,
   index,
   change,
+  createProduct,
+  busy,
 }: {
   item: IngredientDraft;
   groceries: readonly GroceryItem[];
   index: number;
   change: (item: IngredientDraft) => void;
+  createProduct: () => void;
+  busy: boolean;
 }) {
   const [query, setQuery] = useState("");
   const [open, setOpen] = useState(false);
@@ -2966,6 +2970,17 @@ function IngredientMatch({
           role="region"
           aria-label={`Matches for ingredient ${index + 1}`}
         >
+          <button
+            type="button"
+            className="ingredient-create"
+            disabled={busy || !item.name.trim()}
+            onClick={() => {
+              setOpen(false);
+              createProduct();
+            }}
+          >
+            <Plus size={16} /> New Product
+          </button>
           {results.map((grocery) => (
             <button type="button" key={grocery.id} onClick={() => select(grocery.id)}>
               <strong>{grocery.name}</strong>
@@ -2977,7 +2992,7 @@ function IngredientMatch({
           ))}
           {!results.length && (
             <p role="status">
-              No grocery items match “{query}”. Try another search or create a new product below.
+              No grocery items match “{query}”. Try another search or choose New Product above.
             </p>
           )}
           <button type="button" onClick={() => select(undefined)}>
@@ -3102,316 +3117,339 @@ function RecipeForm({
           if (!syncing) save(draft, expectedIngredients);
         }}
       >
-        <fieldset className="recipe-fields" disabled={syncing}>
-          {warnings && (
-            <div className="field-hint" role="status">
-              Review the imported recipe, quantities, and collection before saving. Timing follows the source;
-              marinating or resting may be additional.
-              {warnings.map((warning) => (
-                <p key={warning}>{warning}</p>
-              ))}
-            </div>
-          )}
-          <label>
-            Recipe name
-            <input
-              required
-              maxLength={150}
-              placeholder="Grandma’s Sunday pasta"
-              value={draft.title}
-              onChange={(event) => setDraft({ ...draft, title: event.target.value })}
-            />
-          </label>
-          <div className="form-grid three">
-            <label>
-              Servings
-              <input
-                type="number"
-                min="0.5"
-                max="100"
-                step="0.5"
-                required
-                value={draft.servings}
-                onChange={(event) => setDraft({ ...draft, servings: event.target.valueAsNumber })}
-              />
-            </label>
-            <label>
-              Time (minutes)
-              <input
-                type="number"
-                min="1"
-                max="10000"
-                required
-                value={draft.minutes}
-                onChange={(event) => setDraft({ ...draft, minutes: event.target.valueAsNumber })}
-              />
-            </label>
-            <label>
-              Collection
-              <select
-                value={draft.category}
-                onChange={(event) => setDraft({ ...draft, category: event.target.value })}
-              >
-                <option value="">Uncollected</option>
-                {collections.map((collection) => (
-                  <option key={collection.id} value={collection.name}>
-                    {collection.name}
-                  </option>
+        <div className="recipe-fields">
+          <fieldset className="recipe-fields-content" disabled={syncing}>
+            {warnings && (
+              <div className="field-hint" role="status">
+                Review the imported recipe, quantities, and collection before saving. Timing follows the
+                source; marinating or resting may be additional.
+                {warnings.map((warning) => (
+                  <p key={warning}>{warning}</p>
                 ))}
-              </select>
-            </label>
-          </div>
-          <details className="form-details">
-            <summary>Source & photo (optional)</summary>
-            <label>
-              Source URL <span className="muted">(optional)</span>
-              <input
-                type="url"
-                placeholder="https://…"
-                value={draft.source}
-                onChange={(event) => setDraft({ ...draft, source: event.target.value })}
-              />
-            </label>
-            <div className="photo-fields">
-              <label>
-                Photo URL <span className="muted">(or upload below)</span>
-                <input
-                  placeholder="https://…"
-                  value={draft.photo.startsWith("data:") ? "Uploaded photo" : draft.photo}
-                  readOnly={draft.photo.startsWith("data:")}
-                  onChange={(event) => setDraft({ ...draft, photo: event.target.value })}
+              </div>
+            )}
+            <div className="detail-title recipe-edit-title">
+              <label className="recipe-title-field">
+                <span className="sr-only">Recipe name</span>
+                <textarea
+                  aria-label="Recipe name"
+                  rows={1}
+                  required
+                  maxLength={150}
+                  placeholder="Grandma’s Sunday pasta"
+                  value={draft.title}
+                  onChange={(event) => setDraft({ ...draft, title: event.target.value })}
                 />
               </label>
-              <label className="file-label">
-                Upload a photo
-                <input
-                  type="file"
-                  accept="image/jpeg,image/png,image/webp"
-                  onChange={(event) => upload(event.target.files?.[0])}
-                />
-              </label>
-              {draft.photo && (
+              <div className="detail-meta recipe-edit-meta">
+                <label>
+                  <Users size={16} />
+                  <span className="sr-only">Servings</span>
+                  <input
+                    aria-label="Servings"
+                    type="number"
+                    min="0.5"
+                    max="100"
+                    step="0.5"
+                    required
+                    value={draft.servings}
+                    onChange={(event) => setDraft({ ...draft, servings: event.target.valueAsNumber })}
+                  />
+                  <span>servings</span>
+                </label>
+                <label>
+                  <Clock3 size={16} />
+                  <span className="sr-only">Time (minutes)</span>
+                  <input
+                    aria-label="Time (minutes)"
+                    type="number"
+                    min="1"
+                    max="10000"
+                    required
+                    value={draft.minutes}
+                    onChange={(event) => setDraft({ ...draft, minutes: event.target.valueAsNumber })}
+                  />
+                  <span>min</span>
+                </label>
+                <label>
+                  <span className="sr-only">Collection</span>
+                  <select
+                    value={draft.category}
+                    onChange={(event) => setDraft({ ...draft, category: event.target.value })}
+                  >
+                    <option value="">Uncollected</option>
+                    {collections.map((collection) => (
+                      <option key={collection.id} value={collection.name}>
+                        {collection.name}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              </div>
+              <p className="field-hint recipe-edit-hint">
+                Select any field to edit. Save recipe to keep your changes. Amounts are for one batch.
+              </p>
+            </div>
+            <div className="detail-columns recipe-edit-columns">
+              <section className="editor-section">
+                <div className="ingredients-heading">
+                  <h2>Ingredients</h2>
+                  <button
+                    type="button"
+                    className="primary"
+                    disabled={busy || syncing}
+                    onClick={(event) => {
+                      if (event.currentTarget.form?.reportValidity()) void syncIngredients();
+                    }}
+                  >
+                    {syncing ? "Syncing ingredients…" : "Start Grocery Linking"}
+                  </button>
+                </div>
+                {syncMessage && (
+                  <p className={syncFailed ? "error" : "field-hint"} role={syncFailed ? "alert" : "status"}>
+                    {syncMessage}
+                  </p>
+                )}
+                {draft.ingredients.map((item, index) => {
+                  const automatic =
+                    item.groceryItemId === undefined ? matchGrocery(item.name, groceries) : undefined;
+
+                  const linked = groceries.find(
+                    (entry) => entry.id === (item.groceryItemId ?? automatic?.id),
+                  );
+
+                  return (
+                    <div className="ingredient-editor" key={index}>
+                      <textarea
+                        rows={1}
+                        aria-label={`Ingredient ${index + 1} name`}
+                        placeholder="Ingredient"
+                        maxLength={150}
+                        required
+                        value={item.name}
+                        onChange={(event) =>
+                          updateIngredient(index, {
+                            ...item,
+                            name: event.target.value,
+                            originalText: undefined,
+                            grocerySuggestions: undefined,
+                          })
+                        }
+                      />
+                      <input
+                        aria-label={`Ingredient ${index + 1} quantity`}
+                        type="number"
+                        min="0.01"
+                        max="1000000"
+                        step="any"
+                        required
+                        value={item.quantity}
+                        onChange={(event) =>
+                          updateIngredient(index, { ...item, quantity: event.target.valueAsNumber })
+                        }
+                      />
+                      <select
+                        aria-label={`Ingredient ${index + 1} unit`}
+                        value={item.unit}
+                        onChange={(event) =>
+                          updateIngredient(index, {
+                            ...item,
+                            unit: Schema.decodeUnknownSync(UnitSchema)(event.target.value),
+                          })
+                        }
+                      >
+                        {units.map((unit) => (
+                          <option key={unit}>{unit}</option>
+                        ))}
+                      </select>
+                      <button
+                        type="button"
+                        className="icon-button"
+                        aria-label={`Remove ingredient ${index + 1}`}
+                        disabled={draft.ingredients.length === 1}
+                        onClick={() =>
+                          setDraft({
+                            ...draft,
+                            ingredients: draft.ingredients.filter((_, position) => position !== index),
+                          })
+                        }
+                      >
+                        <X size={16} />
+                      </button>
+                      <details className="ingredient-link-editor">
+                        <summary>{linked?.name ?? "No grocery item linked"}</summary>
+                        <IngredientMatch
+                          item={item}
+                          groceries={groceries}
+                          index={index}
+                          change={(ingredient) => updateIngredient(index, ingredient)}
+                          createProduct={() =>
+                            setGroceryEditor({ item: newGrocery(item.name, item.unit), index })
+                          }
+                          busy={busy}
+                        />
+                        {linked && (
+                          <button
+                            type="button"
+                            className="text-button"
+                            disabled={busy}
+                            onClick={() => setGroceryEditor({ item: linked, index })}
+                          >
+                            <Pencil size={13} /> Edit product
+                          </button>
+                        )}
+                      </details>
+                    </div>
+                  );
+                })}
                 <button
                   type="button"
                   className="text-button"
-                  onClick={() => setDraft({ ...draft, photo: "" })}
-                >
-                  Remove photo
-                </button>
-              )}
-              {photoError && <p className="error">{photoError}</p>}
-            </div>
-          </details>
-          <div className="editor-section">
-            <div className="ingredients-heading">
-              <h2>Ingredients</h2>
-              <button
-                type="button"
-                className="secondary"
-                disabled={busy || syncing}
-                onClick={(event) => {
-                  if (event.currentTarget.form?.reportValidity()) void syncIngredients();
-                }}
-              >
-                {syncing ? "Syncing ingredients…" : "Grocery Linking"}
-              </button>
-            </div>
-            {syncMessage && (
-              <p className={syncFailed ? "error" : "field-hint"} role={syncFailed ? "alert" : "status"}>
-                {syncMessage}
-              </p>
-            )}
-            {draft.ingredients.map((item, index) => {
-              const automatic =
-                item.groceryItemId === undefined ? matchGrocery(item.name, groceries) : undefined;
-
-              const linked = groceries.find((entry) => entry.id === (item.groceryItemId ?? automatic?.id));
-
-              return (
-                <div className="ingredient-editor" key={index}>
-                  <input
-                    aria-label={`Ingredient ${index + 1} name`}
-                    placeholder="Ingredient"
-                    maxLength={150}
-                    required
-                    value={item.name}
-                    onChange={(event) =>
-                      updateIngredient(index, {
-                        ...item,
-                        name: event.target.value,
-                        originalText: undefined,
-                        grocerySuggestions: undefined,
-                      })
-                    }
-                  />
-                  <input
-                    aria-label={`Ingredient ${index + 1} quantity`}
-                    type="number"
-                    min="0.01"
-                    max="1000000"
-                    step="any"
-                    required
-                    value={item.quantity}
-                    onChange={(event) =>
-                      updateIngredient(index, { ...item, quantity: event.target.valueAsNumber })
-                    }
-                  />
-                  <select
-                    aria-label={`Ingredient ${index + 1} unit`}
-                    value={item.unit}
-                    onChange={(event) =>
-                      updateIngredient(index, {
-                        ...item,
-                        unit: Schema.decodeUnknownSync(UnitSchema)(event.target.value),
-                      })
-                    }
-                  >
-                    {units.map((unit) => (
-                      <option key={unit}>{unit}</option>
-                    ))}
-                  </select>
-                  <button
-                    type="button"
-                    className="icon-button"
-                    aria-label={`Remove ingredient ${index + 1}`}
-                    disabled={draft.ingredients.length === 1}
-                    onClick={() =>
-                      setDraft({
-                        ...draft,
-                        ingredients: draft.ingredients.filter((_, position) => position !== index),
-                      })
-                    }
-                  >
-                    <X size={16} />
-                  </button>
-                  <div className="ingredient-link-editor">
-                    <IngredientMatch
-                      item={item}
-                      groceries={groceries}
-                      index={index}
-                      change={(ingredient) => updateIngredient(index, ingredient)}
-                    />
-                    {linked && (
-                      <button
-                        type="button"
-                        className="text-button"
-                        disabled={busy}
-                        onClick={() => setGroceryEditor({ item: linked, index })}
-                      >
-                        <Pencil size={13} /> Edit product
-                      </button>
-                    )}
-                    <button
-                      type="button"
-                      className="text-button"
-                      disabled={busy || !item.name.trim()}
-                      onClick={() => setGroceryEditor({ item: newGrocery(item.name, item.unit), index })}
-                    >
-                      <Plus size={13} /> New product
-                    </button>
-                  </div>
-                </div>
-              );
-            })}
-            <button
-              type="button"
-              className="text-button"
-              onClick={() =>
-                setDraft({
-                  ...draft,
-                  ingredients: [...draft.ingredients, { name: "", quantity: 1, unit: "each" }],
-                })
-              }
-            >
-              <Plus size={15} /> Add ingredient
-            </button>
-          </div>
-          <div className="editor-section">
-            <h2>Cooking instructions</h2>
-            {draft.instructions.map((step, index) => (
-              <div className="instruction-editor" key={index}>
-                <span>{index + 1}</span>
-                <textarea
-                  required
-                  aria-label={`Step ${index + 1}`}
-                  maxLength={10000}
-                  placeholder="What happens next?"
-                  value={step}
-                  onChange={(event) =>
-                    setDraft({
-                      ...draft,
-                      instructions: draft.instructions.map((value, position) =>
-                        position === index ? event.target.value : value,
-                      ),
-                    })
-                  }
-                />
-                <button
-                  type="button"
-                  className="icon-button"
-                  aria-label={`Remove step ${index + 1}`}
-                  disabled={draft.instructions.length === 1}
                   onClick={() =>
                     setDraft({
                       ...draft,
-                      instructions: draft.instructions.filter((_, position) => position !== index),
+                      ingredients: [...draft.ingredients, { name: "", quantity: 1, unit: "each" }],
                     })
                   }
                 >
-                  <X size={16} />
+                  <Plus size={15} /> Add ingredient
+                </button>
+              </section>
+              <section className="editor-section">
+                <h2>Let’s make it</h2>
+                {draft.instructions.map((step, index) => (
+                  <div className="instruction-editor" key={index}>
+                    <span>{index + 1}</span>
+                    <textarea
+                      rows={1}
+                      required
+                      aria-label={`Step ${index + 1}`}
+                      maxLength={10000}
+                      placeholder="What happens next?"
+                      value={step}
+                      onChange={(event) =>
+                        setDraft({
+                          ...draft,
+                          instructions: draft.instructions.map((value, position) =>
+                            position === index ? event.target.value : value,
+                          ),
+                        })
+                      }
+                    />
+                    <button
+                      type="button"
+                      className="icon-button"
+                      aria-label={`Remove step ${index + 1}`}
+                      disabled={draft.instructions.length === 1}
+                      onClick={() =>
+                        setDraft({
+                          ...draft,
+                          instructions: draft.instructions.filter((_, position) => position !== index),
+                        })
+                      }
+                    >
+                      <X size={16} />
+                    </button>
+                  </div>
+                ))}
+                <button
+                  type="button"
+                  className="text-button"
+                  onClick={() => setDraft({ ...draft, instructions: [...draft.instructions, ""] })}
+                >
+                  <Plus size={15} /> Add step
+                </button>
+              </section>
+            </div>
+            <details className="form-details recipe-edit-about">
+              <summary>About this recipe</summary>
+              <label>
+                A few words about it
+                <textarea
+                  maxLength={2000}
+                  placeholder="What makes this one a keeper?"
+                  value={draft.description}
+                  onChange={(event) => setDraft({ ...draft, description: event.target.value })}
+                />
+              </label>
+              <details className="form-details">
+                <summary>Source & photo (optional)</summary>
+                <label>
+                  Source URL <span className="muted">(optional)</span>
+                  <input
+                    type="url"
+                    placeholder="https://…"
+                    value={draft.source}
+                    onChange={(event) => setDraft({ ...draft, source: event.target.value })}
+                  />
+                </label>
+                <div className="photo-fields">
+                  <label>
+                    Photo URL <span className="muted">(or upload below)</span>
+                    <input
+                      placeholder="https://…"
+                      value={draft.photo.startsWith("data:") ? "Uploaded photo" : draft.photo}
+                      readOnly={draft.photo.startsWith("data:")}
+                      onChange={(event) => setDraft({ ...draft, photo: event.target.value })}
+                    />
+                  </label>
+                  <label className="file-label">
+                    Upload a photo
+                    <input
+                      type="file"
+                      accept="image/jpeg,image/png,image/webp"
+                      onChange={(event) => upload(event.target.files?.[0])}
+                    />
+                  </label>
+                  {draft.photo && (
+                    <button
+                      type="button"
+                      className="text-button"
+                      onClick={() => setDraft({ ...draft, photo: "" })}
+                    >
+                      Remove photo
+                    </button>
+                  )}
+                  {photoError && <p className="error">{photoError}</p>}
+                </div>
+              </details>
+            </details>
+            {error && (
+              <p className="error" role="alert">
+                {error}
+              </p>
+            )}
+            {error &&
+              latestRecipe &&
+              JSON.stringify(latestRecipe.ingredients) !== JSON.stringify(expectedIngredients) && (
+                <button
+                  type="button"
+                  className="text-button"
+                  disabled={busy}
+                  onClick={() => {
+                    setDraft({ ...draft, ingredients: latestRecipe.ingredients });
+                    setExpectedIngredients(latestRecipe.ingredients);
+                    clearError();
+                  }}
+                >
+                  Use latest ingredients and keep other edits
+                </button>
+              )}
+            {confirmDelete && (
+              <div className="delete-confirm">
+                <p>
+                  Delete this recipe permanently? Planned recipes must be removed from the calendar first.
+                </p>
+                <button type="button" className="danger text-button" disabled={busy} onClick={remove}>
+                  Yes, delete recipe
+                </button>
+                <button type="button" className="text-button" onClick={() => setConfirmDelete(false)}>
+                  Keep recipe
                 </button>
               </div>
-            ))}
-            <button
-              type="button"
-              className="text-button"
-              onClick={() => setDraft({ ...draft, instructions: [...draft.instructions, ""] })}
-            >
-              <Plus size={15} /> Add step
-            </button>
-          </div>
-          <label>
-            A few words about it
-            <textarea
-              maxLength={2000}
-              placeholder="What makes this one a keeper?"
-              value={draft.description}
-              onChange={(event) => setDraft({ ...draft, description: event.target.value })}
-            />
-          </label>
-          {error && (
-            <p className="error" role="alert">
-              {error}
-            </p>
-          )}
-          {error &&
-            latestRecipe &&
-            JSON.stringify(latestRecipe.ingredients) !== JSON.stringify(expectedIngredients) && (
-              <button
-                type="button"
-                className="text-button"
-                disabled={busy}
-                onClick={() => {
-                  setDraft({ ...draft, ingredients: latestRecipe.ingredients });
-                  setExpectedIngredients(latestRecipe.ingredients);
-                  clearError();
-                }}
-              >
-                Use latest ingredients and keep other edits
-              </button>
             )}
-          {confirmDelete && (
-            <div className="delete-confirm">
-              <p>Delete this recipe permanently? Planned recipes must be removed from the calendar first.</p>
-              <button type="button" className="danger text-button" disabled={busy} onClick={remove}>
-                Yes, delete recipe
-              </button>
-              <button type="button" className="text-button" onClick={() => setConfirmDelete(false)}>
-                Keep recipe
-              </button>
-            </div>
-          )}
-        </fieldset>
+          </fieldset>
+        </div>
         <div className="form-actions">
           {remove && (
             <button
