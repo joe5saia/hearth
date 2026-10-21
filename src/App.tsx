@@ -6,6 +6,7 @@ import { ShoppingItems } from "./ShoppingItems";
 import { ShoppingRecipeForm } from "./ShoppingRecipeForm";
 import { RecipeChecklist } from "./RecipeChecklist";
 import { MealCard } from "./MealCard";
+import { DateJump } from "./DateJump";
 import { ChatGPTSetup } from "./ChatGPTSetup";
 import { readRoute, recipeSorts, routeHash, type Page, type Route } from "./navigation";
 import { ShareLink } from "./ShareLink";
@@ -23,7 +24,6 @@ import {
   Check,
   ChevronDown,
   ChevronLeft,
-  ChevronRight,
   Clock3,
   CookingPot,
   ListChecks,
@@ -55,12 +55,11 @@ import {
   units,
   weekStart,
   nextDinnerDate,
-  validDate,
   matchesRecipeSearch,
   RecipeSchema,
   HouseholdSchema,
-  DateSchema,
   UnitSchema,
+  type CalendarDate,
   type CheckWriteSchema,
   type Household,
   type Collection,
@@ -357,8 +356,8 @@ export function App() {
   const confirmedShopping = useRef<Pick<Household, "shoppingOrder" | "checks">>(emptyHousehold);
   const [timerHeaderHost, setTimerHeaderHost] = useState<HTMLDivElement | null>(null);
   const [timerDialogHost, setTimerDialogHost] = useState<HTMLDivElement | null>(null);
-  const weekInput = useRef<HTMLInputElement>(null);
-  const weekPicker = useRef<HTMLElement>(null);
+  const [jumpDate, setJumpDate] = useState<CalendarDate | null>(null);
+  const [selectedPlanDate, setSelectedPlanDate] = useState<CalendarDate | null>(null);
   const pageOptions = useRef<HTMLElement>(null);
   const initialLoad = useRef(true);
 
@@ -786,18 +785,22 @@ export function App() {
   }, [loaded, resolveModal]);
   useEffect(() => {
     const dismiss = (event: PointerEvent) => {
-      for (const trigger of [pageOptions.current, weekPicker.current]) {
-        const menu = trigger?.closest("details");
+      const menu = pageOptions.current?.closest("details");
 
-        if (menu && event.target instanceof Node && !menu.contains(event.target))
-          menu.removeAttribute("open");
-      }
+      if (menu && event.target instanceof Node && !menu.contains(event.target)) menu.removeAttribute("open");
     };
 
     document.addEventListener("pointerdown", dismiss);
 
     return () => document.removeEventListener("pointerdown", dismiss);
   }, []);
+  useLayoutEffect(() => {
+    if (!jumpDate || page !== "plan") return;
+    const day = document.getElementById(`plan-${jumpDate}`);
+    day?.focus({ preventScroll: true });
+    day?.scrollIntoView({ block: "start" });
+    setJumpDate(null);
+  }, [week, jumpDate, page]);
   useEffect(() => {
     window.scrollTo({ top: 0 });
     pageOptions.current?.closest("details")?.removeAttribute("open");
@@ -1350,77 +1353,23 @@ export function App() {
               <>
                 <div className="section-toolbar">
                   <div className="week-navigation">
-                    <button
-                      className="icon-button"
-                      aria-label="Previous week"
-                      onClick={() => setWeek(addDays(week, -7))}
-                    >
-                      <ChevronLeft size={17} />
-                    </button>
-                    <details
-                      className="date-disclosure week-picker"
-                      onKeyDown={(event) => {
-                        if (event.key === "Escape") {
-                          event.currentTarget.removeAttribute("open");
-                          weekPicker.current?.focus();
-                          event.stopPropagation();
-                        }
+                    <h2>
+                      {readableDate(week, { month: "short", day: "numeric" })}
+                      {week.slice(0, 4) !== addDays(week, 6).slice(0, 4) && <span>, {week.slice(0, 4)}</span>}
+                      {" – "}
+                      {readableDate(addDays(week, 6), { month: "short", day: "numeric" })}
+                      <span>, {addDays(week, 6).slice(0, 4)}</span>
+                    </h2>
+                    <DateJump
+                      date={
+                        selectedPlanDate && weekStart(selectedPlanDate) === week ? selectedPlanDate : week
+                      }
+                      onSelect={(date) => {
+                        setWeek(weekStart(date));
+                        setSelectedPlanDate(date);
+                        setJumpDate(date);
                       }}
-                    >
-                      <summary ref={weekPicker} aria-label="Jump to date">
-                        <h2>
-                          {readableDate(week, { month: "short", day: "numeric" })}
-                          {week.slice(0, 4) !== addDays(week, 6).slice(0, 4) && (
-                            <span>, {week.slice(0, 4)}</span>
-                          )}
-                          {" – "}
-                          {readableDate(addDays(week, 6), { month: "short", day: "numeric" })}
-                          <span>, {addDays(week, 6).slice(0, 4)}</span>
-                        </h2>
-                        <ChevronDown size={16} />
-                      </summary>
-                      <form
-                        className="week-jump"
-                        key={week}
-                        onSubmit={(event) => {
-                          event.preventDefault();
-                          const date = weekInput.current?.value;
-
-                          if (date && validDate(date)) {
-                            setWeek(weekStart(Schema.decodeSync(DateSchema)(date)));
-                            event.currentTarget.closest("details")?.removeAttribute("open");
-                          }
-                        }}
-                      >
-                        <label htmlFor="week-jump">Jump to date</label>
-                        <input
-                          id="week-jump"
-                          ref={weekInput}
-                          type="date"
-                          required
-                          aria-label="Jump to week containing date"
-                          defaultValue={week}
-                        />
-                        <button
-                          type="button"
-                          className="secondary"
-                          onClick={(event) => {
-                            setWeek(weekStart());
-                            event.currentTarget.closest("details")?.removeAttribute("open");
-                          }}
-                        >
-                          This week
-                        </button>
-                        <button className="primary">Go to week</button>
-                      </form>
-                    </details>
-                    <button
-                      className="icon-button"
-                      aria-label="Next week"
-                      onClick={() => setWeek(addDays(week, 7))}
-                    >
-                      <ChevronRight size={17} />
-                    </button>
+                    />
                   </div>
                   <button className="text-button shop-week" onClick={() => navigate("shopping")}>
                     <ShoppingBasket size={17} />
@@ -1445,6 +1394,8 @@ export function App() {
                       <section
                         className={`day ${today ? "is-today" : ""}`}
                         key={day}
+                        id={`plan-${day}`}
+                        tabIndex={-1}
                         aria-label={readableDate(day, { weekday: "long", month: "long", day: "numeric" })}
                       >
                         <div className="day-heading">
@@ -1499,8 +1450,13 @@ export function App() {
                                       {meal.scale !== 1 && <span>{quantity(meal.scale)}×</span>}
                                     </div>
                                   )}
-                                  {recipe && meal.note && <p className="meal-note">{meal.note}</p>}
                                 </div>
+                                {recipe && meal.note && (
+                                  <p className="meal-note">
+                                    <strong>Note</strong>
+                                    {meal.note}
+                                  </p>
+                                )}
                               </MealCard>
                             );
                           })}

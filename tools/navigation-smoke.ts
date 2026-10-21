@@ -28,7 +28,7 @@ const id = () => crypto.randomUUID();
 const collection = { id: id(), name: "Navigation smoke collection" };
 const grocery = { id: id(), name: "Navigation smoke lentils", unit: "g", quantity: 500, url: "", aisle: "Pantry", aliases: ["Navigation lentils", "Brown lentils"] };
 const recipe = { id: RecipeId.make(id()), title: "Navigation smoke lentil soup", description: "Disposable browser fixture", servings: 3, minutes: 20, category: collection.name, photo: "", source: "", rating: "neutral", ingredients: [{ name: grocery.name, quantity: 250, unit: "g", groceryItemId: grocery.id }], instructions: ["Simmer until tender."] };
-const meal = { id: id(), recipeId: recipe.id, date: "2026-11-02", slot: "Dinner", scale: 1.5, note: "Saved household meal" };
+const meal = { id: id(), recipeId: recipe.id, date: "2026-11-02", slot: "Dinner", scale: 1.5, note: "Soak the lentils before cooking and keep a portion mild for the kids.\nPack the leftovers for tomorrow's lunch. This final sentence must remain visible, not truncated." };
 const noteMeal = { ...meal, id: id(), recipeId: null, note: "Navigation smoke note-only control" };
 const edgeMeals = [
   { ...noteMeal, id: id(), date: "2026-10-31", note: "Navigation first-column meal" },
@@ -372,8 +372,49 @@ try {
       await check("selected meal-plan week, Back/Forward, direct open and reload", async () => {
         await open("#plan?week=2026-10-31");
         await expect(page.getByRole("heading", { name: "Oct 31 – Nov 6, 2026" })).toBeVisible();
-        await page.getByRole("button", { name: "Next week", exact: true }).click();
+        await expect(page.getByRole("button", { name: /^(Next|Previous) week$/ })).toHaveCount(0);
+        const note = page.locator(".meal-note").filter({ hasText: meal.note });
+        await expect(note).toBeVisible();
+        assert(await note.evaluate(element => {
+          const style = getComputedStyle(element);
+          return parseFloat(style.fontSize) >= 16 && style.whiteSpace === "pre-wrap" &&
+            style.webkitLineClamp === "none" && element.scrollHeight <= element.clientHeight + 1;
+        }), "Meal notes must be readable, preserve line breaks and remain fully visible");
+        assert(await page.locator(".meal-card h3").first().evaluate(element => parseFloat(getComputedStyle(element).fontSize) >= 18));
+        if (profile !== "desktop") {
+          assert(await page.evaluate(() => matchMedia("(pointer: coarse)").matches));
+          const days = await page.locator(".day").evaluateAll(elements => elements.map(element => element.getBoundingClientRect().toJSON()));
+          assert(days.every((day, index) => day.x === days[0].x && (index === 0 || day.y >= days[index - 1].bottom)), "Touch layouts must stack all seven days vertically");
+        }
+        assert(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), "Meal plan must not scroll horizontally");
+        await shot("readable-plan");
+        await note.scrollIntoViewIfNeeded();
+        await shot("meal-notes");
+        if (profile === "ipad" || profile === "desktop") {
+          await page.setViewportSize({ width: 1366, height: 1024 });
+          assert(await page.locator(".calendar").evaluate(element => getComputedStyle(element).gridTemplateColumns.split(" ").length === 1), "Landscape tablet widths must retain one vertical day column, with or without touch input");
+          assert(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
+          await shot("landscape-plan");
+          await page.setViewportSize(options.viewport);
+        }
+        await page.getByText("Jump to date", { exact: true }).click();
+        await expect(page.locator(".date-picker-weekday")).toHaveText(["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]);
+        await page.getByRole("button", { name: "Next month", exact: true }).click();
+        await expect(page.locator(".date-picker-heading strong")).toHaveText("November 2026");
+        await expect(page.locator(".date-picker-grid button").first()).toHaveAttribute("aria-label", "Monday, October 26, 2026");
+        await shot("date-picker");
+        await page.getByRole("button", { name: "Tuesday, November 10, 2026", exact: true }).click();
         await expect(page).toHaveURL(/week=2026-11-07/);
+        await expect(page.locator("#plan-2026-11-10")).toBeFocused();
+        await expect(page.locator(".date-picker[open]")).toHaveCount(0);
+        await page.getByText("Jump to date", { exact: true }).click();
+        await expect(page.getByRole("button", { name: "Tuesday, November 10, 2026", exact: true })).toHaveAttribute("aria-pressed", "true");
+        await page.getByRole("button", { name: "Wednesday, November 11, 2026", exact: true }).click();
+        await expect(page.locator("#plan-2026-11-11")).toBeFocused();
+        const selected = await page.locator("#plan-2026-11-11").boundingBox();
+        const viewport = page.viewportSize();
+        const header = await page.locator(".topbar").boundingBox();
+        assert(selected && viewport && header && selected.y >= header.y + header.height && selected.y < viewport.height, "The exact selected day must be scrolled below the sticky header, even within the same week");
         await page.goBack();
         await expect(page.getByRole("heading", { name: "Oct 31 – Nov 6, 2026" })).toBeVisible();
         await page.goForward();

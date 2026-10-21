@@ -163,35 +163,36 @@ async function commonNavigation(page: Page, touch: boolean, label: string, captu
   assert(viewport, "Navigation scenario requires a viewport");
   await check(label, page.context().browser()?.browserType().name() ?? "webkit", `${viewport.width}×${viewport.height}`, "meal plan navigation, date disclosure, and unsaved meal cancellation", async () => {
     await page.goto(`${root}/#plan`); await settle(page);
-    const currentWeek = await page.locator(".week-picker h2").textContent();
-    await activate(page.getByRole("button", { name: "Next week" }), touch);
-    const trigger = page.getByLabel("Jump to date", { exact: true });
-    const date = page.getByLabel("Jump to week containing date");
+    const currentWeek = await page.locator(".week-navigation h2").textContent();
+    const trigger = page.getByText("Jump to date", { exact: true });
     await activate(trigger, touch);
     await auditLayout(page, touch);
-    assert(await page.locator(".week-jump").evaluate((form: HTMLElement) => {
+    assert(await page.locator(".date-picker-panel").evaluate((form: HTMLElement) => {
       const panel = form.getBoundingClientRect();
-      return [...form.children].every(child => {
+      return panel.top >= 0 && panel.bottom <= innerHeight && form.scrollWidth <= form.clientWidth && [...form.children].every(child => {
         const box = child.getBoundingClientRect();
-        return box.left > panel.left && box.right < panel.right && box.top > panel.top && box.bottom < panel.bottom;
+        return box.left > panel.left && box.right < panel.right;
       });
     }), "date-picker controls must stay inside their panel, not merely inside the viewport");
     if (capture) await screenshot(page, `${label}-week-picker`);
-    await date.focus();
+    await page.getByRole("button", { name: "Next month", exact: true }).focus();
     await page.keyboard.press("Escape");
-    assert.equal(await page.locator(".week-picker[open]").count(), 0);
+    assert.equal(await page.locator(".date-picker[open]").count(), 0);
     assert(await trigger.evaluate((element: HTMLElement) => element === document.activeElement));
+    await page.goto(`${root}/#plan?week=2029-12-29`); await settle(page);
     await activate(trigger, touch);
-    await date.fill("2030-01-04");
-    await activate(page.getByRole("button", { name: "Go to week", exact: true }), touch);
-    assert.equal(await page.locator(".week-picker[open]").count(), 0);
-    assert.equal(await page.locator(".week-picker h2").textContent(), "Dec 29, 2029 – Jan 4, 2030");
+    await activate(page.getByRole("button", { name: "Next month", exact: true }), touch);
+    assert.equal(await page.locator(".date-picker-heading strong").textContent(), "January 2030");
+    await activate(page.getByRole("button", { name: "Friday, January 4, 2030", exact: true }), touch);
+    assert.equal(await page.locator(".date-picker[open]").count(), 0);
+    assert.equal(await page.locator(".week-navigation h2").textContent(), "Dec 29, 2029 – Jan 4, 2030");
+    assert(await page.locator("#plan-2030-01-04").evaluate(element => element === document.activeElement));
     await activate(trigger, touch);
-    await activate(page.getByRole("button", { name: "This week", exact: true }), touch);
-    assert.equal(await page.locator(".week-picker h2").textContent(), currentWeek);
+    await activate(page.getByRole("button", { name: "Today", exact: true }), touch);
+    assert.equal(await page.locator(".week-navigation h2").textContent(), currentWeek);
     await activate(trigger, touch);
     await activate(page.getByRole("button", { name: "Add a meal" }).first(), touch);
-    assert.equal(await page.locator(".week-picker[open]").count(), 0, "an outside tap must dismiss the picker");
+    assert.equal(await page.locator(".date-picker[open]").count(), 0, "an outside tap must dismiss the picker");
     const dialog = page.getByRole("dialog", { name: "Add a meal" });
     await dialog.waitFor();
     assert(await dialog.locator(".selected-recipe").evaluate((card: HTMLElement) => {

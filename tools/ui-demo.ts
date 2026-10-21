@@ -134,6 +134,15 @@ try {
     });
     await page.screenshot({ path: join(output, `${name}.png`) });
   }
+  async function chooseDate(date: string) {
+    await click(page.getByText("Jump to date", { exact: true }));
+    const shown = new Date(`1 ${await page.locator(".date-picker-heading strong").textContent()}`);
+    const target = new Date(`${date}T12:00:00`);
+    const months = (target.getFullYear() - shown.getFullYear()) * 12 + target.getMonth() - shown.getMonth();
+    for (let index = 0; index < Math.abs(months); index++)
+      await click(page.getByRole("button", { name: months > 0 ? "Next month" : "Previous month", exact: true }));
+    await click(page.getByRole("button", { name: target.toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric", year: "numeric" }), exact: true }));
+  }
   async function saveVisible(name: string) {
     const button = dialog().getByRole("button", { name, exact: true });
     const box = await button.boundingBox();
@@ -157,12 +166,9 @@ try {
       "A real local app, with sample data. Compact headers and four labeled tabs leave room for meals, recipes and shopping.",
     );
     await capture("mobile-plan");
-    await click(page.getByRole("button", { name: "Next week" }));
-    await click(page.getByLabel("Jump to date", { exact: true }));
-    await page.getByLabel("Jump to week containing date").fill("2026-10-07");
-    await click(page.getByRole("button", { name: "Go to week", exact: true }));
-    await click(page.getByLabel("Jump to date", { exact: true }));
-    await click(page.getByRole("button", { name: "This week", exact: true }));
+    await chooseDate("2026-10-07");
+    await click(page.getByText("Jump to date", { exact: true }));
+    await click(page.getByRole("button", { name: "Today", exact: true }));
     await nav("recipes");
     await capture("mobile-recipes");
     await nav("shopping");
@@ -315,9 +321,7 @@ try {
     assert(meal, "Saved demo meal must exist");
     assert.equal(meal.scale, 1.5);
     await nav("plan");
-    await click(page.getByLabel("Jump to date", { exact: true }));
-    await page.getByLabel("Jump to week containing date").fill(date);
-    await click(page.getByRole("button", { name: "Go to week", exact: true }));
+    await chooseDate(date);
     await click(page.getByRole("button", { name: `Actions for meal ${recipeName}`, exact: true }));
     await click(page.getByRole("button", { name: "Edit meal", exact: true }));
     await dialog()
@@ -480,9 +484,7 @@ try {
       "Remove the demo meal, delete its collection (the recipe stays Uncollected), then delete the recipe and now-unused grocery product. Original sample data is restored after recording.",
     );
     await nav("plan");
-    await click(page.getByLabel("Jump to date", { exact: true }));
-    await page.getByLabel("Jump to week containing date").fill(date);
-    await click(page.getByRole("button", { name: "Go to week", exact: true }));
+    await chooseDate(date);
     await click(page.getByRole("button", { name: `Actions for meal ${recipeName}`, exact: true }));
     await click(page.getByRole("button", { name: "Edit meal", exact: true }));
     await click(dialog().getByRole("button", { name: "Remove meal", exact: true }));

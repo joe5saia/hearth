@@ -319,34 +319,6 @@ main {
   font-weight: 400;
   color: #8c8d80;
 }
-.today-button {
-  border: 1px solid #dddfd3;
-  border-radius: 5px;
-  font-size: 10px;
-  padding: 7px 10px;
-  color: #737c65;
-}
-.today-button:hover {
-  background: #eceee3;
-}
-.week-jump {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  margin: -5px 0 18px;
-  font-size: 11px;
-  color: #647357;
-}
-.week-jump input {
-  width: auto;
-  padding: 7px 10px;
-  font-size: 12px;
-}
-.week-jump label {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
 .date-disclosure {
   margin-bottom: 8px;
 }
@@ -369,15 +341,6 @@ main {
 .date-disclosure summary > svg {
   flex-shrink: 0;
 }
-.date-disclosure summary > svg:last-child {
-  margin-left: auto;
-}
-.date-disclosure[open] summary > svg:last-child {
-  transform: rotate(180deg);
-}
-.date-disclosure .week-jump {
-  margin: 12px 0 0;
-}
 .date-disclosure .range-toolbar {
   margin: 12px 0 0;
 }
@@ -385,44 +348,66 @@ main {
   margin-left: auto;
   white-space: nowrap;
 }
-.week-picker {
-  position: static;
+.date-picker {
+  position: relative;
   margin: 0;
-  min-width: 0;
+  flex-shrink: 0;
 }
-.week-picker summary {
-  border: 0;
-  padding: 8px;
+.date-picker summary {
+  background: #fffefa;
 }
-.week-picker .week-jump {
+.date-picker-panel {
   position: absolute;
-  top: 100%;
+  top: calc(100% + 8px);
   left: 0;
   z-index: 6;
-  width: min(320px, calc(100vw - 24px));
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 12px;
-  padding: 16px;
-  margin: 0;
+  width: 336px;
+  padding: 12px;
   background: #fffefa;
   border: 1px solid var(--line);
-  border-radius: 8px;
-  box-shadow: 0 6px 20px #252e231a;
+  border-radius: 12px;
+  box-shadow: 0 8px 28px #252e2324;
 }
-.week-picker .week-jump label,
-.week-picker .week-jump input {
-  grid-column: 1 / -1;
-}
-.week-picker .week-jump input {
-  width: 100%;
-  min-height: 44px;
+.date-picker-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
   font-size: 1rem;
 }
-.week-picker .week-jump button {
+.date-picker-grid {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  text-align: center;
+}
+.date-picker-weekday {
+  padding-block: 8px;
+  font-size: 0.75rem;
+  color: var(--muted);
+}
+.date-picker-grid button {
   min-height: 44px;
-  padding: 8px;
-  white-space: normal;
+  font-size: 1rem;
+  border-radius: 8px;
+  color: #252e23;
+}
+.date-picker-grid button.outside-month {
+  color: var(--muted);
+}
+.date-picker-grid button:hover {
+  background: #edf0e4;
+}
+.date-picker-grid button[aria-current="date"] {
+  box-shadow: inset 0 0 0 1px var(--olive);
+}
+.date-picker-grid button[aria-pressed="true"] {
+  background: var(--olive);
+  color: white;
+}
+.date-picker-today {
+  width: 100%;
+  min-height: 44px;
+  margin-top: 10px;
 }
 .shop-week {
   min-height: 44px;
@@ -480,12 +465,13 @@ main {
   background: #f2f4e9;
 }
 .day-heading {
-  min-height: 56px;
+  min-height: 88px;
   padding: 6px 8px;
-  display: flex;
-  flex-wrap: wrap;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-rows: 28px 44px;
   align-items: center;
-  gap: 5px 8px;
+  gap: 4px 8px;
   border-bottom: 1px solid #e7e8dd;
 }
 .day-heading > span:first-child {
@@ -495,15 +481,24 @@ main {
   width: auto;
 }
 .day-number {
+  grid-column: 1;
+  grid-row: 2;
   font-size: 19px;
   font-family: var(--serif);
 }
 .day-heading small {
+  grid-column: 2;
+  grid-row: 1;
+  justify-self: end;
   font-size: 8px;
   color: #788b5e;
   background: #e4ead8;
   padding: 3px 5px;
   border-radius: 3px;
+}
+.day-heading .add-day {
+  grid-column: 2;
+  grid-row: 2;
 }
 .day-meals {
   padding: 9px 7px;
@@ -578,7 +573,7 @@ main {
 .meal-actions-toggle[hidden] {
   display: none;
 }
-.meal-card-row .meal-content {
+.meal-card-row .note-only-card .meal-content {
   padding-right: 42px;
 }
 .meal-actions {
@@ -637,7 +632,7 @@ main {
   padding: 10px 9px;
 }
 .meal-content h3 {
-  font-size: 12px;
+  font-size: 1.125rem;
   line-height: 1.5;
   font-weight: 600;
   min-height: 36px;
@@ -658,7 +653,7 @@ main {
   align-items: center;
   gap: 3px;
   color: #8b8e7e;
-  font-size: 8px;
+  font-size: 0.875rem;
   margin-top: 9px;
   flex-wrap: wrap;
 }
@@ -670,12 +665,26 @@ main {
   margin-left: auto;
 }
 .meal-note {
-  font-size: 9px;
-  line-height: 1.5;
-  color: #989383;
-  padding-top: 9px;
-  margin-top: 9px;
-  border-top: 1px solid #eeeee5;
+  font-size: 1rem;
+  line-height: 1.6;
+  color: #4d432b;
+  padding: 10px 12px;
+  margin: 0 10px 12px;
+  border-left: 3px solid #b78b3f;
+  border-radius: 4px;
+  background: #f7eedb;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.meal-note strong {
+  display: block;
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+.note-only-card {
+  background: #f7eedb;
+  border-left: 3px solid #b78b3f;
 }
 .add-day {
   width: 44px;
@@ -2232,13 +2241,10 @@ main {
 .sidebar nav a,
 .topbar,
 .week-navigation h2 span,
-.week-jump,
-.today-button,
 .shopping-summary span,
 .day-heading > span:first-child,
 .day-heading small,
 .meal-meta,
-.meal-note,
 .add-day,
 .open-day p,
 .section-heading p,
@@ -2287,15 +2293,6 @@ textarea::placeholder {
   .meal-photo {
     height: 135px;
   }
-  .meal-content h3 {
-    font-size: 14px;
-  }
-  .meal-meta {
-    font-size: 10px;
-  }
-  .meal-note {
-    font-size: 11px;
-  }
   .day-meals {
     min-height: 315px;
     padding: 11px;
@@ -2318,9 +2315,6 @@ textarea::placeholder {
   .meal-content {
     padding: 8px 6px;
   }
-  .meal-content h3 {
-    font-size: 14px;
-  }
   .meal-photo {
     height: 85px;
   }
@@ -2329,12 +2323,6 @@ textarea::placeholder {
   }
   .day-meals {
     padding: 7px 5px;
-  }
-  .meal-meta {
-    font-size: 12px;
-  }
-  .meal-note {
-    font-size: 12px;
   }
   .calendar {
     grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -2396,15 +2384,6 @@ textarea::placeholder {
   }
   .day-meals {
     padding: 8px;
-  }
-  .meal-content h3 {
-    font-size: 12px;
-  }
-  .meal-meta {
-    font-size: 8px;
-  }
-  .meal-note {
-    font-size: 9px;
   }
   .meal-photo {
     height: 100px;
@@ -2500,9 +2479,6 @@ textarea::placeholder {
   .week-navigation h2 span {
     font-size: 0.875rem;
   }
-  .today-button {
-    font-size: 9px;
-  }
   .calendar {
     grid-template-columns: minmax(0, 1fr);
     overflow: hidden;
@@ -2548,26 +2524,6 @@ textarea::placeholder {
     left: 6px;
     bottom: 6px;
     font-size: 9px;
-  }
-  .meal-content h3 {
-    font-size: 13px;
-    min-height: 0;
-  }
-  .meal-meta {
-    font-size: 10px;
-    color: var(--muted);
-    margin-top: 6px;
-  }
-  .meal-note {
-    font-size: 11px;
-    color: var(--muted);
-    margin-top: 4px;
-    padding-top: 0;
-    border: 0;
-    display: -webkit-box;
-    -webkit-line-clamp: 2;
-    -webkit-box-orient: vertical;
-    overflow: hidden;
   }
   .open-day {
     display: flex;
@@ -2818,12 +2774,6 @@ textarea::placeholder {
     overflow-wrap: anywhere;
     min-width: 0;
   }
-  .week-jump {
-    flex-wrap: wrap;
-  }
-  .week-jump label {
-    flex-basis: 100%;
-  }
   /* Keep touch controls tappable and prevent iOS input-focus zoom. */
   button,
   .primary,
@@ -2843,7 +2793,6 @@ textarea::placeholder {
     font-size: 16px;
   }
   .icon-button,
-  .today-button,
   .sidebar nav a {
     color: var(--muted);
   }
@@ -2862,12 +2811,10 @@ textarea::placeholder {
   small,
   .topbar,
   .sidebar nav a,
-  .week-jump,
   .day-heading > span:first-child,
   .day-heading small,
   .meal-slot,
   .meal-meta,
-  .meal-note,
   .section-heading p,
   .category-label,
   .row-meta,
@@ -2888,14 +2835,12 @@ textarea::placeholder {
   .primary,
   .secondary,
   .text-button,
-  .today-button,
   .add-day,
   .section-heading .text-button,
   .recipe-row .secondary,
   .detail-meta .text-button,
   .detail-footer .primary,
   .form-actions .primary,
-  .meal-content h3,
   .shopping-summary strong,
   .item-info strong,
   .item-amount,
@@ -3055,9 +3000,140 @@ textarea::placeholder {
     bottom: calc(4.75rem + env(safe-area-inset-bottom));
   }
 }
-@media (min-width: 601px) and (max-width: 850px) {
+.week-navigation:has(.date-picker) {
+  flex-wrap: wrap;
+  justify-content: flex-start;
+  gap: 12px 20px;
+}
+.week-navigation:has(.date-picker) h2 {
+  font-size: 1.125rem;
+}
+.calendar .day {
+  scroll-margin-top: 80px;
+}
+.calendar .day:focus-visible {
+  outline: 2px solid var(--olive);
+  outline-offset: -2px;
+}
+.calendar .day-heading > span:first-child,
+.calendar .day-heading small {
+  font-size: 0.875rem;
+}
+.calendar .day-number {
+  font-size: 1.75rem;
+}
+.calendar .meal-slot {
+  font-size: 0.75rem;
+}
+.calendar .open-day p {
+  font-size: 0.9375rem;
+}
+@media (max-width: 1400px) {
   .calendar {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+    grid-template-columns: minmax(0, 1fr);
+    min-height: 0;
+  }
+  .calendar .day {
+    border-right: 0;
+    border-bottom: 1px solid var(--line);
+  }
+  .calendar .day:last-child {
+    border-bottom: 0;
+  }
+  .calendar .day-heading {
+    display: flex;
+    flex-wrap: wrap;
+    min-height: 64px;
+    padding: 12px 16px;
+    border: 0;
+  }
+  .calendar .day-meals {
+    padding: 0 16px 16px;
+    min-height: 0;
+    gap: 14px;
+  }
+  .calendar .meal-card {
+    display: grid;
+    grid-template-columns: 112px minmax(0, 1fr);
+    align-items: start;
+  }
+  .calendar .note-only-card .meal-content,
+  .calendar .meal-note {
+    grid-column: 1 / -1;
+  }
+  .calendar .meal-photo {
+    height: 120px;
+    min-height: 0;
+  }
+  .calendar .meal-content {
+    flex: 1;
+    min-width: 0;
+    padding: 14px 44px 14px 16px;
+  }
+  .calendar .meal-content h3 {
+    min-height: 0;
+  }
+  .calendar .open-day {
+    min-height: 36px;
+    align-items: flex-start;
+  }
+}
+@media (max-width: 600px) {
+  .section-toolbar:has(.date-picker) {
+    align-items: flex-start;
+  }
+  .week-navigation:has(.date-picker) {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 8px;
+  }
+  .date-picker-panel {
+    position: fixed;
+    top: 64px;
+    left: 50%;
+    transform: translateX(-50%);
+    width: min(336px, calc(100vw - 8px));
+    max-height: calc(100dvh - 144px);
+    overflow-y: auto;
+    z-index: 20;
+    padding: 8px 0;
+  }
+  .date-picker-heading,
+  .date-picker-today {
+    margin-inline: 8px;
+    width: calc(100% - 16px);
+  }
+  .date-picker-heading {
+    margin-bottom: 4px;
+  }
+  .date-picker-weekday {
+    padding-block: 6px;
+  }
+  .calendar .day-heading {
+    padding: 10px;
+  }
+  .calendar .day-meals {
+    padding: 0 10px 12px;
+  }
+  .calendar .meal-card {
+    grid-template-columns: 76px minmax(0, 1fr);
+  }
+  .calendar .meal-photo {
+    height: 100px;
+  }
+  .calendar .meal-content {
+    padding-left: 12px;
+  }
+}
+@media (pointer: coarse) and (max-height: 500px) {
+  .date-picker-panel {
+    position: fixed;
+    top: 12px;
+    left: 50%;
+    transform: translateX(-50%);
+    max-height: calc(100dvh - 24px);
+    overflow-y: auto;
+    z-index: 20;
   }
 }
 .sr-only {
