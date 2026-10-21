@@ -275,6 +275,35 @@
   min-width: 0;
   overflow-wrap: anywhere;
 }
+.shopping-recipe-week-heading {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  margin: 24px 0 12px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 1.5;
+  text-align: center;
+}
+.shopping-recipe-week-heading::before,
+.shopping-recipe-week-heading::after {
+  content: "";
+  flex: 1;
+  border-top: 1px solid var(--line);
+}
+.shopping-recipe-week-heading > span {
+  display: grid;
+}
+.shopping-recipe-week .shopping-recipe-option {
+  padding: 16px 12px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+}
+.shopping-recipe-week .shopping-recipe-option + .shopping-recipe-option {
+  border-top: 1px solid var(--line);
+}
 .shopping-review-item {
   border: 1px solid var(--line);
   border-radius: 8px;

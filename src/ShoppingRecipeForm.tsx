@@ -1,15 +1,17 @@
 import { useEffect, useRef, useState } from "react";
 import { Schema } from "effect";
 import {
+  addDays,
   displayAmount,
   matchesRecipeSearch,
   PackageCountSchema,
+  weekStart,
   type GroceryId,
   type Household,
 } from "./domain";
 import { ingredientTotals } from "./ingredient-totals";
 
-/** Reviews linked groceries from recipes, most recently planned first, before adding items. */
+/** Groups recipes by their latest planned Saturday–Friday week before reviewing linked groceries. */
 export function ShoppingRecipeForm({
   recipes,
   meals,
@@ -78,6 +80,29 @@ export function ShoppingRecipeForm({
 
   const unlinked = ingredients.filter((ingredient) => !ingredient.groceryItemId).length;
   const visible = orderedRecipes.filter((recipe) => matchesRecipeSearch(recipe, search));
+  const weeks = new Map<string, typeof visible>();
+
+  for (const recipe of visible) {
+    const planned = plannedDates.get(recipe.id);
+    const start = planned ? weekStart(planned) : "";
+    const group = weeks.get(start);
+
+    if (group) group.push(recipe);
+    else weeks.set(start, [recipe]);
+  }
+
+  const weekDate = new Intl.DateTimeFormat("en-US", {
+    weekday: "long",
+    month: "long",
+    day: "numeric",
+  });
+
+  const weekEndDate = new Intl.DateTimeFormat("en-US", {
+    weekday: "long",
+    month: "long",
+    day: "numeric",
+    year: "numeric",
+  });
 
   return (
     <form
@@ -158,28 +183,48 @@ export function ShoppingRecipeForm({
               />
             </label>
             <div className="shopping-recipe-options" role="group" aria-label="Recipes to shop for">
-              {visible.map((recipe) => (
-                <label className="shopping-recipe-option" key={recipe.id}>
-                  <input
-                    type="checkbox"
-                    checked={selected.includes(recipe.id)}
-                    disabled={busy}
-                    onChange={(event) =>
-                      setSelected((current) =>
-                        event.target.checked
-                          ? [...current, recipe.id]
-                          : current.filter((id) => id !== recipe.id),
-                      )
-                    }
-                  />
-                  <span>
-                    <strong>{recipe.title}</strong>
-                    <span className="muted small">
-                      {recipe.ingredients.filter((ingredient) => ingredient.groceryItemId).length} of{" "}
-                      {recipe.ingredients.length} ingredients linked
+              {[...weeks].map(([start, weekRecipes]) => (
+                <section
+                  className="shopping-recipe-week"
+                  key={start}
+                  aria-labelledby={`recipe-week-${start}`}
+                >
+                  <h4 className="shopping-recipe-week-heading" id={`recipe-week-${start}`}>
+                    <span>
+                      {start ? (
+                        <>
+                          <span>{weekDate.format(new Date(`${start}T12:00:00`))}</span>
+                          <span>– {weekEndDate.format(new Date(`${addDays(start, 6)}T12:00:00`))}</span>
+                        </>
+                      ) : (
+                        "Not yet planned"
+                      )}
                     </span>
-                  </span>
-                </label>
+                  </h4>
+                  {weekRecipes.map((recipe) => (
+                    <label className="shopping-recipe-option" key={recipe.id}>
+                      <input
+                        type="checkbox"
+                        checked={selected.includes(recipe.id)}
+                        disabled={busy}
+                        onChange={(event) =>
+                          setSelected((current) =>
+                            event.target.checked
+                              ? [...current, recipe.id]
+                              : current.filter((id) => id !== recipe.id),
+                          )
+                        }
+                      />
+                      <span>
+                        <strong>{recipe.title}</strong>
+                        <span className="muted small">
+                          {recipe.ingredients.filter((ingredient) => ingredient.groceryItemId).length} of{" "}
+                          {recipe.ingredients.length} ingredients linked
+                        </span>
+                      </span>
+                    </label>
+                  ))}
+                </section>
               ))}
               {!visible.length && (
                 <p className="muted">

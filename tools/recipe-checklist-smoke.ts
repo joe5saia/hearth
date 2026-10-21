@@ -156,6 +156,51 @@ try {
   check("[...document.querySelectorAll('strong')].some(el => el.textContent === 'Long-grain rice' && el.nextElementSibling.textContent === '250 g') && !document.querySelector('input:checked')", "reload preserves shareable selections and list but resets disposable checks");
   assert.deepEqual(await household(), before, "All checklist operations must leave the real household unchanged.");
   console.log("Recipe checklist browser smoke passed; household unchanged.");
+
+  // Reuse only our disposable fixtures to exercise the shopping picker's Friday/Saturday boundary.
+  await request("meals", "PUT", meal("monday", "dinner", "2026-10-23"));
+  await request("meals", "PUT", meal("friday", "dinner", "2026-10-24"));
+  await request("meals", "PUT", meal("wednesday", "lunch", "2026-10-23"));
+  await request(`meals/${encodeURIComponent(`${prefix}-next-week`)}`, "DELETE");
+  browser("open", `${url}/#shopping`);
+  browser("reload");
+  browser("wait", ".shopping-controls");
+  browser("find", "role", "button", "click", "--name", "Add from recipes", "--exact");
+  browser("wait", ".shopping-recipe-week");
+  const shoppingGroups = "[...document.querySelectorAll('section[aria-labelledby^=\"recipe-week-\"]')].map(group => ({ heading: group.querySelector('h4').innerText.replaceAll('\\n', ' '), recipes: [...group.querySelectorAll('strong')].map(title => title.textContent) }))";
+  assert.deepEqual(JSON.parse(browser("eval", shoppingGroups)), [
+    { heading: "Saturday, October 24 – Friday, October 30, 2026", recipes: ["Rice dinner"] },
+    { heading: "Saturday, October 17 – Friday, October 23, 2026", recipes: ["Rice lunch"] },
+    { heading: "Not yet planned", recipes: ["Unselected recipe"] },
+  ]);
+  console.log("PASS latest planned date groups each recipe once, Friday and Saturday split weeks, unplanned recipes remain available");
+  browser("find", "label", "Rice dinner", "click");
+  browser("find", "label", "Search recipes", "fill", "lunch");
+  check("document.querySelectorAll('.shopping-recipe-week').length === 1 && document.querySelector('.shopping-recipe-week').textContent.includes('Saturday, October 17')", "search removes empty weeks and keeps the matching recipe's heading");
+  browser("find", "label", "Rice lunch", "click");
+  browser("find", "label", "Search recipes", "fill", "no-such-recipe");
+  check("!document.querySelector('.shopping-recipe-week') && document.body.textContent.includes('No recipes match your search.')", "no-match search has no orphan week headings");
+  browser("press", "Control+a");
+  browser("press", "Backspace");
+  check("document.querySelectorAll('.shopping-recipe-week input:checked').length === 2", "selections survive filtering across weeks");
+  browser("find", "role", "button", "click", "--name", "Review items", "--exact");
+  check("document.querySelector('h3').textContent === 'Review items' && document.querySelectorAll('.shopping-review-item').length > 0", "cross-week selection reaches item review");
+  browser("find", "role", "button", "click", "--name", "Back", "--exact");
+  check("document.querySelectorAll('.shopping-recipe-week input:checked').length === 2", "returning from review preserves both selections");
+  browser("find", "role", "button", "click", "--name", "Cancel", "--exact");
+
+  await request("meals", "PUT", meal("friday", "dinner", "2026-11-01"));
+  await request("meals", "PUT", meal("wednesday", "lunch", "2026-12-31"));
+  browser("reload");
+  browser("wait", ".shopping-controls");
+  browser("find", "role", "button", "click", "--name", "Add from recipes", "--exact");
+  browser("wait", ".shopping-recipe-week");
+  assert.deepEqual(JSON.parse(browser("eval", shoppingGroups)), [
+    { heading: "Saturday, December 26 – Friday, January 1, 2027", recipes: ["Rice lunch"] },
+    { heading: "Saturday, October 31 – Friday, November 6, 2026", recipes: ["Rice dinner"] },
+    { heading: "Not yet planned", recipes: ["Unselected recipe"] },
+  ]);
+  console.log("PASS week ranges cross month/year boundaries and the November daylight-saving transition");
 } finally {
   try { browser("close"); } finally {
     for (const item of (await household()).meals.filter(item => item.id.startsWith(prefix))) await request(`meals/${encodeURIComponent(item.id)}`, "DELETE");
