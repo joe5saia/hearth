@@ -32,6 +32,7 @@ const groceries: GroceryDraft[] = [
   { id: `${prefix}-oil`, name: "Olive oil", aliases: ["oil"], quantity: 500, unit: "ml", aisle: "", url: "" },
   { id: `${prefix}-butter`, name: "Butter", aliases: [], quantity: 1, unit: "lb", aisle: "", url: "" },
   { id: `${prefix}-salt`, name: "Salt", aliases: [], quantity: 100, unit: "g", aisle: "", url: "" },
+  { id: `${prefix}-panko`, name: "Panko bread crumbs", aliases: ["panko"], quantity: 8, unit: "oz", aisle: "", url: "" },
 ];
 const recipe = (id: string, title: string, ingredients: IngredientDraft[]): RecipeDraft => ({ id: `${prefix}-${id}`, title, ingredients, description: "", servings: 2, minutes: 20, category: "", photo: "", source: "", rating: "neutral", instructions: ["Cook and serve."] });
 const recipes = [
@@ -44,6 +45,9 @@ const recipes = [
     { name: "Lime", quantity: 2, unit: "each" },
     { name: "Sugar", quantity: 1, unit: "cup" },
     { name: "Milk", quantity: 750, unit: "ml" },
+    // Half a US cup precedes the customary entries: metric-first ordering must not choose ml.
+    { name: "panko", quantity: 118.29411825, unit: "ml" },
+    { name: "panko", quantity: 1.25, unit: "cup" },
   ]),
   recipe("lunch", "Rice lunch", [
     { name: "white rice", quantity: 0.75, unit: "kg" },
@@ -55,6 +59,7 @@ const recipes = [
     { name: "lime", quantity: 3, unit: "each" },
     { name: "sugar", quantity: 4, unit: "tbsp" },
     { name: "milk", quantity: 0.5, unit: "l" },
+    { name: "panko", quantity: 4, unit: "tbsp" },
   ]),
   recipe("other", "Unselected recipe", [{ name: "rice", quantity: 9, unit: "kg" }]),
 ];
@@ -120,7 +125,7 @@ try {
   browser("click", ".recipe-checklist-week .secondary");
   browser("wait", '[aria-label="Ingredients needed"]');
   check("document.body.textContent.includes('Rice dinner (2 servings) · Rice lunch (2 servings)') && !document.body.textContent.includes('Unselected recipe')", "week checklist names this week's recipes and replaces the previous selection");
-  assert.deepEqual(totals(), { Butter: "0.75 lb", Lime: "5", "Long-grain rice": "1 kg", Milk: "1.25 l", "Olive oil": "280.95 ml", Parsley: "3 bunch", Salt: "10 g + 4.93 ml", Sugar: "1.25 cup" });
+  assert.deepEqual(totals(), { Butter: "0.75 lb", Lime: "5", "Long-grain rice": "1 kg", Milk: "1.25 l", "Olive oil": "280.95 ml", "Panko bread crumbs": "2 cup", Parsley: "3 bunch", Salt: "10 g + 1 tsp", Sugar: "1.25 cup" });
   console.log("PASS this week's checklist totals one batch of each distinct planned recipe");
   screenshot("recipe-checklist-week-totals");
   browser("click", ".secondary");
@@ -134,16 +139,16 @@ try {
   browser("wait", '[aria-label="Ingredients needed"]');
   // Exact equality below validates every key and amount, including unexpected rows.
   const amounts: unknown = JSON.parse(browser("eval", "Object.fromEntries([...document.querySelectorAll('[aria-label=\"Ingredients needed\"] label')].map(row => [row.querySelector('strong').textContent, row.querySelector('strong + span').textContent]))"));
-  assert.deepEqual(amounts, { Butter: "0.75 lb", Lime: "5", "Long-grain rice": "1 kg", Milk: "1.25 l", "Olive oil": "280.95 ml", Parsley: "3 bunch", Salt: "10 g + 4.93 ml", Sugar: "1.25 cup" });
+  assert.deepEqual(amounts, { Butter: "0.75 lb", Lime: "5", "Long-grain rice": "1 kg", Milk: "1.25 l", "Olive oil": "280.95 ml", "Panko bread crumbs": "2 cup", Parsley: "3 bunch", Salt: "10 g + 1 tsp", Sugar: "1.25 cup" });
   console.log("PASS combined weights, US volumes, metric volumes, counts, linked aliases and unlinked names; incompatible units retain honest subtotals; unselected recipe excluded");
   screenshot("recipe-checklist-totals");
   browser("find", "label", "Long-grain rice", "check");
-  check("document.querySelector('[role=status]').textContent.includes('7 of 8') && document.querySelectorAll('[aria-label=\"Ingredients needed\"] input:checked').length === 1", "manual checkbox changes only its row and progress");
+  check("document.querySelector('[role=status]').textContent.includes('8 of 9') && document.querySelectorAll('[aria-label=\"Ingredients needed\"] input:checked').length === 1", "manual checkbox changes only its row and progress");
   browser("set", "viewport", "390", "844", "2");
   check("document.documentElement.scrollWidth <= innerWidth && [...document.querySelectorAll('.recipe-checklist-row')].every(row => row.getBoundingClientRect().height >= 44)", "narrow checklist fits and has accessible row targets");
   screenshot("recipe-checklist-checked-narrow");
   browser("find", "label", "Long-grain rice", "click");
-  check("document.querySelector('[role=status]').textContent.includes('8 of 8')", "manual checkbox can be unchecked");
+  check("document.querySelector('[role=status]').textContent.includes('9 of 9')", "manual checkbox can be unchecked");
   browser("click", ".secondary");
   browser("fill", 'input[type="search"]', "Rice");
   browser("wait", "--fn", "document.querySelectorAll('input:checked').length === 2");
@@ -185,6 +190,8 @@ try {
   check("document.querySelectorAll('.shopping-recipe-week input:checked').length === 2", "selections survive filtering across weeks");
   browser("find", "role", "button", "click", "--name", "Review items", "--exact");
   check("document.querySelector('h3').textContent === 'Review items' && document.querySelectorAll('.shopping-review-item').length > 0", "cross-week selection reaches item review");
+  check("[...document.querySelectorAll('.shopping-review-item')].some(row => row.querySelector('strong').textContent === 'Panko bread crumbs' && row.textContent.includes('Recipes need 2 cup') && row.textContent.includes('8 oz per package') && row.querySelector('input[type=number]').value === '')", "mixed recipe volumes prefer cups over an earlier metric amount when the package uses weight, without guessing package counts");
+  check("[...document.querySelectorAll('.shopping-review-item')].some(row => row.querySelector('strong').textContent === 'Olive oil' && row.textContent.includes('Recipes need 280.95 ml') && row.querySelector('input[type=number]').value === '1')", "compatible recipe volumes still use package units and suggest package counts");
   browser("find", "role", "button", "click", "--name", "Back", "--exact");
   check("document.querySelectorAll('.shopping-recipe-week input:checked').length === 2", "returning from review preserves both selections");
   browser("find", "role", "button", "click", "--name", "Cancel", "--exact");

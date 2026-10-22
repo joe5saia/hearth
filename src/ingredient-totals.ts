@@ -18,16 +18,18 @@ function conversion(unit: Unit) {
   return conversions[unit] ?? { base: unit, factor: 1 };
 }
 
-/** Totals one batch per recipe; incompatible dimensions stay separate and cannot suggest packages. */
+/**
+ * Totals one batch per recipe in compatible package units, otherwise recipe units (US customary first).
+ * Incompatible dimensions stay separate and cannot suggest packages.
+ */
 export function ingredientTotals({ recipes, groceries }: Pick<Household, "recipes" | "groceries">) {
   const rows = new Map<
     string,
     {
       key: string;
       name: string;
-      unit: Unit;
       grocery: GroceryItem | undefined;
-      amounts: Map<Unit, number>;
+      amounts: Map<Unit, { quantity: number; unit: Unit }>;
       recipes: Set<string>;
     }
   >();
@@ -49,14 +51,19 @@ export function ingredientTotals({ recipes, groceries }: Pick<Household, "recipe
       const row = rows.get(key) ?? {
         key,
         name,
-        unit: grocery?.unit ?? ingredient.unit,
         grocery,
-        amounts: new Map<Unit, number>(),
+        amounts: new Map<Unit, { quantity: number; unit: Unit }>(),
         recipes: new Set<string>(),
       };
 
       const { base, factor } = conversion(ingredient.unit);
-      row.amounts.set(base, (row.amounts.get(base) ?? 0) + ingredient.quantity * factor);
+      const amount = row.amounts.get(base);
+      // Among recipe units in one dimension, keep the first US customary unit over metric.
+      const metric = (unit: Unit) => ["g", "kg", "ml", "l"].includes(unit);
+      row.amounts.set(base, {
+        quantity: (amount?.quantity ?? 0) + ingredient.quantity * factor,
+        unit: !amount || (metric(amount.unit) && !metric(ingredient.unit)) ? ingredient.unit : amount.unit,
+      });
       row.recipes.add(recipe.title);
       rows.set(key, row);
     }
@@ -65,13 +72,12 @@ export function ingredientTotals({ recipes, groceries }: Pick<Household, "recipe
   return [...rows.values()]
     .sort((a, b) => a.name.localeCompare(b.name))
     .map((row) => {
-      const preferred = conversion(row.unit);
+      const amounts: ShoppingNeed[] = [...row.amounts].map(([base, total]) => {
+        const unit =
+          row.grocery && conversion(row.grocery.unit).base === base ? row.grocery.unit : total.unit;
 
-      const amounts: ShoppingNeed[] = [...row.amounts].map(([base, total]) => ({
-        name: row.name,
-        quantity: base === preferred.base ? total / preferred.factor : total,
-        unit: base === preferred.base ? row.unit : base,
-      }));
+        return { name: row.name, quantity: total.quantity / conversion(unit).factor, unit };
+      });
 
       const ratio =
         row.grocery && amounts.length === 1 && amounts[0].unit === row.grocery.unit
