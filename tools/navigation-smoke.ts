@@ -33,6 +33,8 @@ const noteMeal = { ...meal, id: id(), recipeId: null, note: "Navigation smoke no
 const edgeMeals = [
   { ...noteMeal, id: id(), date: "2026-10-31", note: "Navigation first-column meal" },
   { ...noteMeal, id: id(), date: "2026-11-06", note: "Navigation final-row meal" },
+  { ...noteMeal, id: id(), date: "2026-11-08", note: "Navigation next-week meal" },
+  { ...noteMeal, id: id(), date: "2026-10-23", note: "Navigation earlier-week meal" },
 ];
 async function api(path: string, method: string, body?: unknown) {
   const response = await fetch(`${root}/api/${path}`, { method, headers: { "Content-Type": "application/json" }, body: body === undefined ? undefined : JSON.stringify(body) });
@@ -64,6 +66,7 @@ try {
     });
     try {
       const check = async (name: string, run: () => Promise<void>) => {
+        if (process.argv.includes("--plan-only") && !/meal.plan/.test(name)) return;
         scenario = name;
         await run(); count++; console.log(`PASS ${profile}: ${name}`);
       };
@@ -392,7 +395,7 @@ try {
         await shot("meal-notes");
         if (profile === "ipad" || profile === "desktop") {
           await page.setViewportSize({ width: 1366, height: 1024 });
-          assert(await page.locator(".calendar").evaluate(element => getComputedStyle(element).gridTemplateColumns.split(" ").length === 1), "Landscape tablet widths must retain one vertical day column, with or without touch input");
+          assert(await page.locator(".calendar").first().evaluate(element => getComputedStyle(element).gridTemplateColumns.split(" ").length === 1), "Landscape tablet widths must retain one vertical day column, with or without touch input");
           assert(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
           await shot("landscape-plan");
           await page.setViewportSize(options.viewport);
@@ -422,6 +425,68 @@ try {
         await page.reload();
         await expect(page.getByRole("heading", { name: "Nov 7 – Nov 13, 2026" })).toBeVisible();
         await shot("plan");
+      });
+      await check("meal plan scrolls through successive weeks without moving existing days", async () => {
+        await open("#plan?week=2026-10-31");
+        for (const [last, next] of [["2026-11-06", "2026-11-07"], ["2026-11-13", "2026-11-14"], ["2026-11-20", "2026-11-21"]]) {
+          const lastDay = page.locator(`#plan-${last}`);
+          await lastDay.evaluate(element => element.scrollIntoView({ block: "center" }));
+          const before = await lastDay.boundingBox();
+          await expect(page.locator(`#plan-${next}`)).toHaveCount(1);
+          const after = await lastDay.boundingBox();
+          assert(before && after && Math.abs(before.y - after.y) < 2, "Appending a week must preserve the existing day position");
+        }
+        await expect(page.locator("#plan-2026-11-08")).toContainText("Navigation next-week meal");
+        await expect(page).toHaveURL(/week=2026-10-31$/);
+        const appended = page.locator("#plan-2026-11-22");
+        await appended.getByRole("button", { name: /Add meal for/ }).click();
+        await expect(dialog().getByLabel("Date", { exact: true })).toHaveValue("2026-11-22");
+        await dialog().getByRole("button", { name: "Close dialog", exact: true }).click();
+        await page.evaluate(() => scrollTo(0, 0));
+        await page.getByText("Jump to date", { exact: true }).click();
+        await page.getByRole("button", { name: "Next month", exact: true }).click();
+        await page.getByRole("button", { name: "Tuesday, November 10, 2026", exact: true }).click();
+        await expect(page.locator("#plan-2026-11-10")).toBeFocused();
+        await expect(page.locator("#plan-2026-11-22")).toHaveCount(0);
+        await open("#plan?week=2026-12-26");
+        await page.locator("#plan-2027-01-01").evaluate(element => element.scrollIntoView({ block: "center" }));
+        await expect(page.getByRole("heading", { name: "Jan 2 – Jan 8, 2027" })).toBeVisible();
+        assert(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
+      });
+      await check("meal plan scrolls backwards with stable days and usable date navigation", async () => {
+        await open("#plan?week=2026-10-31");
+        await expect(page.locator("#plan-2026-10-24")).toHaveCount(1);
+        await shot("bidirectional-plan");
+        for (const [first, previous] of [["2026-10-24", "2026-10-17"], ["2026-10-17", "2026-10-10"], ["2026-10-10", "2026-10-03"]]) {
+          const firstDay = page.locator(`#plan-${first}`);
+          await firstDay.evaluate(element => element.scrollIntoView({ block: "center" }));
+          const before = await firstDay.boundingBox();
+          await expect(page.locator(`#plan-${previous}`)).toHaveCount(1);
+          const after = await firstDay.boundingBox();
+          assert(before && after && Math.abs(before.y - after.y) < 2, "Prepending a week must preserve the existing day position");
+        }
+        await shot("earlier-weeks");
+        await expect(page.locator("#plan-2026-10-23")).toContainText("Navigation earlier-week meal");
+        await expect(page).toHaveURL(/week=2026-10-31$/);
+        await page.locator("#plan-2026-10-11").getByRole("button", { name: /Add meal for/ }).click();
+        await expect(dialog().getByLabel("Date", { exact: true })).toHaveValue("2026-10-11");
+        await dialog().getByRole("button", { name: "Close dialog", exact: true }).click();
+        await expect(page).toHaveURL(/week=2026-10-31$/);
+        const jump = page.getByText("Jump to date", { exact: true });
+        const box = await jump.boundingBox();
+        const toolbar = await page.locator(".topbar").boundingBox();
+        assert(box && toolbar && box.y >= toolbar.y + toolbar.height && box.y < 160, "Date navigation must remain on screen while scrolling backwards");
+        await jump.click();
+        await page.getByRole("button", { name: "Saturday, October 31, 2026", exact: true }).click();
+        await expect(page.locator("#plan-2026-10-31")).toBeFocused();
+        const selected = await page.locator("#plan-2026-10-31").boundingBox();
+        const controls = await page.locator(".plan-toolbar").boundingBox();
+        assert(selected && controls && selected.y >= controls.y + controls.height, "A jumped day must not be hidden behind sticky date controls");
+        await open("#plan?week=2027-01-02");
+        await expect(page.getByRole("heading", { name: "Dec 26, 2026 – Jan 1, 2027" })).toBeVisible();
+        await page.locator("#plan-2026-12-26").evaluate(element => element.scrollIntoView({ block: "center" }));
+        await expect(page.locator("#plan-2026-12-19")).toHaveCount(1);
+        assert(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
       });
       await check("shopping focus, builder, arrange and navigation history", async () => {
         await open("#shopping?mode=focus");

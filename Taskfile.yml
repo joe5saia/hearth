@@ -161,7 +161,7 @@ tasks:
     desc: Desktop and emulated iPhone/iPad usability E2E (run ui:setup first; requires local sample meals; optional -- local URL)
     cmds: ["node tools/ui-smoke.ts {{.CLI_ARGS}}"]
   navigation:smoke:
-    desc: Deep links, sharing and browser history E2E on desktop/iPhone/iPad (run ui:setup first; local disposable fixtures; optional -- local URL)
+    desc: Deep links, sharing and browser history E2E on desktop/iPhone/iPad (run ui:setup first; local disposable fixtures; optional -- local URL --plan-only)
     cmds: ["node tools/navigation-smoke.ts {{.CLI_ARGS}}"]
   ui:demo:
     desc: Record a captioned mobile workflow demo with persisted-state assertions and cleanup (run ui:setup first; local sample household only)

@@ -320,6 +320,22 @@ export function App() {
   const entries = useRef(new Map<string, Route>());
   const lastHistoryEvent = useRef("");
   const { page, week, search, collection: collectionFilter, sort: recipeSort } = route;
+  const [planWindow, setPlanWindow] = useState({ week, before: 0, count: 1 });
+  const planStart = useRef<HTMLButtonElement>(null);
+  const planEnd = useRef<HTMLButtonElement>(null);
+  const planToolbar = useRef<HTMLDivElement>(null);
+  const planAnchor = useRef<{ element: Element; top: number; week: Route["week"] } | null>(null);
+
+  if (planWindow.week !== week) setPlanWindow({ week, before: 0, count: 1 });
+
+  const loadEarlierPlanWeek = useCallback(() => {
+    const firstWeek = document.querySelector(".plan-week");
+
+    if (!firstWeek || planAnchor.current) return;
+    planAnchor.current = { element: firstWeek, top: firstWeek.getBoundingClientRect().top, week };
+    setPlanWindow((current) => ({ ...current, before: current.before + 1 }));
+  }, [week]);
+
   const shoppingMode = route.mode === "focus";
   const listBuilder = route.mode === "builder";
   const arranging = route.mode === "arrange";
@@ -795,14 +811,59 @@ export function App() {
     return () => document.removeEventListener("pointerdown", dismiss);
   }, []);
   useLayoutEffect(() => {
+    window.scrollTo({ top: 0 });
+  }, [page]);
+  useLayoutEffect(() => {
+    if (page === "plan" && loaded)
+      document.getElementById(`plan-${week}`)?.closest(".plan-week")?.scrollIntoView({ block: "start" });
+  }, [week, page, loaded]);
+  useLayoutEffect(() => {
+    const anchor = planAnchor.current;
+
+    if (!anchor) return;
+    planAnchor.current = null;
+
+    // Measure the retained week, not total page height: later weeks can grow in the same render.
+    if (page === "plan" && anchor.week === week && anchor.element.isConnected)
+      window.scrollBy(0, anchor.element.getBoundingClientRect().top - anchor.top);
+  }, [planWindow.before, week, page]);
+  useLayoutEffect(() => {
     if (!jumpDate || page !== "plan") return;
     const day = document.getElementById(`plan-${jumpDate}`);
-    day?.focus({ preventScroll: true });
-    day?.scrollIntoView({ block: "start" });
+
+    if (!day) return;
+    day.focus({ preventScroll: true });
+    window.scrollBy(
+      0,
+      day.getBoundingClientRect().top - (planToolbar.current?.getBoundingClientRect().bottom ?? 0) - 16,
+    );
     setJumpDate(null);
   }, [week, jumpDate, page]);
   useEffect(() => {
-    window.scrollTo({ top: 0 });
+    const start = planStart.current;
+    const end = planEnd.current;
+
+    if (page !== "plan" || !loaded || !start || !end) return;
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (!entries.some((entry) => entry.isIntersecting)) return;
+        observer.disconnect();
+
+        if (entries.some((entry) => entry.target === start && entry.isIntersecting)) loadEarlierPlanWeek();
+
+        if (entries.some((entry) => entry.target === end && entry.isIntersecting))
+          setPlanWindow((current) => ({ ...current, count: current.count + 1 }));
+      },
+      { rootMargin: "400px 0px" },
+    );
+
+    observer.observe(start);
+    observer.observe(end);
+
+    return () => observer.disconnect();
+  }, [page, loaded, week, planWindow.before, planWindow.count, loadEarlierPlanWeek]);
+  useEffect(() => {
     pageOptions.current?.closest("details")?.removeAttribute("open");
     const started = performance.now();
 
@@ -962,8 +1023,6 @@ export function App() {
     });
 
   const newRecipe = () => setModal(resolveModal({ ...routeRef.current, ...baseView, view: "editor" }));
-
-  const weekMeals = data.meals.filter((meal) => meal.date >= week && meal.date <= addDays(week, 6));
 
   const selectedCollection = data.collections.find((collection) => collection.id === collectionFilter);
 
@@ -1351,15 +1410,8 @@ export function App() {
             )}
             {page === "plan" && (
               <>
-                <div className="section-toolbar">
+                <div className="section-toolbar plan-toolbar" ref={planToolbar}>
                   <div className="week-navigation">
-                    <h2>
-                      {readableDate(week, { month: "short", day: "numeric" })}
-                      {week.slice(0, 4) !== addDays(week, 6).slice(0, 4) && <span>, {week.slice(0, 4)}</span>}
-                      {" – "}
-                      {readableDate(addDays(week, 6), { month: "short", day: "numeric" })}
-                      <span>, {addDays(week, 6).slice(0, 4)}</span>
-                    </h2>
                     <DateJump
                       date={
                         selectedPlanDate && weekStart(selectedPlanDate) === week ? selectedPlanDate : week
@@ -1376,99 +1428,141 @@ export function App() {
                     <span>Shopping list</span>
                   </button>
                 </div>
-                <div className="calendar">
-                  {Array.from({ length: 7 }, (_, index) => {
-                    const day = addDays(week, index);
-
-                    const meals = weekMeals
-                      .filter((meal) => meal.date === day)
-                      .sort(
-                        (a, b) =>
-                          ["Breakfast", "Lunch", "Dinner"].indexOf(a.slot) -
-                          ["Breakfast", "Lunch", "Dinner"].indexOf(b.slot),
-                      );
-
-                    const today = day === dateKey(new Date());
+                <div className="plan-timeline">
+                  <button ref={planStart} className="text-button plan-more" onClick={loadEarlierPlanWeek}>
+                    Show earlier weeks
+                  </button>
+                  {Array.from({ length: planWindow.before + planWindow.count }, (_, weekIndex) => {
+                    const planWeek = addDays(week, (weekIndex - planWindow.before) * 7);
 
                     return (
                       <section
-                        className={`day ${today ? "is-today" : ""}`}
-                        key={day}
-                        id={`plan-${day}`}
-                        tabIndex={-1}
-                        aria-label={readableDate(day, { weekday: "long", month: "long", day: "numeric" })}
+                        className="plan-week"
+                        key={planWeek}
+                        aria-label={`Week of ${readableDate(planWeek)}`}
                       >
-                        <div className="day-heading">
-                          <span>{readableDate(day, { weekday: "short" })}</span>
-                          <span className="day-number">{Number(day.slice(-2))}</span>
-                          {today && <small>Today</small>}
-                          <button
-                            className="add-day"
-                            aria-label={`Add meal for ${readableDate(day)}`}
-                            onClick={() => addMeal(day)}
-                          >
-                            <Plus size={17} />
-                          </button>
-                        </div>
-                        <div className="day-meals">
-                          {meals.map((meal) => {
-                            const recipe = data.recipes.find((entry) => entry.id === meal.recipeId);
+                        <h2 className="plan-week-heading">
+                          {readableDate(planWeek, { month: "short", day: "numeric" })}
+                          {planWeek.slice(0, 4) !== addDays(planWeek, 6).slice(0, 4) && (
+                            <span>, {planWeek.slice(0, 4)}</span>
+                          )}
+                          {" – "}
+                          {readableDate(addDays(planWeek, 6), { month: "short", day: "numeric" })}
+                          <span>, {addDays(planWeek, 6).slice(0, 4)}</span>
+                        </h2>
+                        <div className="calendar">
+                          {Array.from({ length: 7 }, (_, index) => {
+                            const day = addDays(planWeek, index);
 
-                            if (meal.recipeId !== null && !recipe) return null;
+                            const meals = data.meals
+                              .filter((meal) => meal.date === day)
+                              .sort(
+                                (a, b) =>
+                                  ["Breakfast", "Lunch", "Dinner"].indexOf(a.slot) -
+                                  ["Breakfast", "Lunch", "Dinner"].indexOf(b.slot),
+                              );
+
+                            const today = day === dateKey(new Date());
 
                             return (
-                              <MealCard
-                                key={meal.id}
-                                title={recipe?.title ?? meal.note}
-                                noteOnly={!recipe}
-                                busy={busy}
-                                open={() =>
-                                  setModal(recipe ? { kind: "recipe", recipe, meal } : { kind: "meal", meal })
-                                }
-                                edit={() => setModal({ kind: "meal", meal })}
-                                remove={() => {
-                                  void mutate(
-                                    `meals/${encodeURIComponent(meal.id)}`,
-                                    "DELETE",
-                                    undefined,
-                                    "Meal removed",
-                                  );
-                                }}
+                              <section
+                                className={`day ${today ? "is-today" : ""}`}
+                                key={day}
+                                id={`plan-${day}`}
+                                tabIndex={-1}
+                                aria-label={readableDate(day, {
+                                  weekday: "long",
+                                  month: "long",
+                                  day: "numeric",
+                                })}
                               >
-                                {recipe && (
-                                  <div className="meal-photo">
-                                    <Photo recipe={recipe} />
-                                    <span className="meal-slot">{meal.slot}</span>
-                                  </div>
-                                )}
-                                <div className="meal-content">
-                                  {!recipe && <p className="meal-meta">{meal.slot} · Note</p>}
-                                  <h3>{recipe ? recipe.title : meal.note}</h3>
-                                  {recipe && (
-                                    <div className="meal-meta">
-                                      <Users size={12} /> {quantity(recipe.servings * meal.scale)} servings{" "}
-                                      {meal.scale !== 1 && <span>{quantity(meal.scale)}×</span>}
+                                <div className="day-heading">
+                                  <span>{readableDate(day, { weekday: "short" })}</span>
+                                  <span className="day-number">{Number(day.slice(-2))}</span>
+                                  {today && <small>Today</small>}
+                                  <button
+                                    className="add-day"
+                                    aria-label={`Add meal for ${readableDate(day)}`}
+                                    onClick={() => addMeal(day)}
+                                  >
+                                    <Plus size={17} />
+                                  </button>
+                                </div>
+                                <div className="day-meals">
+                                  {meals.map((meal) => {
+                                    const recipe = data.recipes.find((entry) => entry.id === meal.recipeId);
+
+                                    if (meal.recipeId !== null && !recipe) return null;
+
+                                    return (
+                                      <MealCard
+                                        key={meal.id}
+                                        title={recipe?.title ?? meal.note}
+                                        noteOnly={!recipe}
+                                        busy={busy}
+                                        open={() =>
+                                          setModal(
+                                            recipe
+                                              ? { kind: "recipe", recipe, meal }
+                                              : { kind: "meal", meal },
+                                          )
+                                        }
+                                        edit={() => setModal({ kind: "meal", meal })}
+                                        remove={() => {
+                                          void mutate(
+                                            `meals/${encodeURIComponent(meal.id)}`,
+                                            "DELETE",
+                                            undefined,
+                                            "Meal removed",
+                                          );
+                                        }}
+                                      >
+                                        {recipe && (
+                                          <div className="meal-photo">
+                                            <Photo recipe={recipe} />
+                                            <span className="meal-slot">{meal.slot}</span>
+                                          </div>
+                                        )}
+                                        <div className="meal-content">
+                                          {!recipe && <p className="meal-meta">{meal.slot} · Note</p>}
+                                          <h3>{recipe ? recipe.title : meal.note}</h3>
+                                          {recipe && (
+                                            <div className="meal-meta">
+                                              <Users size={12} /> {quantity(recipe.servings * meal.scale)}{" "}
+                                              servings{" "}
+                                              {meal.scale !== 1 && <span>{quantity(meal.scale)}×</span>}
+                                            </div>
+                                          )}
+                                        </div>
+                                        {recipe && meal.note && (
+                                          <p className="meal-note">
+                                            <strong>Note</strong>
+                                            {meal.note}
+                                          </p>
+                                        )}
+                                      </MealCard>
+                                    );
+                                  })}
+                                  {meals.length === 0 && (
+                                    <div className="open-day">
+                                      <p>No meals planned</p>
                                     </div>
                                   )}
                                 </div>
-                                {recipe && meal.note && (
-                                  <p className="meal-note">
-                                    <strong>Note</strong>
-                                    {meal.note}
-                                  </p>
-                                )}
-                              </MealCard>
+                              </section>
                             );
                           })}
-                          {meals.length === 0 && (
-                            <div className="open-day">
-                              <p>No meals planned</p>
-                            </div>
-                          )}
                         </div>
                       </section>
                     );
                   })}
+                  <button
+                    ref={planEnd}
+                    className="text-button plan-more"
+                    onClick={() => setPlanWindow((current) => ({ ...current, count: current.count + 1 }))}
+                  >
+                    Show more weeks
+                  </button>
                 </div>
               </>
             )}

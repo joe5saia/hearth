@@ -3008,8 +3008,32 @@ textarea::placeholder {
 .week-navigation:has(.date-picker) h2 {
   font-size: 1.125rem;
 }
+.plan-toolbar {
+  position: sticky;
+  top: 60px;
+  z-index: 9;
+  background: #faf9f5;
+  padding-block: 8px;
+}
+.plan-timeline {
+  overflow-anchor: none;
+}
+.plan-week {
+  scroll-margin-top: 140px;
+}
+.plan-week + .plan-week {
+  margin-top: 28px;
+}
+.plan-week-heading {
+  margin: 0 0 16px;
+  font-size: 1.125rem;
+}
+.plan-more {
+  display: flex;
+  margin: 24px auto;
+}
 .calendar .day {
-  scroll-margin-top: 80px;
+  scroll-margin-top: 140px;
 }
 .calendar .day:focus-visible {
   outline: 2px solid var(--olive);
@@ -3079,6 +3103,9 @@ textarea::placeholder {
   }
 }
 @media (max-width: 600px) {
+  .plan-toolbar {
+    top: 56px;
+  }
   .section-toolbar:has(.date-picker) {
     align-items: flex-start;
   }
