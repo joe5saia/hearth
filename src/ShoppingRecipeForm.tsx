@@ -76,9 +76,27 @@ export function ShoppingRecipeForm({
     )
     .map((row) => ({ id: row.item.id, packages: Number(countFor(row)) }));
 
-  const validCounts = toAdd.every(({ packages }) => Schema.is(PackageCountSchema)(packages));
+  const invalidCounts = toAdd.filter(({ packages }) => !Schema.is(PackageCountSchema)(packages));
+  const validCounts = invalidCounts.length === 0;
 
   const unlinked = ingredients.filter((ingredient) => !ingredient.groceryItemId).length;
+
+  const blockedReason = busy
+    ? "Adding items. Please wait."
+    : reviewing
+      ? !toAdd.length
+        ? "Select at least one item with a quantity greater than zero to add."
+        : !validCounts
+          ? "Enter a whole-number quantity from 1 to 1,000,000 for each highlighted item, or unselect it. Use 0 to skip an item."
+          : ""
+      : !selected.length
+        ? "Select at least one recipe to review its items."
+        : !missing.length
+          ? linked.length
+            ? "All linked items are already on your list."
+            : "These recipes have no linked grocery items. Link ingredients in the recipe editor first."
+          : "";
+
   const visible = orderedRecipes.filter((recipe) => matchesRecipeSearch(recipe, search));
   const weeks = new Map<string, typeof visible>();
 
@@ -123,10 +141,43 @@ export function ShoppingRecipeForm({
         <h3 ref={stepHeading} tabIndex={-1}>
           {reviewing ? "Review items" : "Choose recipes"}
         </h3>
+        <div className="shopping-recipe-selection">
+          <button
+            type="button"
+            className="secondary"
+            disabled={busy}
+            onClick={() => {
+              if (reviewing) {
+                setExcluded((current) => current.filter((id) => !missing.some((row) => row.item.id === id)));
+              } else {
+                setSelected(recipes.map((recipe) => recipe.id));
+              }
+            }}
+          >
+            Select all
+          </button>
+          <button
+            type="button"
+            className="secondary"
+            disabled={busy}
+            onClick={() => {
+              if (reviewing) {
+                setExcluded((current) => [...new Set([...current, ...missing.map((row) => row.item.id)])]);
+              } else {
+                setSelected([]);
+              }
+            }}
+          >
+            Unselect all
+          </button>
+        </div>
         {reviewing ? (
           <div className="shopping-recipe-options" role="group" aria-label="Items to add">
             {missing.map((row) => (
-              <div className="shopping-review-item" key={row.item.id}>
+              <div
+                className={`shopping-review-item${invalidCounts.some((item) => item.id === row.item.id) ? " needs-quantity" : ""}`}
+                key={row.item.id}
+              >
                 <label className="shopping-recipe-option">
                   <input
                     type="checkbox"
@@ -265,6 +316,11 @@ export function ShoppingRecipeForm({
         )}
       </div>
       <div className="form-actions">
+        {blockedReason && (
+          <p id="shopping-recipe-blocked" className="shopping-recipe-blocked muted small" role="status">
+            {blockedReason}
+          </p>
+        )}
         <button type="button" className="secondary" disabled={busy} onClick={cancel}>
           Cancel
         </button>
@@ -275,7 +331,9 @@ export function ShoppingRecipeForm({
         )}
         <button
           className="primary"
-          disabled={busy || !(reviewing ? toAdd.length && validCounts : missing.length)}
+          disabled={!!blockedReason}
+          aria-describedby={blockedReason ? "shopping-recipe-blocked" : undefined}
+          title={blockedReason || undefined}
         >
           {busy
             ? "Adding…"

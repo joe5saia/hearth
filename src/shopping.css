@@ -315,6 +315,19 @@
   background: #eef0e6;
   border-color: var(--olive);
 }
+.shopping-review-item.needs-quantity {
+  background: #fff2e5;
+  border-color: #dba16b;
+}
+.shopping-recipe-selection {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.shopping-recipe-blocked {
+  flex-basis: 100%;
+  margin: 0;
+}
 .shopping-review-item .shopping-recipe-option {
   padding: 0;
   border: 0;
