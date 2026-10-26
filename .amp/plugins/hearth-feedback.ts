@@ -24,7 +24,12 @@ export default async function (amp: PluginAPI) {
   const tickets = join(directory, "tickets");
   mkdirSync(tickets, { recursive: true, mode: 0o700 });
   const workflow = readFileSync(join(root, "tools/feedback/WORKFLOW.md"), "utf8");
-  const agent = amp.createAgent({ extends: "medium", instructions: workflow, tools: { exclude: ["create_thread", "Task"] } });
+  // Custom agents do not inherit the user's Tune Modes/ChatGPT Only pins.
+  // Keep Medium's workflow, explicitly route to OpenAI, and never inherit premium features.
+  const agent = amp.createAgent({
+    extends: "medium", model: "openai/gpt-6-astra", reasoningEffort: "medium", features: [],
+    instructions: workflow, tools: { exclude: ["create_thread", "Task"] },
+  });
   // Orb custom agents need a registered mode, not just an anonymous definition.
   amp.registerAgentMode({ key: "hearth-ticket", label: "Hearth ticket", description: "Implement one Hearth feedback ticket in an isolated branch, test and self-review it, then return a demo without shipping.", agent: agent.definition });
   const stateSchema = Schema.Struct({
