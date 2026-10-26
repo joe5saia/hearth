@@ -177,12 +177,16 @@ a project, agent, credential, callback or authorization. Results are reported in
 the execution thread and back to the intake, with original ask, interpretation,
 built result, demo link and test/review evidence.
 
-The registered ticket agent uses Medium behavior with `openai/gpt-6-astra`,
-`medium` reasoning effort and no inherited premium features. Amp custom agents
-do not inherit the user's built-in Tune Modes pins, including ChatGPT Only;
-`extends: "medium"` alone can therefore select Claude. The explicit OpenAI model
-uses the owner's active ChatGPT connection through Amp's normal model routing;
-the plugin neither supplies provider credentials nor enables paid Claude usage.
+Tickets use Amp's actual built-in Medium agent, not a custom clone. They receive
+its standard prompt and tools, including Task/Oracle-style review, delegation,
+skills and connected tools, and follow the owner's Medium Tune Modes settings
+and ChatGPT Only preset through normal model routing. The plugin neither filters
+tools, pins a separate model, supplies provider credentials nor enables paid
+Claude usage. It clears inherited premium features at creation and includes the
+trusted workflow separately from untrusted ticket data in the launch message;
+repository guidance also requires that workflow. Standard tools do not authorize
+shipping or access to secrets. Existing custom-agent threads retain their old
+configuration; this change applies to newly created tickets.
 
 Amp's documented thread-create API has no idempotency/transaction parameter.
 Ordinary event replays do not create more threads; an uncertain create/start is
