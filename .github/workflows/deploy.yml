@@ -16,6 +16,7 @@ concurrency:
 jobs:
   deploy:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     environment: production
     permissions:
       contents: write
@@ -29,10 +30,6 @@ jobs:
           package-manager-cache: false
       - name: Install dependencies
         run: npm ci
-      - name: Type check main project (tsrs)
-        run: npx task typecheck
-      - name: Integration smoke tests
-        run: npx task test
       - name: Deploy Workers, assets, and migrations
         run: npx task deploy -- --yes
         env:

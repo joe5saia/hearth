@@ -1011,3 +1011,19 @@ Illustrative sample images are bundled for network-independent development:
 - Soup: [Pexels image 539451](https://www.pexels.com/photo/539451/)
 
 Fonts: DM Sans and Lora, self-hosted through Fontsource under the SIL Open Font License.
+
+## GitHub Actions resource policy — October 26, 2026
+
+Actions is deployment/release-only. The main-push workflow no longer runs typechecking
+or the integration suite; run `npm ci` then `npx task check` in a local checkout or Amp
+orb before shipping. Test code and all local/browser tasks remain available. The
+workflow retains the production asset build, Alchemy deployment/migrations, bounded
+read-only MCP discovery/auth probe, and complete plugin archive/release publication.
+It serializes production without cancellation and has a 30-minute job limit.
+
+The audit changes are not deployment evidence. No Actions or cloud validation was
+triggered for the audit. On November 1 or later, after explicit release authorization,
+inspect the exact shipped SHA's build/deploy, MCP boundary result and complete plugin
+release. Run application E2E outside Actions. Before adopting these removals, an
+administrator must inspect required checks/branch protection (the audit token cannot
+read classic protection); do not bypass protections or leave required check names orphaned.
