@@ -19,10 +19,14 @@ function conversion(unit: Unit) {
 }
 
 /**
- * Totals one batch per recipe in compatible package units, otherwise recipe units (US customary first).
+ * Totals one batch per recipe and each meal's scaled snapshot in compatible package units, otherwise recipe units (US customary first).
  * Incompatible dimensions stay separate and cannot suggest packages.
  */
-export function ingredientTotals({ recipes, groceries }: Pick<Household, "recipes" | "groceries">) {
+export function ingredientTotals({
+  recipes,
+  groceries,
+  meals = [],
+}: Pick<Household, "recipes" | "groceries"> & Partial<Pick<Household, "meals">>) {
   const rows = new Map<
     string,
     {
@@ -34,7 +38,10 @@ export function ingredientTotals({ recipes, groceries }: Pick<Household, "recipe
     }
   >();
 
-  for (const recipe of recipes) {
+  for (const { recipe, scale } of [
+    ...recipes.map((recipe) => ({ recipe, scale: 1 })),
+    ...meals.flatMap((meal) => (meal.recipe ? [{ recipe: meal.recipe, scale: meal.scale }] : [])),
+  ]) {
     for (const ingredient of recipe.ingredients) {
       const grocery = ingredient.groceryItemId
         ? groceries.find((item) => item.id === ingredient.groceryItemId)
@@ -61,7 +68,7 @@ export function ingredientTotals({ recipes, groceries }: Pick<Household, "recipe
       // Among recipe units in one dimension, keep the first US customary unit over metric.
       const metric = (unit: Unit) => ["g", "kg", "ml", "l"].includes(unit);
       row.amounts.set(base, {
-        quantity: (amount?.quantity ?? 0) + ingredient.quantity * factor,
+        quantity: (amount?.quantity ?? 0) + ingredient.quantity * scale * factor,
         unit: !amount || (metric(amount.unit) && !metric(ingredient.unit)) ? ingredient.unit : amount.unit,
       });
       row.recipes.add(recipe.title);

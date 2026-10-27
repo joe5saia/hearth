@@ -127,15 +127,20 @@ beforeAll(async () => {
     "0002_recipe_rating.sql",
     "0003_collections.sql",
     "0004_groceries.sql",
+    "0005_ingredient_matching.sql",
     "0006_meal_notes.sql",
     "0007_shopping_membership.sql",
     "0008_grocery_delete_unlink.sql",
     "0010_shopping_packages.sql",
+    "0011_meal_recipes.sql",
+    "0012_entity_revisions.sql",
+    "0013_photos.sql",
   ]) {
     const sql = await readFile(`migrations/${file}`, "utf8");
     await db.batch(
       sql
-        .split(/;\n(?=CREATE|INSERT|DROP|ALTER)|;\s*$/)
+        .replace(/^--.*$/gm, "")
+        .split(/;\s*\n(?=CREATE|INSERT|DROP|ALTER|UPDATE)|;\s*$/)
         .filter((statement) => statement.trim())
         .map((statement) => db.prepare(statement)),
     );
@@ -155,12 +160,14 @@ it("lets separate authorized eval threads discover collections and patch recipes
     collections.structuredContent,
   );
 
-  expect(collectionData.collections).toEqual([
-    { id: "comfort", name: "Comfort food" },
-    { id: "special", name: "Something special" },
-    { id: "vegetarian", name: "Vegetarian" },
-    { id: "weeknight", name: "Weeknight favorites" },
-  ]);
+  expect(collectionData.collections).toEqual(
+    [
+      { id: "comfort", name: "Comfort food" },
+      { id: "special", name: "Something special" },
+      { id: "vegetarian", name: "Vegetarian" },
+      { id: "weeknight", name: "Weeknight favorites" },
+    ].map((collection) => ({ ...collection, revision: expect.any(String) })),
+  );
   const content = collections.content[0];
 
   if (!content || content.type !== "text") throw new Error("Missing collections text content");
@@ -193,7 +200,11 @@ it("lets separate authorized eval threads discover collections and patch recipes
 
   const updated = await request(second, "tools/call", {
     name: "update_recipes",
-    arguments: { updates: [{ id: saved.id, changes: { category: "Something special" } }] },
+    arguments: {
+      updates: [
+        { id: saved.id, expectedRevision: saved.revision, changes: { category: "Something special" } },
+      ],
+    },
   });
 
   expect(updated.status).toBe(200);
@@ -206,6 +217,7 @@ it("lets separate authorized eval threads discover collections and patch recipes
   expect(updatedRecipes.recipes[0]).toEqual({
     ...saved,
     category: "Something special",
+    revision: expect.any(String),
   });
 
   const read = await request(await sign({ jti: "fresh-token" }), "tools/call", {
@@ -219,10 +231,8 @@ it("lets separate authorized eval threads discover collections and patch recipes
     readResult.structuredContent,
   );
 
-  expect(readRecipes.recipes[0]).toEqual({
-    ...saved,
-    category: "Something special",
-  });
+  expect(readRecipes.recipes[0]).toEqual(updatedRecipes.recipes[0]);
+  expect(readRecipes.recipes[0].revision).not.toBe(saved.revision);
 });
 
 it("rejects invalid identities before writes, fails closed without policy, and leaves production OAuth intact", async () => {

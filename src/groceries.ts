@@ -1,5 +1,13 @@
 import { Effect, Schema } from "effect";
-import { Conflict, MissingReference, ValidationError, database, stored } from "./storage";
+import {
+  Conflict,
+  MissingReference,
+  ValidationError,
+  database,
+  stored,
+  requireRevision,
+  staleWrite,
+} from "./storage";
 import {
   GroceryItemSchema,
   RenameAisleSchema,
@@ -30,6 +38,7 @@ export type GroceryRow = Omit<GroceryDraft, "aliases"> & { aliases: string };
 const decodeGroceryRow = Schema.decodeUnknownSync(
   Schema.Struct({
     ...GroceryItemSchema.fields,
+    revision: Schema.NonEmptyString,
     aliases: Schema.fromJsonString(GroceryItemSchema.fields.aliases),
   }),
 );
@@ -87,41 +96,58 @@ const validGrocery = (item: GroceryItem) =>
   );
 
 /** Validates and upserts a catalog item, trimming its display name and aisle. */
-export function saveGrocery(db: D1Database, item: GroceryItem) {
+export function saveGrocery(db: D1Database, item: GroceryItem, expectedRevision?: string | null) {
   return Effect.gen(function* () {
+    const revision = yield* requireRevision(expectedRevision);
     const grocery = yield* validGrocery(item);
 
-    yield* database(() => groceryStatement(db, grocery).run());
+    const [write, rows] = yield* database(() =>
+      db.batch([
+        groceryStatement(db, grocery, revision),
+        db.prepare("SELECT * FROM groceries WHERE id=?").bind(grocery.id),
+      ]),
+    );
 
-    return { grocery };
+    if (!write.meta.changes) return yield* staleWrite();
+
+    return { grocery: yield* stored(() => parseGrocery(rows.results[0])) };
   });
 }
 
 /** Upserts a catalog item and puts it on the shopping list atomically, keeping any saved package count. */
-export function saveGroceryToList(db: D1Database, item: GroceryItem) {
+export function saveGroceryToList(db: D1Database, item: GroceryItem, expectedRevision?: string | null) {
   return Effect.gen(function* () {
+    const revision = yield* requireRevision(expectedRevision);
     const grocery = yield* validGrocery(item);
 
-    yield* database(() =>
+    const [write, , rows] = yield* database(() =>
       db.batch([
-        groceryStatement(db, grocery),
+        groceryStatement(db, grocery, revision),
         db
           .prepare(
-            "INSERT INTO checks(key,checked,packages) VALUES(?,0,1) ON CONFLICT(key) DO UPDATE SET checked=0",
+            "INSERT INTO checks(key,checked,packages) SELECT ?,0,1 WHERE changes()>0 ON CONFLICT(key) DO UPDATE SET checked=0",
           )
           .bind(JSON.stringify(["shopping-list", grocery.id])),
+        db.prepare("SELECT * FROM groceries WHERE id=?").bind(grocery.id),
       ]),
     );
 
-    return { grocery };
+    if (!write.meta.changes) return yield* staleWrite();
+
+    return { grocery: yield* stored(() => parseGrocery(rows.results[0])) };
   });
 }
 
-/** Builds an upsert for an already validated grocery, encoding aliases as JSON. */
-export function groceryStatement(db: D1Database, grocery: GroceryItem) {
+/** Builds a guarded write; internal omitted guard means create-only, never replacement. */
+export function groceryStatement(
+  db: D1Database,
+  grocery: GroceryItem,
+  expectedRevision: string | null = null,
+) {
   return db
-    .prepare(`INSERT INTO groceries(id,name,url,aisle,quantity,unit,aliases) VALUES(?,?,?,?,?,?,?)
-        ON CONFLICT(id) DO UPDATE SET name=excluded.name,url=excluded.url,aisle=excluded.aisle,quantity=excluded.quantity,unit=excluded.unit,aliases=excluded.aliases`)
+    .prepare(`INSERT INTO groceries(id,name,url,aisle,quantity,unit,aliases) SELECT ?1,?2,?3,?4,?5,?6,?7
+        WHERE ?8 IS NULL OR EXISTS (SELECT 1 FROM groceries WHERE id=?1 AND revision=?8)
+        ON CONFLICT(id) DO UPDATE SET name=excluded.name,url=excluded.url,aisle=excluded.aisle,quantity=excluded.quantity,unit=excluded.unit,aliases=excluded.aliases WHERE groceries.revision=?8`)
     .bind(
       grocery.id,
       grocery.name,
@@ -130,6 +156,7 @@ export function groceryStatement(db: D1Database, grocery: GroceryItem) {
       grocery.quantity,
       grocery.unit,
       JSON.stringify(grocery.aliases),
+      expectedRevision,
     );
 }
 
@@ -174,19 +201,23 @@ export function renameAisle(db: D1Database, input: typeof RenameAisleSchema.Type
 }
 
 /** Atomically deletes a grocery, unlinks recipe ingredients, and removes list membership. */
-export function deleteGrocery(db: D1Database, id: GroceryId) {
+export function deleteGrocery(db: D1Database, id: GroceryId, expectedRevision?: string | null) {
   return Effect.gen(function* () {
+    const revision = yield* requireRevision(expectedRevision);
+
     const [result] = yield* database(() =>
       db.batch([
         // The database trigger unlinks ingredients in the same atomic deletion.
-        db.prepare("DELETE FROM groceries WHERE id=?").bind(id),
+        db.prepare("DELETE FROM groceries WHERE id=? AND revision=?").bind(id, revision),
         db
-          .prepare("DELETE FROM checks WHERE key=? AND NOT EXISTS (SELECT 1 FROM groceries WHERE id=?)")
+          .prepare(
+            "DELETE FROM checks WHERE key=? AND changes()>0 AND NOT EXISTS (SELECT 1 FROM groceries WHERE id=?)",
+          )
           .bind(JSON.stringify(["shopping-list", id]), id),
       ]),
     );
 
-    if (!result.meta.changes) return yield* new Conflict({ message: "This grocery no longer exists." });
+    if (!result.meta.changes) return yield* staleWrite();
 
     return { ok: true as const };
   });

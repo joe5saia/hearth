@@ -25,6 +25,10 @@ authorize Hearth; never request tokens or substitute invented household state.
 
 ## Check, add, and order
 
+- Full saves and deletes require `expectedRevision` from the original entity's
+  `revision`; use `null` for creation. Shopping-order replacements use the returned
+  order's revision, and each recipe update uses its recipe's revision. On conflict,
+  reread and reconcile; never retry an old payload with a fresh token.
 - Read immediately before checking an item. `set_shopping_checked` needs the exact
   returned **`item.checkKey`**, not `item.key`. Checkmarks are specific to the range
   and quantity; changed totals can become unchecked. Never construct check keys.

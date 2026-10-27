@@ -115,7 +115,7 @@ type Modal =
   | { kind: "meal"; meal: MealDraft }
   | { kind: "recipe"; recipe: Recipe; meal?: MealDraft; returnToMeal?: boolean }
   | { kind: "import" }
-  | { kind: "editor"; recipe: RecipeDraft; isNew?: boolean; warnings?: readonly string[] };
+  | { kind: "editor"; recipe: RecipeDraft; meal?: MealDraft; isNew?: boolean; warnings?: readonly string[] };
 
 const emptyHousehold: Household = {
   collections: [],
@@ -148,10 +148,9 @@ class ApiError extends Error {}
 
 async function api(
   path: string,
-  method: "GET" | "POST" | "PUT" | "DELETE" = "GET",
+  method: "GET" | "POST" | "PUT" | "PATCH" | "DELETE" = "GET",
   body?:
     | RecipeDraft
-    | (RecipeDraft & { expectedIngredients: RecipeDraft["ingredients"] | null })
     | Collection
     | MealDraft
     | GroceryDraft
@@ -160,6 +159,9 @@ async function api(
     | Household["extras"][number]
     | typeof CheckWriteSchema.Type
     | { from: string; to: string }
+    | { expectedRevision: string | null }
+    | { note: string; expectedNote: string }
+    | { checked: 0 | 1 }
     | { rating: Rating },
   operationId = crypto.randomUUID(),
 ) {
@@ -170,7 +172,18 @@ async function api(
     headers: { "Content-Type": "application/json", "X-Hearth-Operation-Id": operationId },
   };
 
-  if (body && method !== "GET") init.body = JSON.stringify(body);
+  if (body && method !== "GET") {
+    // The token belongs to the draft being saved, never to a newer background refresh.
+    const guarded =
+      method === "PUT" &&
+      ["recipes", "meals", "groceries", "shopping-items", "collections", "extras", "shopping-order"].includes(
+        path,
+      );
+
+    init.body = JSON.stringify(
+      guarded ? { ...body, expectedRevision: "revision" in body ? (body.revision ?? null) : null } : body,
+    );
+  }
 
   let response: Response;
 
@@ -246,6 +259,7 @@ function Dialog({
   fullScreen = false,
   shareable = true,
   timerHost,
+  recover,
 }: {
   title: string;
   close: () => void;
@@ -254,8 +268,14 @@ function Dialog({
   fullScreen?: boolean;
   shareable?: boolean;
   timerHost?: (element: HTMLDivElement | null) => void;
+  recover?: () => Promise<void>;
 }) {
   const ref = useRef<HTMLDialogElement>(null);
+  const [confirmReload, setConfirmReload] = useState(false);
+  const [reloading, setReloading] = useState(false);
+  useEffect(() => {
+    if (!recover) setConfirmReload(false);
+  }, [recover]);
   useLayoutEffect(() => {
     const dialog = ref.current;
     dialog?.showModal();
@@ -308,6 +328,43 @@ function Dialog({
           <X size={20} />
         </button>
       </div>
+      {recover && (
+        <div className="save-conflict" role="status">
+          <p>
+            {confirmReload
+              ? "Replace your unsaved edits with the latest saved version?"
+              : "Your draft is still here. Load the latest version to review what changed."}
+          </p>
+          <div className="meal-note-actions">
+            {confirmReload && (
+              <button className="text-button" disabled={reloading} onClick={() => setConfirmReload(false)}>
+                Keep editing
+              </button>
+            )}
+            <button
+              className="secondary small-button"
+              disabled={reloading}
+              onClick={async () => {
+                if (!confirmReload) {
+                  setConfirmReload(true);
+
+                  return;
+                }
+
+                setReloading(true);
+
+                try {
+                  await recover();
+                } finally {
+                  setReloading(false);
+                }
+              }}
+            >
+              {reloading ? "Loading…" : confirmReload ? "Replace draft" : "Load latest"}
+            </button>
+          </div>
+        </div>
+      )}
       {children}
     </dialog>
   );
@@ -355,6 +412,9 @@ export function App() {
   const [toast, setToast] = useState("");
   const [busy, setBusy] = useState(false);
   const [modal, setModalState] = useState<Modal | null>(null);
+  const [conflictEntry, setConflictEntry] = useState<string>();
+  const [conflictPath, setConflictPath] = useState("");
+  const [editorGeneration, setEditorGeneration] = useState(0);
   // Only transient nested meal previews keep a draft, in memory, never in URLs/history storage.
   const mealDrafts = useRef(new Map<string, MealDraft>());
   const routeLoaded = useRef(false);
@@ -376,6 +436,8 @@ export function App() {
   const [selectedPlanDate, setSelectedPlanDate] = useState<CalendarDate | null>(null);
   const pageOptions = useRef<HTMLElement>(null);
   const initialLoad = useRef(true);
+  const refreshSequence = useRef(0);
+  const mutationEpoch = useRef(0);
 
   const updateRoute = (patch: Partial<Route>, replace = false) => {
     lastHistoryEvent.current = "";
@@ -417,6 +479,8 @@ export function App() {
     updateRoute({ sort: recipeSorts.find((candidate) => candidate === sort) ?? "az" });
 
   const setModal = (next: Modal | null) => {
+    setConflictEntry(undefined);
+
     // Feedback is transient, not a shareable view. Do not rewrite its originating URL.
     if (next?.kind === "feedback" || (!next && modal?.kind === "feedback")) {
       setModalState(next);
@@ -455,6 +519,8 @@ export function App() {
         break;
       case "editor":
         if (!next.isNew) patch.id = next.recipe.id;
+
+        if (next.meal) patch.meal = next.meal.id;
         break;
       case "meal":
         if (data.meals.some((meal) => meal.id === next.meal.id)) patch.id = next.meal.id;
@@ -479,28 +545,41 @@ export function App() {
   };
 
   const resolveModal = useCallback(
-    (next: Route): Modal | null => {
+    (next: Route, household = data): Modal | null => {
       const missing = () => {
         setError("This item is no longer available. It may have been deleted from your household.");
 
         return null;
       };
 
-      const recipe = data.recipes.find((recipe) => recipe.id === next.id);
+      const recipe = household.recipes.find((recipe) => recipe.id === next.id);
 
       switch (next.view) {
         case "recipe": {
           const draft = mealDrafts.current.get(history.state?.hearth?.parent);
 
-          if (recipe && draft) return { kind: "recipe", recipe, meal: draft, returnToMeal: true };
-          const meal = next.meal ? data.meals.find((meal) => meal.id === next.meal) : undefined;
+          if (recipe && draft)
+            return {
+              kind: "recipe",
+              recipe: draft.recipe ? Schema.decodeSync(RecipeSchema)(draft.recipe) : recipe,
+              meal: draft,
+              returnToMeal: true,
+            };
+          const meal = next.meal ? household.meals.find((meal) => meal.id === next.meal) : undefined;
+          const content = meal?.recipe ?? recipe;
 
-          if (!recipe || (next.meal && !meal)) return missing();
+          if (!content || (next.meal && !meal)) return missing();
 
-          return { kind: "recipe", recipe, meal };
+          return { kind: "recipe", recipe: content, meal };
         }
 
-        case "editor":
+        case "editor": {
+          if (next.meal) {
+            const meal = household.meals.find((meal) => meal.id === next.meal);
+
+            return meal?.recipe ? { kind: "editor", recipe: meal.recipe, meal } : missing();
+          }
+
           if (next.id) return recipe ? { kind: "editor", recipe } : missing();
 
           return {
@@ -512,7 +591,8 @@ export function App() {
               description: "",
               servings: 4,
               minutes: 30,
-              category: data.collections.find((collection) => collection.id === next.collection)?.name ?? "",
+              category:
+                household.collections.find((collection) => collection.id === next.collection)?.name ?? "",
               photo: "",
               source: "",
               rating: "neutral",
@@ -520,13 +600,15 @@ export function App() {
               instructions: [""],
             },
           };
+        }
+
         case "meal": {
           const draft = mealDrafts.current.get(history.state?.hearth?.key);
-          const meal = next.id ? data.meals.find((meal) => meal.id === next.id) : undefined;
+          const meal = next.id ? household.meals.find((meal) => meal.id === next.id) : undefined;
 
           if (
             (next.id && !meal) ||
-            (next.recipe && !data.recipes.some((recipe) => recipe.id === next.recipe))
+            (next.recipe && !household.recipes.some((recipe) => recipe.id === next.recipe))
           )
             return missing();
 
@@ -535,8 +617,8 @@ export function App() {
             meal: draft ??
               meal ?? {
                 id: crypto.randomUUID(),
-                recipeId: next.recipe ?? data.recipes[0]?.id ?? null,
-                date: next.date ?? nextDinnerDate(data.meals, next.week),
+                recipeId: next.recipe ?? household.recipes[0]?.id ?? null,
+                date: next.date ?? nextDinnerDate(household.meals, next.week),
                 slot: "Dinner",
                 scale: 1,
                 note: "",
@@ -545,7 +627,7 @@ export function App() {
         }
 
         case "grocery": {
-          const item = data.groceries.find((item) => item.id === next.id);
+          const item = household.groceries.find((item) => item.id === next.id);
 
           return next.id
             ? item
@@ -555,7 +637,7 @@ export function App() {
         }
 
         case "collection": {
-          const collection = data.collections.find((collection) => collection.id === next.id);
+          const collection = household.collections.find((collection) => collection.id === next.id);
 
           return next.id
             ? collection
@@ -579,6 +661,8 @@ export function App() {
   const refresh = useCallback(async (operationId = crypto.randomUUID()) => {
     const started = performance.now();
     const revision = shoppingRevision.current;
+    const sequence = ++refreshSequence.current;
+    const epoch = mutationEpoch.current;
     const response = await api("household", "GET", undefined, operationId);
     const body = await response.text();
     const downloaded = performance.now();
@@ -597,6 +681,9 @@ export function App() {
     }
 
     const decoded = performance.now();
+
+    // Resume reads can overlap saves and other reads. Never apply a response from before a newer one.
+    if (sequence !== refreshSequence.current || epoch !== mutationEpoch.current) return household;
     const initial = initialLoad.current;
     initialLoad.current = false;
 
@@ -623,6 +710,8 @@ export function App() {
         }),
       ),
     );
+
+    return household;
   }, []);
 
   const saveShoppingEdit = (edit: ShoppingEdit) => {
@@ -631,6 +720,7 @@ export function App() {
     const queueDepth = shoppingEdits.current.length + 1;
     shoppingEdits.current.push(edit);
     shoppingRevision.current++;
+    mutationEpoch.current++;
     setShoppingPending(shoppingEdits.current.length);
     setError("");
     setData((current) => ({ ...current, ...applyShoppingEdit(current, edit) }));
@@ -659,6 +749,7 @@ export function App() {
         written = performance.now();
         acknowledged = true;
         shoppingRevision.current++;
+        mutationEpoch.current++;
         confirmedShopping.current = applyShoppingEdit(confirmedShopping.current, edit);
 
         if (edit.kind === "order") setToast("Store route saved");
@@ -667,6 +758,9 @@ export function App() {
         refreshed = performance.now();
       } catch (failure) {
         outcome = acknowledged ? "saved_refresh_failed" : "error";
+
+        if (!acknowledged && failure instanceof ApiError && failure.cause === 409)
+          await refresh(operationId).catch(() => {});
 
         if (!acknowledged) written = performance.now();
         refreshed = performance.now();
@@ -725,6 +819,33 @@ export function App() {
     );
   }, [refresh]);
   useEffect(() => {
+    let pending: Promise<void> | undefined;
+
+    const resume = () => {
+      if (document.visibilityState !== "visible" || !navigator.onLine || pending) return;
+      pending = refresh()
+        .then(() => {})
+        .catch(() => {
+          setError((current) => current || "Couldn’t refresh the household. Retry when you’re connected.");
+        })
+        .finally(() => {
+          pending = undefined;
+        });
+    };
+
+    window.addEventListener("focus", resume);
+    window.addEventListener("pageshow", resume);
+    window.addEventListener("online", resume);
+    document.addEventListener("visibilitychange", resume);
+
+    return () => {
+      window.removeEventListener("focus", resume);
+      window.removeEventListener("pageshow", resume);
+      window.removeEventListener("online", resume);
+      document.removeEventListener("visibilitychange", resume);
+    };
+  }, [refresh]);
+  useEffect(() => {
     const viewport = window.matchMedia(mobileViewport);
     const sync = () => setMobileLayout(viewport.matches);
     viewport.addEventListener("change", sync);
@@ -750,6 +871,7 @@ export function App() {
       routeRef.current = next;
       setRoute(next);
       setError("");
+      setConflictEntry(undefined);
 
       if (loaded) setModalState(resolveModal(next));
     };
@@ -915,8 +1037,32 @@ export function App() {
     // A committed save/delete must not leave a stale editor as the current history entry.
     updateRoute(baseView, true);
     setModalState(null);
+    setConflictEntry(undefined);
     mealDrafts.current.clear();
   };
+
+  const recoverDraft =
+    conflictEntry && conflictEntry === history.state?.hearth?.key
+      ? async () => {
+          const entry = history.state?.hearth?.key;
+          setBusy(true);
+
+          try {
+            const latest = await refresh();
+
+            if (entry !== history.state?.hearth?.key) return;
+            mealDrafts.current.clear();
+            setError("");
+            setModalState(resolveModal(routeRef.current, latest));
+            setEditorGeneration((generation) => generation + 1);
+            setConflictEntry(undefined);
+          } catch {
+            setError("Couldn’t load the latest version. Your draft is still here. Try again when connected.");
+          } finally {
+            setBusy(false);
+          }
+        }
+      : undefined;
 
   const mutate = async (
     path: string,
@@ -932,10 +1078,13 @@ export function App() {
     let outcome: "success" | "error" | "saved_refresh_failed" = "success";
     setBusy(true);
     setError("");
+    mutationEpoch.current++;
 
     try {
       await api(path, method, body, operationId);
       acknowledged = true;
+      mutationEpoch.current++;
+      setConflictEntry(undefined);
       await refresh(operationId);
 
       if (close) finishEditing(editingEntry);
@@ -960,8 +1109,15 @@ export function App() {
         return close;
       }
 
-      if (path === "recipes" && failure instanceof ApiError && failure.cause === 409)
+      if (failure instanceof ApiError && (failure.cause === 409 || failure.cause === 404)) {
         await refresh(operationId).catch(() => {});
+
+        if (editingEntry === history.state?.hearth?.key) {
+          setConflictEntry(editingEntry);
+          setConflictPath(path);
+        }
+      }
+
       setError(
         failure instanceof ApiError
           ? failure.message
@@ -988,10 +1144,12 @@ export function App() {
     let outcome: "success" | "error" | "saved_refresh_failed" = "error";
     setBusy(true);
     setError("");
+    mutationEpoch.current++;
 
     try {
       const response = await api("groceries/match", "POST", undefined, operationId);
       acknowledged = true;
+      mutationEpoch.current++;
 
       const result = Schema.decodeUnknownSync(Schema.Struct({ report: MatchReportSchema }))(
         await response.json(),
@@ -1117,10 +1275,28 @@ export function App() {
         setSearch={setSearch}
         selected={route.selected}
         setSelected={(selected) => updateRoute({ selected }, true)}
+        selectedMeals={route.selectedMeals}
+        setSelectedMeals={(selectedMeals) => updateRoute({ selectedMeals }, true)}
         showList={route.checklist}
         setShowList={(checklist) => updateRoute({ checklist })}
       />
     );
+
+  const viewedMeal =
+    modal?.kind === "recipe" && modal.meal
+      ? modal.returnToMeal
+        ? modal.meal
+        : (data.meals.find((meal) => meal.id === modal.meal?.id) ?? modal.meal)
+      : undefined;
+
+  const viewedRecipe =
+    modal?.kind === "recipe"
+      ? modal.returnToMeal
+        ? modal.recipe
+        : viewedMeal
+          ? (data.meals.find((meal) => meal.id === viewedMeal.id)?.recipe ?? modal.recipe)
+          : (data.recipes.find((recipe) => recipe.id === modal.recipe.id) ?? modal.recipe)
+      : undefined;
 
   return (
     <div
@@ -1490,7 +1666,7 @@ export function App() {
                                 </div>
                                 <div className="day-meals">
                                   {meals.map((meal) => {
-                                    const recipe = data.recipes.find((entry) => entry.id === meal.recipeId);
+                                    const recipe = meal.recipe;
 
                                     if (meal.recipeId !== null && !recipe) return null;
 
@@ -1507,12 +1683,18 @@ export function App() {
                                               : { kind: "meal", meal },
                                           )
                                         }
-                                        edit={() => setModal({ kind: "meal", meal })}
+                                        edit={() =>
+                                          setModal(
+                                            recipe
+                                              ? { kind: "editor", recipe, meal }
+                                              : { kind: "meal", meal },
+                                          )
+                                        }
                                         remove={() => {
                                           void mutate(
                                             `meals/${encodeURIComponent(meal.id)}`,
                                             "DELETE",
-                                            undefined,
+                                            { expectedRevision: meal.revision ?? null },
                                             "Meal removed",
                                           );
                                         }}
@@ -1534,12 +1716,7 @@ export function App() {
                                             </div>
                                           )}
                                         </div>
-                                        {recipe && meal.note && (
-                                          <p className="meal-note">
-                                            <strong>Note</strong>
-                                            {meal.note}
-                                          </p>
-                                        )}
+                                        {recipe && meal.note && <p className="meal-note">{meal.note}</p>}
                                       </MealCard>
                                     );
                                   })}
@@ -1805,7 +1982,7 @@ export function App() {
                       items={visibleItems}
                       groceries={data.groceries}
                       order={data.shoppingOrder}
-                      busy={busy}
+                      busy={busy || (arranging && shoppingPending > 0)}
                       shoppingMode={shoppingMode || listBuilder}
                       listBuilder={listBuilder}
                       arranging={arranging}
@@ -1972,7 +2149,9 @@ export function App() {
                                 checked={!!item.checked}
                                 disabled={busy}
                                 onChange={() =>
-                                  mutate("extras", "PUT", { ...item, checked: item.checked ? 0 : 1 })
+                                  mutate(`extras/${encodeURIComponent(item.id)}`, "PATCH", {
+                                    checked: item.checked ? 0 : 1,
+                                  })
                                 }
                               />
                               <span>{item.name}</span>
@@ -1982,7 +2161,9 @@ export function App() {
                               aria-label={`Remove ${item.name}`}
                               disabled={busy}
                               onClick={() =>
-                                mutate(`extras/${encodeURIComponent(item.id)}`, "DELETE", undefined)
+                                mutate(`extras/${encodeURIComponent(item.id)}`, "DELETE", {
+                                  expectedRevision: item.revision ?? null,
+                                })
                               }
                             >
                               <X size={15} />
@@ -2058,6 +2239,7 @@ export function App() {
       {modal?.kind === "grocery" && (
         <Dialog
           title="Grocery item"
+          recover={recoverDraft}
           fullScreen={mobileLayout}
           close={() => {
             if (busy) return;
@@ -2066,7 +2248,7 @@ export function App() {
           }}
         >
           <GroceryForm
-            key={modal.item.id}
+            key={`${modal.item.id}:${editorGeneration}`}
             item={modal.item}
             aisles={aisles}
             busy={busy}
@@ -2082,7 +2264,7 @@ export function App() {
                     mutate(
                       `groceries/${encodeURIComponent(modal.item.id)}`,
                       "DELETE",
-                      undefined,
+                      { expectedRevision: modal.item.revision ?? null },
                       "Grocery item deleted",
                       true,
                     )
@@ -2139,19 +2321,16 @@ export function App() {
       )}
       {modal?.kind === "collection" && (
         <Dialog
+          recover={recoverDraft}
           timerHost={setTimerDialogHost}
-          title={
-            data.collections.some((collection) => collection.id === modal.collection.id)
-              ? "Edit collection"
-              : "Add collection"
-          }
+          title={modal.collection.revision ? "Edit collection" : "Add collection"}
           close={() => {
             setModal({ kind: "collections" });
             setError("");
           }}
         >
           <CollectionForm
-            key={modal.collection.id}
+            key={`${modal.collection.id}:${editorGeneration}`}
             collection={modal.collection}
             busy={busy}
             error={error}
@@ -2166,7 +2345,7 @@ export function App() {
                       await mutate(
                         `collections/${encodeURIComponent(modal.collection.id)}`,
                         "DELETE",
-                        undefined,
+                        { expectedRevision: modal.collection.revision ?? null },
                         "Collection deleted; recipes kept",
                       )
                     )
@@ -2179,7 +2358,8 @@ export function App() {
       )}
       {modal?.kind === "meal" && (
         <Dialog
-          title={data.meals.some((meal) => meal.id === modal.meal.id) ? "Edit meal" : "Add a meal"}
+          recover={recoverDraft}
+          title={modal.meal.revision ? "Edit meal" : "Add a meal"}
           fullScreen={mobileLayout}
           close={() => {
             setModal(null);
@@ -2187,7 +2367,7 @@ export function App() {
           }}
         >
           <MealForm
-            key={modal.meal.id}
+            key={`${modal.meal.id}:${editorGeneration}`}
             meal={modal.meal}
             recipes={data.recipes}
             busy={busy}
@@ -2199,7 +2379,7 @@ export function App() {
                     mutate(
                       `meals/${encodeURIComponent(modal.meal.id)}`,
                       "DELETE",
-                      undefined,
+                      { expectedRevision: modal.meal.revision ?? null },
                       "Meal removed",
                       true,
                     )
@@ -2209,10 +2389,11 @@ export function App() {
           />
         </Dialog>
       )}
-      {modal?.kind === "recipe" && (
+      {modal?.kind === "recipe" && viewedRecipe && (
         <Dialog
+          recover={recoverDraft}
           timerHost={setTimerDialogHost}
-          title="Recipe details"
+          title={viewedMeal ? "Meal details" : "Recipe details"}
           close={() => {
             setModal(modal.returnToMeal && modal.meal ? { kind: "meal", meal: modal.meal } : null);
             setError("");
@@ -2220,24 +2401,35 @@ export function App() {
           fullScreen
         >
           <RecipeDetail
-            scale={route.scale ?? modal.meal?.scale ?? 1}
+            key={`${viewedMeal?.id ?? viewedRecipe.id}:${editorGeneration}`}
+            scale={route.scale ?? viewedMeal?.scale ?? 1}
             setScale={(scale) => updateRoute({ scale }, true)}
-            recipe={data.recipes.find((recipe) => recipe.id === modal.recipe.id) ?? modal.recipe}
+            recipe={viewedRecipe}
             groceries={data.groceries}
             busy={busy}
             error={error}
             selectGrocery={(index, id) => {
-              const recipe = data.recipes.find((recipe) => recipe.id === modal.recipe.id) ?? modal.recipe;
+              const ingredients = viewedRecipe.ingredients.map((item, position) =>
+                position === index ? { ...item, groceryItemId: id, grocerySuggestions: undefined } : item,
+              );
+
+              if (viewedMeal)
+                return mutate(
+                  "meals",
+                  "PUT",
+                  {
+                    ...viewedMeal,
+                    recipe: { ...viewedRecipe, ingredients },
+                  },
+                  "Grocery item linked",
+                );
 
               return mutate(
                 "recipes",
                 "PUT",
                 {
-                  ...recipe,
-                  expectedIngredients: recipe.ingredients,
-                  ingredients: recipe.ingredients.map((item, position) =>
-                    position === index ? { ...item, groceryItemId: id, grocerySuggestions: undefined } : item,
-                  ),
+                  ...viewedRecipe,
+                  ingredients,
                 },
                 "Grocery item linked",
               );
@@ -2248,13 +2440,33 @@ export function App() {
                 : () =>
                     setModal({
                       kind: "editor",
-                      recipe: data.recipes.find((recipe) => recipe.id === modal.recipe.id) ?? modal.recipe,
+                      recipe: viewedRecipe,
+                      meal: viewedMeal,
                     })
             }
             plan={() =>
               modal.meal ? setModal({ kind: "meal", meal: modal.meal }) : addMeal(undefined, modal.recipe.id)
             }
-            meal={modal.meal}
+            meal={viewedMeal}
+            sourceRecipe={
+              viewedMeal ? data.recipes.find((recipe) => recipe.id === viewedMeal.recipeId) : undefined
+            }
+            openRecipe={(recipe) => setModal({ kind: "recipe", recipe })}
+            history={viewedMeal ? [] : data.meals.filter((meal) => meal.recipeId === viewedRecipe.id)}
+            openMeal={(meal) => {
+              if (meal.recipe) setModal({ kind: "recipe", recipe: meal.recipe, meal });
+            }}
+            saveNote={
+              viewedMeal && !modal.returnToMeal
+                ? (note, expectedNote) =>
+                    mutate(
+                      `meals/${encodeURIComponent(viewedMeal.id)}`,
+                      "PATCH",
+                      { note, expectedNote },
+                      "Meal note saved",
+                    )
+                : undefined
+            }
             returnToMeal={modal.returnToMeal}
           />
         </Dialog>
@@ -2304,10 +2516,9 @@ export function App() {
       )}
       {modal?.kind === "editor" && (
         <Dialog
+          recover={conflictPath === "groceries" ? undefined : recoverDraft}
           timerHost={setTimerDialogHost}
-          title={
-            data.recipes.some((recipe) => recipe.id === modal.recipe.id) ? "Edit recipe" : "Add a recipe"
-          }
+          title={modal.meal ? "Edit meal" : modal.isNew ? "Add a recipe" : "Edit recipe"}
           close={() => {
             setModal(null);
             setError("");
@@ -2316,40 +2527,62 @@ export function App() {
           fullScreen={mobileLayout}
         >
           <RecipeForm
-            key={modal.recipe.id}
+            key={`${modal.meal?.id ?? modal.recipe.id}:${editorGeneration}`}
             fullScreen={mobileLayout}
             recipe={modal.recipe}
-            latestRecipe={data.recipes.find((recipe) => recipe.id === modal.recipe.id)}
-            clearError={() => setError("")}
+            meal={modal.meal}
             collections={data.collections}
             groceries={data.groceries}
             aisles={aisles}
             saveGrocery={(item) => mutate("groceries", "PUT", item, "Grocery item saved")}
+            recoverGrocery={
+              recoverDraft && conflictPath === "groceries"
+                ? async (id) => {
+                    const latest = await refresh();
+                    const item = latest.groceries.find((item) => item.id === id);
+                    setConflictEntry(undefined);
+                    setError(item ? "" : "That grocery item no longer exists.");
+
+                    return item;
+                  }
+                : undefined
+            }
             warnings={modal.warnings}
             busy={busy}
             error={error}
-            save={(recipe, expectedIngredients) =>
-              mutate(
-                "recipes",
-                "PUT",
-                { ...recipe, expectedIngredients: modal.isNew ? null : expectedIngredients },
-                modal.isNew
-                  ? "Recipe saved. Automatic grocery matches appear after refresh."
-                  : "Recipe saved to your collection",
-                true,
-              )
+            save={(recipe, meal) =>
+              meal
+                ? mutate("meals", "PUT", { ...meal, recipe }, "Meal saved", true)
+                : mutate(
+                    "recipes",
+                    "PUT",
+                    recipe,
+                    modal.isNew
+                      ? "Recipe saved. Automatic grocery matches appear after refresh."
+                      : "Recipe saved to your collection",
+                    true,
+                  )
             }
             remove={
-              data.recipes.some((recipe) => recipe.id === modal.recipe.id)
+              modal.meal
                 ? () =>
                     mutate(
-                      `recipes/${encodeURIComponent(modal.recipe.id)}`,
+                      `meals/${encodeURIComponent(modal.meal?.id ?? "")}`,
                       "DELETE",
-                      undefined,
-                      "Recipe deleted",
+                      { expectedRevision: modal.meal?.revision ?? null },
+                      "Meal removed",
                       true,
                     )
-                : undefined
+                : data.recipes.some((recipe) => recipe.id === modal.recipe.id)
+                  ? () =>
+                      mutate(
+                        `recipes/${encodeURIComponent(modal.recipe.id)}`,
+                        "DELETE",
+                        { expectedRevision: modal.recipe.revision ?? null },
+                        "Recipe deleted",
+                        true,
+                      )
+                  : undefined
             }
           />
         </Dialog>
@@ -2388,6 +2621,7 @@ function CollectionForm({
           required
           maxLength={100}
           value={name}
+          disabled={busy}
           onChange={(event) => setName(event.target.value)}
           autoFocus
         />
@@ -2447,7 +2681,11 @@ function MealForm({
   const [debouncedRecipeSearch, setDebouncedRecipeSearch] = useState("");
   const [choosingRecipe, setChoosingRecipe] = useState(false);
   const recipeSearchInput = useRef<HTMLInputElement>(null);
-  const recipe = recipes.find((entry) => entry.id === draft.recipeId);
+
+  const recipe = draft.recipe
+    ? Schema.decodeSync(RecipeSchema)(draft.recipe)
+    : recipes.find((entry) => entry.id === draft.recipeId);
+
   const noteOnly = draft.recipeId === null;
   const searching = recipeSearch.trim() !== debouncedRecipeSearch;
 
@@ -2476,10 +2714,12 @@ function MealForm({
           Plan type
           <select
             value={noteOnly ? "note" : "recipe"}
+            disabled={busy}
             onChange={(event) =>
               setDraft({
                 ...draft,
                 recipeId: event.target.value === "note" ? null : (meal.recipeId ?? recipes[0]?.id ?? ""),
+                recipe: undefined,
               })
             }
           >
@@ -2497,6 +2737,7 @@ function MealForm({
                 placeholder="Name or ingredient…"
                 autoComplete="off"
                 value={recipeSearch}
+                disabled={busy}
                 onChange={(event) => setRecipeSearch(event.target.value)}
                 onKeyDown={(event) => {
                   if (event.key === "Enter") event.preventDefault();
@@ -2521,8 +2762,9 @@ function MealForm({
                       <li key={entry.id}>
                         <button
                           type="button"
+                          disabled={busy}
                           onClick={() => {
-                            setDraft({ ...draft, recipeId: entry.id });
+                            setDraft({ ...draft, recipeId: entry.id, recipe: undefined });
                             setRecipeSearch("");
                             setDebouncedRecipeSearch("");
                             setChoosingRecipe(false);
@@ -2545,6 +2787,7 @@ function MealForm({
               <button
                 type="button"
                 className="selected-recipe"
+                disabled={busy}
                 onClick={(event) => {
                   if (event.currentTarget.form?.reportValidity()) viewRecipe(recipe, draft);
                 }}
@@ -2582,6 +2825,7 @@ function MealForm({
               type="date"
               value={draft.date}
               required
+              disabled={busy}
               onChange={(event) => setDraft({ ...draft, date: event.target.value })}
             />
           </label>
@@ -2589,6 +2833,7 @@ function MealForm({
             Meal
             <select
               value={draft.slot}
+              disabled={busy}
               onChange={(event) => {
                 const slot = event.target.value;
 
@@ -2618,6 +2863,7 @@ function MealForm({
                 aria-label="Recipe scale"
                 required
                 value={draft.scale}
+                disabled={busy}
                 onChange={(event) => setDraft({ ...draft, scale: Number(event.target.value) })}
               >
                 {[...new Set([meal.scale, ...Array.from({ length: 400 }, (_, index) => (index + 1) / 4)])]
@@ -2648,6 +2894,7 @@ function MealForm({
             required={noteOnly}
             maxLength={2000}
             value={draft.note}
+            disabled={busy}
             onChange={(event) => setDraft({ ...draft, note: event.target.value })}
           />
         </label>
@@ -2683,6 +2930,11 @@ function RecipeDetail({
   edit,
   plan,
   meal,
+  sourceRecipe,
+  openRecipe,
+  history,
+  openMeal,
+  saveNote,
   returnToMeal = false,
 }: {
   recipe: Recipe;
@@ -2694,15 +2946,34 @@ function RecipeDetail({
   selectGrocery: (index: number, id: GroceryId) => Promise<boolean>;
   edit?: () => void;
   plan: () => void;
-  meal?: Pick<MealDraft, "scale">;
+  meal?: MealDraft;
+  sourceRecipe?: Recipe;
+  openRecipe: (recipe: Recipe) => void;
+  history: Household["meals"];
+  openMeal: (meal: Household["meals"][number]) => void;
+  saveNote?: (note: string, expectedNote: string) => Promise<boolean>;
   returnToMeal?: boolean;
 }) {
   return (
-    <div className="recipe-detail" tabIndex={0} role="region" aria-label={`${recipe.title} recipe`}>
+    <div
+      className={`recipe-detail${meal ? " meal-detail" : ""}`}
+      tabIndex={0}
+      role="region"
+      aria-label={`${recipe.title} ${meal ? "meal" : "recipe"}`}
+    >
       <div className="detail-title">
-        <span className="category-label">{recipe.category}</span>
-        <h1>{recipe.title}</h1>
+        <div className="meal-heading">
+          <h1>{recipe.title}</h1>
+          {meal && <Photo recipe={recipe} className="meal-heading-photo" />}
+        </div>
         <div className="detail-meta">
+          {meal && (
+            <span>
+              <CalendarDays size={16} />
+              {readableDate(meal.date, { weekday: "short", month: "short", day: "numeric", year: "numeric" })}
+            </span>
+          )}
+          {meal && <span>{meal.slot}</span>}
           <span>
             <Clock3 size={16} />
             {recipe.minutes} min
@@ -2712,8 +2983,8 @@ function RecipeDetail({
             {quantity(recipe.servings * scale)} servings
           </span>
           {edit && (
-            <button className="text-button" aria-label="Edit recipe" onClick={edit}>
-              <Pencil size={14} /> Edit
+            <button className="text-button" aria-label={meal ? "Edit meal" : "Edit recipe"} onClick={edit}>
+              <Pencil size={14} /> {meal ? "Edit meal" : "Edit recipe"}
             </button>
           )}
         </div>
@@ -2729,6 +3000,23 @@ function RecipeDetail({
           >
             Steps
           </a>
+          {!meal && history.length > 0 && (
+            <a
+              href="#meal-history"
+              onClick={(event) => {
+                event.preventDefault();
+                document.getElementById("meal-history")?.scrollIntoView({ block: "start" });
+                document.getElementById("meal-history")?.focus({ preventScroll: true });
+              }}
+            >
+              Meal history ({history.length})
+            </a>
+          )}
+          {sourceRecipe && !returnToMeal && (
+            <button className="text-button meal-source-link" onClick={() => openRecipe(sourceRecipe)}>
+              <BookOpen size={16} /> View recipe <ArrowRight size={14} />
+            </button>
+          )}
           {(returnToMeal || !meal) && (
             <button className="primary" onClick={plan}>
               {returnToMeal ? <ChevronLeft size={16} /> : <Plus size={16} />}{" "}
@@ -2737,6 +3025,7 @@ function RecipeDetail({
           )}
         </div>
       </div>
+      {meal && <MealNote key={meal.id} note={meal.note} save={saveNote} busy={busy} />}
       <div className="detail-columns">
         <section>
           <div className="ingredients-heading">
@@ -2800,7 +3089,7 @@ function RecipeDetail({
                         <button
                           key={product.id}
                           type="button"
-                          disabled={busy}
+                          disabled={busy || returnToMeal}
                           aria-pressed={item.groceryItemId === product.id}
                           onClick={() => selectGrocery(index, product.id)}
                         >
@@ -2838,8 +3127,39 @@ function RecipeDetail({
           </p>
         </section>
       </div>
+      {!meal && (
+        <section id="meal-history" className="meal-history" tabIndex={-1}>
+          <h2>
+            Meal history <span>{history.length}</span>
+          </h2>
+          {history.length ? (
+            <div className="meal-history-list">
+              {[...history]
+                .sort((a, b) => b.date.localeCompare(a.date) || a.id.localeCompare(b.id))
+                .map((entry) => (
+                  <button key={entry.id} onClick={() => openMeal(entry)} className="meal-history-entry">
+                    <time dateTime={entry.date}>
+                      <span>{readableDate(entry.date, { month: "short" })}</span>
+                      <strong>{readableDate(entry.date, { day: "numeric" })}</strong>
+                    </time>
+                    <span className="meal-history-content">
+                      <strong>{entry.recipe?.title}</strong>
+                      <span>
+                        {entry.slot} · {readableDate(entry.date, { weekday: "long", year: "numeric" })}
+                      </span>
+                      {entry.note && <p>{entry.note}</p>}
+                    </span>
+                    <ArrowRight size={18} />
+                  </button>
+                ))}
+            </div>
+          ) : (
+            <p className="muted">No meals planned yet.</p>
+          )}
+        </section>
+      )}
       <details className="recipe-about">
-        <summary>About this recipe</summary>
+        <summary>{meal ? "About this meal" : "About this recipe"}</summary>
         <Photo recipe={recipe} className="detail-hero" />
         <p>{recipe.description}</p>
       </details>
@@ -2852,6 +3172,83 @@ function RecipeDetail({
           <span>From our kitchen</span>
         )}
       </div>
+    </div>
+  );
+}
+
+function MealNote({
+  note,
+  save,
+  busy,
+}: {
+  note: string;
+  save?: (note: string, expectedNote: string) => Promise<boolean>;
+  busy: boolean;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(note);
+  const [expectedNote, setExpectedNote] = useState(note);
+
+  return (
+    <div className={`meal-detail-note${note || editing ? " has-note" : ""}`}>
+      {editing && save ? (
+        <form
+          onSubmit={async (event) => {
+            event.preventDefault();
+
+            if (await save(draft, expectedNote)) setEditing(false);
+          }}
+        >
+          <textarea
+            aria-label="Meal note"
+            autoFocus
+            maxLength={2000}
+            value={draft}
+            disabled={busy}
+            onChange={(event) => setDraft(event.target.value)}
+          />
+          <div className="meal-note-actions">
+            <button
+              type="button"
+              className="text-button"
+              disabled={busy}
+              onClick={() => {
+                setDraft(note);
+                setEditing(false);
+              }}
+            >
+              Cancel
+            </button>
+            <button className="primary" disabled={busy}>
+              {busy ? "Saving…" : "Save note"}
+            </button>
+          </div>
+        </form>
+      ) : (
+        <>
+          {note && <p>{note}</p>}
+          {save && (
+            <button
+              className="text-button"
+              aria-label={note ? "Edit meal note" : "Add meal note"}
+              disabled={busy}
+              onClick={() => {
+                setDraft(note);
+                setExpectedNote(note);
+                setEditing(true);
+              }}
+            >
+              {note ? (
+                <Pencil size={16} />
+              ) : (
+                <>
+                  <Plus size={16} /> Add a note
+                </>
+              )}
+            </button>
+          )}
+        </>
+      )}
     </div>
   );
 }
@@ -3060,12 +3457,12 @@ function IngredientMatch({
 function RecipeForm({
   fullScreen,
   recipe,
-  latestRecipe,
-  clearError,
+  meal,
   collections,
   groceries,
   aisles,
   saveGrocery,
+  recoverGrocery,
   warnings,
   busy,
   error,
@@ -3074,24 +3471,25 @@ function RecipeForm({
 }: {
   fullScreen: boolean;
   recipe: RecipeDraft;
-  latestRecipe?: Recipe;
-  clearError: () => void;
+  meal?: MealDraft;
   collections: readonly Collection[];
   groceries: readonly GroceryItem[];
   aisles: readonly string[];
   saveGrocery: (item: GroceryDraft) => Promise<boolean>;
+  recoverGrocery?: (id: string) => Promise<GroceryItem | undefined>;
   warnings?: readonly string[];
   busy: boolean;
   error: string;
-  save: (recipe: RecipeDraft, expectedIngredients: RecipeDraft["ingredients"]) => Promise<boolean>;
+  save: (recipe: RecipeDraft, meal?: MealDraft) => Promise<boolean>;
   remove?: () => Promise<boolean>;
 }) {
   const [draft, setDraft] = useState<RecipeDraft>({
     ...recipe,
-    category: collections.some((collection) => collection.name === recipe.category) ? recipe.category : "",
+    category:
+      meal || collections.some((collection) => collection.name === recipe.category) ? recipe.category : "",
   });
 
-  const [expectedIngredients, setExpectedIngredients] = useState(recipe.ingredients);
+  const [plannedMeal, setPlannedMeal] = useState(meal);
 
   const [photoError, setPhotoError] = useState("");
   const [confirmDelete, setConfirmDelete] = useState(false);
@@ -3164,11 +3562,11 @@ function RecipeForm({
         onSubmit={(event) => {
           event.preventDefault();
 
-          if (!syncing) save(draft, expectedIngredients);
+          if (!syncing) save(draft, plannedMeal);
         }}
       >
         <div className="recipe-fields">
-          <fieldset className="recipe-fields-content" disabled={syncing}>
+          <fieldset className="recipe-fields-content" disabled={busy || syncing}>
             {warnings && (
               <div className="field-hint" role="status">
                 Review the imported recipe, quantities, and collection before saving. Timing follows the
@@ -3180,9 +3578,9 @@ function RecipeForm({
             )}
             <div className="detail-title recipe-edit-title">
               <label className="recipe-title-field">
-                <span className="sr-only">Recipe name</span>
+                <span className="sr-only">{meal ? "Meal name" : "Recipe name"}</span>
                 <textarea
-                  aria-label="Recipe name"
+                  aria-label={meal ? "Meal name" : "Recipe name"}
                   rows={1}
                   required
                   maxLength={150}
@@ -3228,6 +3626,11 @@ function RecipeForm({
                     onChange={(event) => setDraft({ ...draft, category: event.target.value })}
                   >
                     <option value="">Uncollected</option>
+                    {meal &&
+                      draft.category &&
+                      !collections.some((collection) => collection.name === draft.category) && (
+                        <option value={draft.category}>{draft.category}</option>
+                      )}
                     {collections.map((collection) => (
                       <option key={collection.id} value={collection.name}>
                         {collection.name}
@@ -3236,10 +3639,67 @@ function RecipeForm({
                   </select>
                 </label>
               </div>
-              <p className="field-hint recipe-edit-hint">
-                Select any field to edit. Save recipe to keep your changes. Amounts are for one batch.
-              </p>
+              {!meal && (
+                <p className="field-hint recipe-edit-hint">
+                  Select any field to edit. Save recipe to keep your changes. Amounts are for one batch.
+                </p>
+              )}
             </div>
+            {plannedMeal && (
+              <div className="meal-edit-plan">
+                <div className="form-grid">
+                  <label>
+                    Date
+                    <input
+                      type="date"
+                      required
+                      value={plannedMeal.date}
+                      onChange={(event) => setPlannedMeal({ ...plannedMeal, date: event.target.value })}
+                    />
+                  </label>
+                  <label>
+                    Meal
+                    <select
+                      aria-label="Meal"
+                      value={plannedMeal.slot}
+                      onChange={(event) => {
+                        const slot = event.target.value;
+
+                        if (slot === "Breakfast" || slot === "Lunch" || slot === "Dinner")
+                          setPlannedMeal({ ...plannedMeal, slot });
+                      }}
+                    >
+                      <option>Breakfast</option>
+                      <option>Lunch</option>
+                      <option>Dinner</option>
+                    </select>
+                  </label>
+                  <label>
+                    Scale
+                    <input
+                      type="number"
+                      required
+                      min="0.01"
+                      max="100"
+                      step="any"
+                      value={plannedMeal.scale}
+                      onChange={(event) =>
+                        setPlannedMeal({ ...plannedMeal, scale: event.target.valueAsNumber })
+                      }
+                    />
+                  </label>
+                </div>
+                <label>
+                  Meal note
+                  <textarea
+                    aria-label="Meal note"
+                    maxLength={2000}
+                    value={plannedMeal.note}
+                    onChange={(event) => setPlannedMeal({ ...plannedMeal, note: event.target.value })}
+                  />
+                </label>
+              </div>
+            )}
             <div className="detail-columns recipe-edit-columns">
               <section className="editor-section">
                 <div className="ingredients-heading">
@@ -3282,6 +3742,7 @@ function RecipeForm({
                             ...item,
                             name: event.target.value,
                             originalText: undefined,
+                            groceryItemId: undefined,
                             grocerySuggestions: undefined,
                           })
                         }
@@ -3438,8 +3899,8 @@ function RecipeForm({
                     Photo URL <span className="muted">(or upload below)</span>
                     <input
                       placeholder="https://…"
-                      value={draft.photo.startsWith("data:") ? "Uploaded photo" : draft.photo}
-                      readOnly={draft.photo.startsWith("data:")}
+                      value={/^(data:|\/photos\/upload-)/.test(draft.photo) ? "Uploaded photo" : draft.photo}
+                      readOnly={/^(data:|\/photos\/upload-)/.test(draft.photo)}
                       onChange={(event) => setDraft({ ...draft, photo: event.target.value })}
                     />
                   </label>
@@ -3469,22 +3930,6 @@ function RecipeForm({
                 {error}
               </p>
             )}
-            {error &&
-              latestRecipe &&
-              JSON.stringify(latestRecipe.ingredients) !== JSON.stringify(expectedIngredients) && (
-                <button
-                  type="button"
-                  className="text-button"
-                  disabled={busy}
-                  onClick={() => {
-                    setDraft({ ...draft, ingredients: latestRecipe.ingredients });
-                    setExpectedIngredients(latestRecipe.ingredients);
-                    clearError();
-                  }}
-                >
-                  Use latest ingredients and keep other edits
-                </button>
-              )}
             {confirmDelete && (
               <div className="delete-confirm">
                 <p>
@@ -3506,13 +3951,13 @@ function RecipeForm({
               type="button"
               className="danger text-button"
               disabled={busy || syncing}
-              onClick={() => setConfirmDelete(true)}
+              onClick={() => (meal ? remove() : setConfirmDelete(true))}
             >
-              <Trash2 size={15} /> Delete recipe
+              <Trash2 size={15} /> {meal ? "Remove meal" : "Delete recipe"}
             </button>
           )}
           <button className="primary" disabled={busy || syncing}>
-            {busy ? "Saving…" : "Save recipe"}
+            {busy ? "Saving…" : meal ? "Save meal" : "Save recipe"}
             <Check size={16} />
           </button>
         </div>
@@ -3522,9 +3967,21 @@ function RecipeForm({
           title="Grocery item for ingredient"
           fullScreen={fullScreen}
           close={() => setGroceryEditor(null)}
+          recover={
+            recoverGrocery
+              ? async () => {
+                  try {
+                    const item = await recoverGrocery(groceryEditor.item.id);
+                    setGroceryEditor(item ? { ...groceryEditor, item } : null);
+                  } catch {
+                    // Keep both drafts open; the existing conflict still offers a safe retry.
+                  }
+                }
+              : undefined
+          }
         >
           <GroceryForm
-            key={groceryEditor.item.id}
+            key={`${groceryEditor.item.id}:${groceryEditor.item.revision ?? "new"}`}
             item={groceryEditor.item}
             aisles={aisles}
             busy={busy}

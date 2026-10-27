@@ -71,7 +71,7 @@ export const BrowserEventSchema = Schema.Struct({
       "decode_error",
     ]),
   ),
-  method: Schema.optional(Schema.Literals(["GET", "POST", "PUT", "DELETE"])),
+  method: Schema.optional(Schema.Literals(["GET", "POST", "PUT", "PATCH", "DELETE"])),
   status: Schema.optional(Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: 599 }))),
   durationMs: Schema.optional(duration),
   queueMs: Schema.optional(duration),

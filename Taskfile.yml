@@ -163,6 +163,9 @@ tasks:
   navigation:smoke:
     desc: Deep links, sharing and browser history E2E on desktop/iPhone/iPad (run ui:setup first; local disposable fixtures; optional -- local URL --plan-only)
     cmds: ["node tools/navigation-smoke.ts {{.CLI_ARGS}}"]
+  state:smoke:
+    desc: Two-device stale drafts, resume refresh, conflicts and deletion E2E (run ui:setup first; optional -- local URL)
+    cmds: ["node tools/state-smoke.ts {{.CLI_ARGS}}"]
   ui:demo:
     desc: Record a captioned mobile workflow demo with persisted-state assertions and cleanup (run ui:setup first; local sample household only)
     cmds: ["node tools/ui-demo.ts {{.CLI_ARGS}}"]

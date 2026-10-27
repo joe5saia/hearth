@@ -129,7 +129,7 @@ const worker = new Miniflare(convertV4MiniflareOptions({ workers: [{
 const server = createServer(async (request, response) => {
   try {
     const path = new URL(request.url ?? "/", "http://localhost").pathname;
-    if (path.startsWith("/api/")) {
+    if (path.startsWith("/api/") || path.startsWith("/photos/upload-")) {
       const chunks: Buffer[] = [];
       for await (const chunk of request) chunks.push(chunk);
       if (failNetwork && path === "/api/shopping-items") {
@@ -184,7 +184,7 @@ try {
   );
   for (const file of (await readdir("migrations")).filter(file => file.endsWith(".sql")).sort()) {
     const sql = await readFile(`migrations/${file}`, "utf8");
-    await db.batch(sql.split(/;\n(?=CREATE|INSERT|DROP|ALTER)|;\s*$/).filter(statement => statement.trim()).map(statement => db.prepare(statement)));
+    await db.batch(sql.replace(/^--.*$/gm, "").split(/;\n+(?=CREATE|INSERT|DROP|ALTER|UPDATE|DELETE)|;\s*$/).filter(statement => statement.trim()).map(statement => db.prepare(statement)));
   }
   await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
   const address = server.address();

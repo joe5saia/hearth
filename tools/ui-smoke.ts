@@ -56,10 +56,25 @@ async function household() {
   // Check rows have no display order; toggling a selected item may change D1 insertion order.
   return { ...data, checks: [...data.checks].sort((a, b) => a.key.localeCompare(b.key)) };
 }
+const withoutRevision = <T extends { readonly revision?: string }>({ revision: _revision, ...value }: T) => value;
+const householdContent = (state: typeof HouseholdSchema.Encoded) => ({ ...state,
+  recipes: state.recipes.map(withoutRevision), meals: state.meals.map(withoutRevision),
+  groceries: state.groceries.map(withoutRevision), collections: state.collections.map(withoutRevision),
+  extras: state.extras.map(withoutRevision), shoppingOrder: withoutRevision(state.shoppingOrder),
+});
 const original = await household();
-const originalText = JSON.stringify(original);
+const originalText = JSON.stringify(householdContent(original));
 
 async function api(path: string, method: string, body?: unknown) {
+  // Intentional fixture writes only; never replace guards on intercepted browser requests.
+  const resource = path.split("/")[0];
+  if ((method === "PUT" || method === "DELETE") && (resource === "groceries" || resource === "shopping-order")) {
+    const current = await household();
+    const id = method === "DELETE" ? decodeURIComponent(path.slice(resource.length + 1)) : resource === "groceries" ? Schema.decodeUnknownSync(Schema.Struct({ id: Schema.String }))(body).id : undefined;
+    const saved = resource === "shopping-order" ? current.shoppingOrder : current.groceries.find(item => item.id === id);
+    if (method === "DELETE" && !saved) return;
+    body = { ...(typeof body === "object" && body !== null ? body : {}), expectedRevision: saved?.revision ?? null };
+  }
   const response = await fetch(`${root}/api/${path}`, {
     method,
     headers: { "content-type": "application/json" },
@@ -218,19 +233,20 @@ async function commonNavigation(page: Page, touch: boolean, label: string, captu
     await cancelDialog(page);
   });
 
-  await check(label, page.context().browser()?.browserType().name() ?? "webkit", `${viewport.width}×${viewport.height}`, "planned recipe opens shared fullscreen details and preserves nested meal drafts", async () => {
+  await check(label, page.context().browser()?.browserType().name() ?? "webkit", `${viewport.width}×${viewport.height}`, "planned meal opens fullscreen details and cancels independent edits", async () => {
     const card = page.locator(".meal-card:not(.note-only-card)").first();
     const title = await card.locator("h3").textContent();
     await activate(card, touch);
-    const detail = page.getByRole("dialog", { name: "Recipe details" });
+    const detail = page.getByRole("dialog", { name: "Meal details" });
     await detail.waitFor();
     assert.equal(await detail.locator("h1").textContent(), title);
     const bounds = await detail.boundingBox();
     const detailViewport = page.viewportSize();
-    assert(bounds && detailViewport, "Recipe details require a visible box and configured viewport");
+    assert(bounds && detailViewport, "Meal details require a visible box and configured viewport");
     assert.equal(bounds.width, detailViewport.width);
     assert.equal(bounds.height, detailViewport.height);
-    assert(await detail.getByRole("button", { name: "Edit recipe", exact: true }).isVisible());
+    assert(await detail.getByRole("button", { name: "Edit meal", exact: true }).isVisible());
+    assert(await detail.getByRole("button", { name: "View recipe", exact: true }).isVisible());
     await auditLayout(page, touch);
     if (capture) await screenshot(page, `${label}-planned-recipe-detail`);
     await page.keyboard.press("Escape");
@@ -249,17 +265,18 @@ async function commonNavigation(page: Page, touch: boolean, label: string, captu
       assert.deepEqual(editorBounds, { x: 0, y: 0, ...viewport }, "mobile meal editor fills the viewport");
       const heading = await meal.locator(".modal-heading").boundingBox();
       const footer = await meal.locator(".form-actions").boundingBox();
-      const fields = meal.locator(".meal-form-fields");
+      const fields = meal.locator(".recipe-fields");
       const fieldBounds = await fields.boundingBox();
       assert(heading && footer && fieldBounds, "Meal editor header, footer and fields must have visible boxes");
       assert(fieldBounds.y >= heading.y + heading.height, "fields start below the fixed header");
       assert(fieldBounds.y + fieldBounds.height <= footer.y, "footer must not overlay scrolling fields");
-      await fields.evaluate((element: HTMLElement) => { element.scrollTop = element.scrollHeight; });
+      const lastStep = meal.getByLabel(/^Step \d+$/).last();
+      await lastStep.scrollIntoViewIfNeeded();
       assert.deepEqual(await meal.locator(".modal-heading").boundingBox(), heading);
       assert.deepEqual(await meal.locator(".form-actions").boundingBox(), footer);
-      const note = await meal.getByLabel(/note for this meal/i).boundingBox();
-      assert(note, "Meal note must have a visible box");
-      assert(note.y + note.height <= footer.y, "last field stays fully reachable above the footer");
+      const step = await lastStep.boundingBox();
+      assert(step, "Meal instructions must have a visible box");
+      assert(step.y < footer.y && step.y + step.height > heading.y + heading.height, "instructions stay reachable between header and footer");
       if (capture) await screenshot(page, `${label}-fullscreen-meal-scrolled`);
       await fields.evaluate((element: HTMLElement) => { element.scrollTop = 0; });
     } else {
@@ -268,24 +285,15 @@ async function commonNavigation(page: Page, touch: boolean, label: string, captu
     if (capture) await screenshot(page, `${label}-edit-meal`);
     await meal.getByLabel("Date", { exact: true }).fill("2030-01-06");
     await meal.getByRole("combobox", { name: /^Meal/ }).selectOption("Lunch");
-    await meal.getByLabel("Recipe scale", { exact: true }).selectOption("1.5");
-    await meal.getByLabel(/note for this meal/i).fill("UNSAVED planner recipe draft");
-    for (const exit of ["Back to meal", "Close dialog", "Escape"]) {
-      await activate(meal.locator(".selected-recipe"), touch);
-      await detail.waitFor();
-      assert.equal(await detail.getByLabel("Preview recipe scale").inputValue(), "1.5");
-      await detail.getByLabel("Preview recipe scale").selectOption("3");
-      if (exit === "Escape") await page.keyboard.press("Escape");
-      else await activate(detail.getByRole("button", { name: exit, exact: true }), touch);
-      await meal.waitFor();
-      assert.equal(await meal.getByLabel("Date", { exact: true }).inputValue(), "2030-01-06");
-      assert.equal(await meal.getByRole("combobox", { name: /^Meal/ }).inputValue(), "Lunch");
-      assert.equal(await meal.getByLabel("Recipe scale", { exact: true }).inputValue(), "1.5");
-      assert.equal(await meal.getByLabel(/note for this meal/i).inputValue(), "UNSAVED planner recipe draft");
-    }
+    await meal.getByLabel("Scale", { exact: true }).fill("1.5");
+    await meal.getByLabel("Meal note", { exact: true }).fill("UNSAVED planner recipe draft");
+    await meal.getByLabel("Meal name", { exact: true }).fill("UNSAVED meal title");
     await cancelDialog(page);
+    assert.equal(await page.getByRole("dialog").count(), 0, "closing the card's editor returns to the plan");
+    await activate(card, touch);
     await detail.waitFor();
-    assert.equal(await detail.locator("h1").textContent(), title, "closing a nested meal editor returns to its recipe history entry");
+    assert.equal(await detail.locator("h1").textContent(), title, "canceling leaves the saved meal unchanged");
+    assert(!await detail.getByText("UNSAVED planner recipe draft", { exact: true }).count());
     await cancelDialog(page);
   });
 
@@ -754,7 +762,7 @@ async function shoppingAndTimers(page: Page, touch: boolean, label: string, capt
         assert.equal(await page.evaluate(() => window.aislePointer), "touch");
         await cdp.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
         await page.locator(".shopping-save-status").waitFor({ state: "detached" });
-        assert.deepEqual((await household()).shoppingOrder, { ...moved.shoppingOrder, aisles: [moved.shoppingOrder.aisles[0], moved.shoppingOrder.aisles[2], moved.shoppingOrder.aisles[1], ...moved.shoppingOrder.aisles.slice(3)] });
+        assert.deepEqual(withoutRevision((await household()).shoppingOrder), { ...withoutRevision(moved.shoppingOrder), aisles: [moved.shoppingOrder.aisles[0], moved.shoppingOrder.aisles[2], moved.shoppingOrder.aisles[1], ...moved.shoppingOrder.aisles.slice(3)] });
       } finally {
         await cdp.send("Emulation.setTouchEmulationEnabled", { enabled: false });
         await cdp.detach();
@@ -778,8 +786,8 @@ async function shoppingAndTimers(page: Page, touch: boolean, label: string, capt
     await activate(page.getByRole("button", { name: "Save", exact: true }), touch);
     await page.getByLabel("Aisle name", { exact: true }).waitFor({ state: "detached" });
     const renamed = await household();
-    assert.deepEqual(renamed.groceries, before.groceries.map((item) => item.aisle === oldName ? { ...item, aisle: newName } : item));
-    assert.deepEqual(renamed.shoppingOrder, { ...moved.shoppingOrder, aisles: [newName, ...moved.shoppingOrder.aisles.slice(1)] });
+    assert.deepEqual(renamed.groceries.map(withoutRevision), before.groceries.map(withoutRevision).map((item) => item.aisle === oldName ? { ...item, aisle: newName } : item));
+    assert.deepEqual(withoutRevision(renamed.shoppingOrder), { ...withoutRevision(moved.shoppingOrder), aisles: [newName, ...moved.shoppingOrder.aisles.slice(1)] });
     assert.deepEqual(renamed.checks, before.checks);
     await page.reload(); await settle(page);
     await activate(page.getByRole("button", { name: "List Builder", exact: true }), touch);
@@ -950,7 +958,7 @@ try {
         await api("checks", "PUT", { key, checked: wanted?.checked ?? fallback, packages: wanted?.packages ?? 1 });
     }
     const restored = await household();
-    assert.equal(JSON.stringify(restored), originalText, "household differs from exact starting snapshot after cleanup");
+    assert.equal(JSON.stringify(householdContent(restored)), originalText, "household domain content differs from exact starting snapshot after cleanup");
     record("cleanup", "worker", "n/a", "household exactly restored");
   } catch (error) {
     record("cleanup", "worker", "n/a", "household exactly restored", error);

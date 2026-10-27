@@ -13,7 +13,17 @@ assert(["before", "after"].includes(label));
 const session = `deletion-${process.pid}`;
 const browser = (...args: string[]) => execFileSync("agent-browser", ["--session", session, ...args], { encoding: "utf8", timeout: 90_000 }).trim();
 const request = async (path: string, method = "GET", body?: RecipeDraft | MealDraft) => {
-  const response = await fetch(`${url}/api/${path}`, { method, headers: { "Content-Type": "application/json", Connection: "close" }, body: body ? JSON.stringify(body) : undefined });
+  // Fixture resets intentionally use current tokens; browser deletion remains under test.
+  let payload = body ? JSON.stringify(body) : undefined;
+  const resource = path.split("/")[0];
+  if ((method === "PUT" || method === "DELETE") && (resource === "recipes" || resource === "meals")) {
+    const current = await household();
+    const id = method === "DELETE" ? decodeURIComponent(path.slice(resource.length + 1)) : body?.id;
+    const saved = current[resource].find(item => item.id === id);
+    if (method === "DELETE" && !saved) return new Response(null, { status: 200 });
+    payload = JSON.stringify({ ...body, expectedRevision: saved?.revision ?? null });
+  }
+  const response = await fetch(`${url}/api/${path}`, { method, headers: { "Content-Type": "application/json", Connection: "close" }, body: payload });
   assert(response.ok, `${method} ${path}: ${response.status}`);
   return response;
 };

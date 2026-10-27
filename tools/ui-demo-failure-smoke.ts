@@ -15,6 +15,12 @@ const household = async () => {
   assert(response.ok);
   return Schema.decodeUnknownSync(HouseholdSchema, { onExcessProperty: "error" })(await response.json());
 };
+const withoutRevision = <T extends { readonly revision?: string }>({ revision: _revision, ...value }: T) => value;
+const householdContent = (state: typeof HouseholdSchema.Encoded) => ({ ...state,
+  recipes: state.recipes.map(withoutRevision), meals: state.meals.map(withoutRevision),
+  groceries: state.groceries.map(withoutRevision), collections: state.collections.map(withoutRevision),
+  extras: state.extras.map(withoutRevision), shoppingOrder: withoutRevision(state.shoppingOrder),
+});
 const original = await household();
 const failures: string[] = [];
 
@@ -116,7 +122,7 @@ try {
         ),
         "Demo must fail for the injected fault, not an unrelated error",
       );
-      assert.deepEqual(current, original, "Demo failed to restore its exact original household");
+      assert.deepEqual(householdContent(current), householdContent(original), "Demo failed to restore its exact original household domain content");
       assert(
         !(await readdir(run)).some((name) => name.startsWith("hearth-demo-")),
         "Recording scratch directory leaked",
@@ -129,6 +135,14 @@ try {
     } finally {
       // A failing implementation must not leave the reproduction fixtures behind.
       const api = async (path: string, method: string, body?: unknown) => {
+        const resource = path.split("/")[0];
+        if (method === "DELETE" && (resource === "extras" || resource === "meals" || resource === "recipes" || resource === "groceries" || resource === "collections")) {
+          const saved = (await household())[resource].find(item => item.id === decodeURIComponent(path.slice(resource.length + 1)));
+          if (!saved) return;
+          body = { expectedRevision: saved.revision };
+        } else if (path === "shopping-order") {
+          body = { ...original.shoppingOrder, expectedRevision: (await household()).shoppingOrder.revision };
+        }
         const response = await fetch(`${root}/api/${path}`, {
           method,
           headers: { "content-type": "application/json" },
@@ -155,7 +169,7 @@ try {
         if ((wanted?.checked ?? fallback) !== (now?.checked ?? fallback) || (wanted?.packages ?? 1) !== (now?.packages ?? 1))
           await api("checks", "PUT", { key, checked: wanted?.checked ?? fallback, packages: wanted?.packages ?? 1 });
       }
-      assert.deepEqual(await household(), original, "Reproduction fallback cleanup failed");
+      assert.deepEqual(householdContent(await household()), householdContent(original), "Reproduction fallback cleanup failed");
     }
   }
 } finally {

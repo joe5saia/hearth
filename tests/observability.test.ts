@@ -104,7 +104,8 @@ beforeAll(async () => {
     const sql = await readFile(`migrations/${file}`, "utf8");
     await db.batch(
       sql
-        .split(/;\n(?=CREATE|INSERT|DROP|ALTER)|;\s*$/)
+        .replace(/^--.*$/gm, "")
+        .split(/;\s*\n(?=CREATE|INSERT|DROP|ALTER|UPDATE)|;\s*$/)
         .filter((statement) => statement.trim())
         .map((statement) => db.prepare(statement)),
     );
@@ -126,6 +127,7 @@ it("exports correlated request, D1 and decode spans without household content", 
     },
     body: JSON.stringify({
       id: "private-recipe",
+      expectedRevision: null,
       title: secret,
       description: secret,
       servings: 2,
@@ -221,7 +223,12 @@ it("keeps D1 persistence working when ingestion fails and when credentials are a
   const response = await worker.dispatchFetch("https://hearth.test/api/extras", {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ id: "outage-extra", name: "Private outage item", checked: 0 }),
+    body: JSON.stringify({
+      id: "outage-extra",
+      name: "Private outage item",
+      checked: 0,
+      expectedRevision: null,
+    }),
   });
 
   expect(response.status).toBe(200);
@@ -366,7 +373,7 @@ it("records D1 failure duration without SQL or stored private data", async () =>
   const failed = await worker.dispatchFetch("https://hearth.test/api/extras", {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ id: "failure", name: "Private content", checked: 0 }),
+    body: JSON.stringify({ id: "failure", name: "Private content", checked: 0, expectedRevision: null }),
   });
 
   expect(failed.status).toBe(500);

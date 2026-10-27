@@ -8,10 +8,12 @@ import {
   weekStart,
   type GroceryId,
   type Household,
+  type Ingredient,
 } from "./domain";
 import { ingredientTotals } from "./ingredient-totals";
+import { matchGrocery } from "./groceries";
 
-/** Groups recipes by their latest planned Saturday–Friday week before reviewing linked groceries. */
+/** Reviews each planned meal's scaled ingredients, with unplanned source recipes available separately. */
 export function ShoppingRecipeForm({
   recipes,
   meals,
@@ -38,29 +40,41 @@ export function ShoppingRecipeForm({
     stepHeading.current?.focus();
   }, [reviewing]);
 
-  const plannedDates = new Map<string, string>();
+  const plannedIds = new Set(meals.filter((meal) => meal.recipe).map((meal) => meal.recipeId));
 
-  for (const meal of meals) {
-    if (meal.recipeId && meal.date > (plannedDates.get(meal.recipeId) ?? "")) {
-      plannedDates.set(meal.recipeId, meal.date);
-    }
-  }
+  const options = [
+    ...meals.flatMap((meal) =>
+      meal.recipe
+        ? [
+            {
+              key: JSON.stringify(["meal", meal.id]),
+              meal,
+              recipe: meal.recipe,
+              date: meal.date,
+              slot: meal.slot,
+              scale: meal.scale,
+            },
+          ]
+        : [],
+    ),
+    ...recipes
+      .filter((recipe) => !plannedIds.has(recipe.id))
+      .map((recipe) => ({
+        key: JSON.stringify(["recipe", recipe.id]),
+        meal: undefined,
+        recipe,
+        date: "",
+        slot: "",
+        scale: 1,
+      })),
+  ].sort((a, b) => b.date.localeCompare(a.date));
 
-  const orderedRecipes = [...recipes].sort((a, b) =>
-    (plannedDates.get(b.id) ?? "").localeCompare(plannedDates.get(a.id) ?? ""),
-  );
-
-  const ingredients = recipes
-    .filter((recipe) => selected.includes(recipe.id))
-    .flatMap((recipe) => recipe.ingredients);
+  const chosen = options.filter((option) => selected.includes(option.key));
+  const ingredients = chosen.flatMap(({ recipe }) => recipe.ingredients);
 
   const linked = ingredientTotals({
-    recipes: recipes
-      .filter((recipe) => selected.includes(recipe.id))
-      .map((recipe) => ({
-        ...recipe,
-        ingredients: recipe.ingredients.filter((ingredient) => ingredient.groceryItemId),
-      })),
+    recipes: chosen.flatMap(({ recipe, meal }) => (meal ? [] : [recipe])),
+    meals: chosen.flatMap(({ meal }) => (meal ? [meal] : [])),
     groceries,
   }).flatMap((row) => (row.grocery ? [{ ...row, item: row.grocery }] : []));
 
@@ -79,7 +93,19 @@ export function ShoppingRecipeForm({
   const invalidCounts = toAdd.filter(({ packages }) => !Schema.is(PackageCountSchema)(packages));
   const validCounts = invalidCounts.length === 0;
 
-  const unlinked = ingredients.filter((ingredient) => !ingredient.groceryItemId).length;
+  const isLinked = (ingredient: Ingredient) =>
+    ingredient.groceryItemId === undefined
+      ? !!matchGrocery(ingredient.name, groceries)
+      : groceries.some((grocery) => grocery.id === ingredient.groceryItemId);
+
+  const unlinked = ingredients.filter((ingredient) => !isLinked(ingredient)).length;
+  const needsLinking = chosen.filter(({ recipe }) => recipe.ingredients.some((item) => !isLinked(item)));
+
+  const linkingHelp = needsLinking.some(({ meal }) => meal)
+    ? needsLinking.some(({ meal }) => !meal)
+      ? "Use Edit meal for planned meals and Edit recipe for unplanned recipes to link these ingredients."
+      : "Open Edit meal to link these ingredients."
+    : "Open Edit recipe to link these ingredients.";
 
   const blockedReason = busy
     ? "Adding items. Please wait."
@@ -94,19 +120,18 @@ export function ShoppingRecipeForm({
         : !missing.length
           ? linked.length
             ? "All linked items are already on your list."
-            : "These recipes have no linked grocery items. Link ingredients in the recipe editor first."
+            : `No linked grocery items. ${linkingHelp}`
           : "";
 
-  const visible = orderedRecipes.filter((recipe) => matchesRecipeSearch(recipe, search));
+  const visible = options.filter(({ recipe }) => matchesRecipeSearch(recipe, search));
   const weeks = new Map<string, typeof visible>();
 
-  for (const recipe of visible) {
-    const planned = plannedDates.get(recipe.id);
-    const start = planned ? weekStart(planned) : "";
+  for (const option of visible) {
+    const start = option.date ? weekStart(option.date) : "";
     const group = weeks.get(start);
 
-    if (group) group.push(recipe);
-    else weeks.set(start, [recipe]);
+    if (group) group.push(option);
+    else weeks.set(start, [option]);
   }
 
   const weekDate = new Intl.DateTimeFormat("en-US", {
@@ -150,7 +175,7 @@ export function ShoppingRecipeForm({
               if (reviewing) {
                 setExcluded((current) => current.filter((id) => !missing.some((row) => row.item.id === id)));
               } else {
-                setSelected(recipes.map((recipe) => recipe.id));
+                setSelected(options.map((option) => option.key));
               }
             }}
           >
@@ -252,25 +277,28 @@ export function ShoppingRecipeForm({
                       )}
                     </span>
                   </h4>
-                  {weekRecipes.map((recipe) => (
-                    <label className="shopping-recipe-option" key={recipe.id}>
+                  {weekRecipes.map(({ key, recipe, date, slot, scale }) => (
+                    <label className="shopping-recipe-option" key={key}>
                       <input
                         type="checkbox"
-                        checked={selected.includes(recipe.id)}
+                        checked={selected.includes(key)}
                         disabled={busy}
                         onChange={(event) =>
                           setSelected((current) =>
-                            event.target.checked
-                              ? [...current, recipe.id]
-                              : current.filter((id) => id !== recipe.id),
+                            event.target.checked ? [...current, key] : current.filter((id) => id !== key),
                           )
                         }
                       />
                       <span>
                         <strong>{recipe.title}</strong>
+                        {date && (
+                          <span className="muted small">
+                            {date} · {slot} · {scale}×
+                          </span>
+                        )}
                         <span className="muted small">
-                          {recipe.ingredients.filter((ingredient) => ingredient.groceryItemId).length} of{" "}
-                          {recipe.ingredients.length} ingredients linked
+                          {recipe.ingredients.filter(isLinked).length} of {recipe.ingredients.length}{" "}
+                          ingredients linked
                         </span>
                       </span>
                     </label>
@@ -297,15 +325,13 @@ export function ShoppingRecipeForm({
           )}
           {unlinked > 0 && (
             <p className="muted">
-              {unlinked} unlinked {unlinked === 1 ? "ingredient will" : "ingredients will"} be skipped. Link
-              them in the recipe editor to include them.
+              {unlinked} unlinked {unlinked === 1 ? "ingredient will" : "ingredients will"} be skipped.{" "}
+              {linkingHelp}
             </p>
           )}
           {selected.length > 0 && !missing.length && (
             <p className="muted">
-              {linked.length
-                ? "All linked items are already on your list."
-                : "These recipes have no linked grocery items."}
+              {linked.length ? "All linked items are already on your list." : "No linked grocery items."}
             </p>
           )}
         </div>

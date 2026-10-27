@@ -6,7 +6,14 @@ import { gzipSync } from "node:zlib";
 import { Miniflare, convertV4MiniflareOptions } from "miniflare";
 import { rolldown } from "rolldown";
 import { Schema } from "effect";
-import { shoppingList, displayAmount, RecipeSchema, MealSchema, GroceryItemSchema } from "../src/domain.ts";
+import {
+  shoppingList,
+  displayAmount,
+  RecipeSchema,
+  MealSchema,
+  GroceryItemSchema,
+  HouseholdSchema,
+} from "../src/domain.ts";
 
 // Fixed data and serial warm runs: setup, bundling, and seeding are not timed.
 const measurements: { name: string; medianMs: number; p95Ms: number; samples: number }[] = [];
@@ -130,7 +137,8 @@ for (const [name, recipeCount, mealCount, photoBytes] of [
       const sql = await readFile(`migrations/${file}`, "utf8");
       await db.batch(
         sql
-          .split(/;\n(?=CREATE|INSERT|DROP|ALTER)|;\s*$/)
+          .replace(/^--.*$/gm, "")
+          .split(/;\s*\n(?=CREATE|INSERT|DROP|ALTER|UPDATE)|;\s*$/)
           .filter((statement) => statement.trim())
           .map((statement) => db.prepare(statement)),
       );
@@ -166,20 +174,50 @@ for (const [name, recipeCount, mealCount, photoBytes] of [
     const response = await worker.dispatchFetch("http://localhost/api/household");
     assert.equal(response.status, 200);
     const body = await response.text();
-    assert.deepEqual(JSON.parse(body), {
-      collections: [
-        { id: "comfort", name: "Comfort food" },
-        { id: "special", name: "Something special" },
-        { id: "vegetarian", name: "Vegetarian" },
-        { id: "weeknight", name: "Weeknight favorites" },
-      ],
-      recipes,
-      meals: meals.toSorted((a, b) => a.date.localeCompare(b.date) || a.id.localeCompare(b.id)),
-      extras: [],
-      checks: [],
-      groceries: [],
-      shoppingOrder: { aisles: [], items: [] },
-    });
+    const household = Schema.decodeUnknownSync(HouseholdSchema)(JSON.parse(body));
+
+    const assets = new Map(
+      Schema.decodeUnknownSync(Schema.Array(Schema.Struct({ path: Schema.String, data: Schema.String })))(
+        (await db.prepare("SELECT path,data FROM photos").all()).results,
+      ).map((photo) => [photo.path, photo.data]),
+    );
+
+    assert.equal(assets.size, photoBytes ? recipeCount : 0);
+    assert.deepEqual(
+      {
+        ...household,
+        collections: household.collections.map(({ revision: _revision, ...collection }) => collection),
+        recipes: household.recipes.map(({ revision: _revision, ...recipe }) => ({
+          ...recipe,
+          photo: assets.get(recipe.photo) ?? recipe.photo,
+        })),
+        meals: household.meals.map(({ revision: _revision, ...meal }) => ({
+          ...meal,
+          recipe: meal.recipe && {
+            ...meal.recipe,
+            photo: assets.get(meal.recipe.photo) ?? meal.recipe.photo,
+          },
+        })),
+        shoppingOrder: { aisles: household.shoppingOrder.aisles, items: household.shoppingOrder.items },
+      },
+      {
+        collections: [
+          { id: "comfort", name: "Comfort food" },
+          { id: "special", name: "Something special" },
+          { id: "vegetarian", name: "Vegetarian" },
+          { id: "weeknight", name: "Weeknight favorites" },
+        ],
+        recipes,
+        recipesAdded: recipes.map((recipe) => recipe.id),
+        meals: meals
+          .toSorted((a, b) => a.date.localeCompare(b.date) || a.id.localeCompare(b.id))
+          .map((meal) => ({ ...meal, recipe: recipes.find((recipe) => recipe.id === meal.recipeId) })),
+        extras: [],
+        checks: [],
+        groceries: [],
+        shoppingOrder: { aisles: [], items: [] },
+      },
+    );
     payloads.push({ name, bytes: Buffer.byteLength(body), gzipBytes: gzipSync(body).length });
     await measure(`${name}/household-api`, async () => {
       const response = await worker.dispatchFetch("http://localhost/api/household");

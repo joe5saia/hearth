@@ -147,7 +147,7 @@ const catalog = [
   product("powder", "Onion powder"),
 ];
 
-function send(
+async function send(
   path: string,
   method = "GET",
   body?: typeof Schema.Json.Type,
@@ -159,6 +159,25 @@ function send(
   if (background) headers.set("X-Test-Background", "true");
 
   if (cancel) headers.set("X-Test-Cancel", "true");
+
+  // Fresh-write helper for ordinary matching scenarios; explicit regression guards pass through untouched.
+  const table = path.split("/")[0];
+
+  if ((method === "PUT" || method === "DELETE") && ["recipes", "groceries"].includes(table)) {
+    const input = Schema.decodeUnknownSync(Schema.Record(Schema.String, Schema.Json))(body ?? {});
+
+    if (!("expectedRevision" in input)) {
+      const db = await worker.getD1Database("DB");
+      const id = method === "DELETE" ? decodeURIComponent(path.slice(table.length + 1)) : input.id;
+      const row = await db.prepare(`SELECT revision FROM ${table} WHERE id=?`).bind(id).first();
+
+      const revision = row
+        ? Schema.decodeUnknownSync(Schema.Struct({ revision: Schema.String }))(row).revision
+        : null;
+
+      body = { ...input, expectedRevision: revision };
+    }
+  }
 
   return worker.dispatchFetch(`http://localhost/api/${path}`, {
     method,
@@ -382,7 +401,8 @@ beforeAll(async () => {
     const sql = await readFile(`migrations/${file}`, "utf8");
     await db.batch(
       sql
-        .split(/;\n(?=CREATE|INSERT|DROP|ALTER)|;\s*$/)
+        .replace(/^--.*$/gm, "")
+        .split(/;\s*\n(?=CREATE|INSERT|DROP|ALTER|UPDATE)|;\s*$/)
         .flatMap((value) => (value.trim() ? [db.prepare(value)] : [])),
     );
   }
@@ -405,8 +425,10 @@ beforeEach(async () => {
     db.prepare("DELETE FROM ingredient_match_cache"),
   ]);
 
-  for (const item of catalog) expect((await send("groceries", "PUT", item)).status).toBe(200);
-  expect((await send("recipes", "PUT", recipe)).status).toBe(200);
+  // These tables were just cleared: create explicitly without a redundant version read per fixture.
+  for (const item of catalog)
+    expect((await send("groceries", "PUT", { ...item, expectedRevision: null })).status).toBe(200);
+  expect((await send("recipes", "PUT", { ...recipe, expectedRevision: null })).status).toBe(200);
 });
 
 afterAll(async () => {
@@ -430,7 +452,15 @@ it.each([
     ? send("recipes", "PUT", recipe, true)
     : mcpRequest(
         "update_recipes",
-        { updates: [{ id: recipe.id, changes: { title: recipe.title } }] },
+        {
+          updates: [
+            {
+              id: recipe.id,
+              expectedRevision: (await state()).recipes[0].revision ?? "missing",
+              changes: { title: recipe.title },
+            },
+          ],
+        },
         false,
         true,
       ));
@@ -511,12 +541,16 @@ it.each([
 
   const saved = await state();
   // An older unmatched recipe provides history but must not itself be matched.
-  expect(saved.recipes.find((entry) => entry.id === recipe.id)).toEqual(recipe);
+  expect(saved.recipes.find((entry) => entry.id === recipe.id)).toEqual({
+    ...recipe,
+    revision: expect.any(String),
+  });
 
   for (const original of created) {
     const actual = saved.recipes.find((entry) => entry.id === original.id);
     expect(actual).toEqual({
       ...original,
+      revision: expect.any(String),
       ingredients: [
         outcome === "history"
           ? {
@@ -551,7 +585,16 @@ it.each([
 
 it("rejects stale browser ingredient replacements after matching, then accepts a refreshed edit", async () => {
   const input = { ...recipe, id: "stale-edit" };
-  expect((await send("recipes", "PUT", { ...input, expectedIngredients: null }, true)).status).toBe(200);
+  let release = () => {};
+
+  modelGate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  expect((await send("recipes", "PUT", { ...input, expectedRevision: null }, true)).status).toBe(200);
+  const original = (await state()).recipes.find((entry) => entry.id === input.id);
+  release();
+
+  if (!original?.revision) throw new Error("Missing original revision");
   await expect
     .poll(
       async () =>
@@ -560,34 +603,32 @@ it("rejects stale browser ingredient replacements after matching, then accepts a
     .toBe("white");
   const current = (await state()).recipes.find((entry) => entry.id === input.id);
 
-  if (!current) throw new Error("Background matching recipe is missing from household state.");
+  if (!current?.revision) throw new Error("Background matching recipe is missing from household state.");
+  expect(current.revision).not.toBe(original.revision);
   expect(
-    (await send("recipes", "PUT", { ...input, minutes: 45, expectedIngredients: input.ingredients }, true))
+    (await send("recipes", "PUT", { ...input, minutes: 45, expectedRevision: original.revision }, true))
       .status,
   ).toBe(409);
   expect((await state()).recipes.find((entry) => entry.id === input.id)).toEqual(current);
   expect(
-    (
-      await send(
-        "recipes",
-        "PUT",
-        { ...current, minutes: 45, expectedIngredients: current.ingredients },
-        true,
-      )
-    ).status,
+    (await send("recipes", "PUT", { ...current, minutes: 45, expectedRevision: current.revision }, true))
+      .status,
   ).toBe(200);
-  expect((await state()).recipes.find((entry) => entry.id === input.id)).toEqual({ ...current, minutes: 45 });
+  const edited = (await state()).recipes.find((entry) => entry.id === input.id);
+  expect(edited).toEqual({ ...current, minutes: 45, revision: expect.any(String) });
+
+  if (!edited?.revision) throw new Error("Missing edited revision");
   // An explicit Auto-match edit remains possible; omission of the new link is not treated as preservation.
-  expect(
-    (await send("recipes", "PUT", { ...input, expectedIngredients: current.ingredients }, true)).status,
-  ).toBe(200);
+  expect((await send("recipes", "PUT", { ...input, expectedRevision: edited.revision }, true)).status).toBe(
+    200,
+  );
   expect((await state()).recipes.find((entry) => entry.id === input.id)?.ingredients).toEqual(
     input.ingredients,
   );
   expect((await send(`recipes/${input.id}`, "DELETE")).status).toBe(200);
-  expect(
-    (await send("recipes", "PUT", { ...input, expectedIngredients: input.ingredients }, true)).status,
-  ).toBe(409);
+  expect((await send("recipes", "PUT", { ...input, expectedRevision: original.revision }, true)).status).toBe(
+    409,
+  );
   expect((await state()).recipes.some((entry) => entry.id === input.id)).toBe(false);
 });
 
@@ -600,10 +641,12 @@ it("starts only one background run for overlapping saves of the same new ID", as
 
   try {
     const responses = await Promise.all(
-      Array.from({ length: 8 }, () => send("recipes", "PUT", { ...recipe, id: "overlap" }, true)),
+      Array.from({ length: 8 }, () =>
+        send("recipes", "PUT", { ...recipe, id: "overlap", expectedRevision: null }, true),
+      ),
     );
 
-    expect(responses.map((response) => response.status)).toEqual(Array(8).fill(200));
+    expect(responses.map((response) => response.status).sort()).toEqual([200, ...Array(7).fill(409)]);
     expect(logEvents().filter((event) => event.event === "ingredient_matching_started")).toHaveLength(1);
   } finally {
     release();
@@ -699,42 +742,56 @@ it.each(["success", "history", "outage"])(
   },
 );
 
-it.each(["exact", "ai"])(
-  "keeps near-limit recipes readable after %s linking grows the stored value",
-  async (kind) => {
-    const input = {
-      ...recipe,
-      ingredients: [
-        { ...recipe.ingredients[0], name: kind === "exact" ? "White onion" : recipe.ingredients[0].name },
-      ],
-      photo: "data:image/png;base64,",
-    };
+it.each(["exact", "ai"])("keeps near-limit recipe inputs readable after %s linking", async (kind) => {
+  const input = {
+    ...recipe,
+    ingredients: [
+      { ...recipe.ingredients[0], name: kind === "exact" ? "White onion" : recipe.ingredients[0].name },
+    ],
+    instructions:
+      kind === "exact"
+        ? [...Array.from({ length: 99 }, () => "🥘".repeat(4770)), "."]
+        : [...recipe.instructions],
+    photo: kind === "ai" ? "data:image/png;base64," : recipe.photo,
+  };
 
-    input.photo += "A".repeat(1_899_999 - new TextEncoder().encode(JSON.stringify(input)).length);
-    expect(new TextEncoder().encode(JSON.stringify(input)).length).toBe(1_899_999);
-    expect((await send("recipes", "PUT", input)).status).toBe(200);
+  // Exact linking can grow large structured content. AI context is intentionally bounded;
+  // its near-limit input uses an upload, which is now extracted before inference.
+  const padding = 1_899_999 - new TextEncoder().encode(JSON.stringify(input)).length;
 
-    if (kind === "ai") expect(await match()).toMatchObject({ matched: 1 });
+  if (kind === "exact")
+    input.instructions[99] += "🥘".repeat(Math.floor(padding / 4)) + "a".repeat(padding % 4);
+  else input.photo += "A".repeat(Math.floor(padding / 4) * 4);
+  expect(new TextEncoder().encode(JSON.stringify(input)).length).toBeGreaterThan(1_899_995);
+  expect((await send("recipes", "PUT", input)).status).toBe(200);
 
-    const response = await send("household");
-    expect(response.status, await response.clone().text()).toBe(200);
-    const saved = Schema.decodeUnknownSync(HouseholdSchema)(await response.json()).recipes[0];
-    expect(saved.ingredients[0].groceryItemId).toBe("white");
+  if (kind === "ai") expect(await match()).toMatchObject({ matched: 1 });
+
+  const response = await send("household");
+  expect(response.status, await response.clone().text()).toBe(200);
+  const saved = Schema.decodeUnknownSync(HouseholdSchema)(await response.json()).recipes[0];
+  expect(saved.ingredients[0].groceryItemId).toBe("white");
+
+  if (kind === "exact")
     expect(new TextEncoder().encode(JSON.stringify(saved)).length).toBeGreaterThan(1_900_000);
-    const mcpResponse = await mcpRequest("get_recipes", { ids: [recipe.id] });
-    expect(mcpResponse.status).toBe(200);
+  else {
+    expect(saved.photo).toMatch(/^\/photos\/upload-[a-p]{64}\.jpg$/);
+    expect(new TextEncoder().encode(JSON.stringify(saved)).length).toBeLessThan(1000);
+  }
 
-    const mcpResult = Schema.decodeUnknownSync(
-      Schema.Struct({
-        result: Schema.Struct({ structuredContent: Schema.Struct({ recipes: Schema.Array(RecipeSchema) }) }),
-      }),
-    )(await mcpResponse.json());
+  const mcpResponse = await mcpRequest("get_recipes", { ids: [recipe.id] });
+  expect(mcpResponse.status).toBe(200);
 
-    expect(mcpResult.result.structuredContent.recipes).toEqual([saved]);
-    // Oversized input still fails; separating reads must not remove the write policy.
-    expect((await send("recipes", "PUT", saved)).status).toBe(400);
-  },
-);
+  const mcpResult = Schema.decodeUnknownSync(
+    Schema.Struct({
+      result: Schema.Struct({ structuredContent: Schema.Struct({ recipes: Schema.Array(RecipeSchema) }) }),
+    }),
+  )(await mcpResponse.json());
+
+  expect(mcpResult.result.structuredContent.recipes).toEqual([saved]);
+  // Oversized structured input still fails; compact uploaded-photo references remain editable.
+  expect((await send("recipes", "PUT", saved)).status).toBe(kind === "exact" ? 400 : 200);
+});
 
 it.each(["http", "mcp"])(
   "propagates %s cancellation to inference without subsequent matching writes",

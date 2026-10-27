@@ -23,6 +23,13 @@ const root = new URL(process.argv[2] ?? "http://localhost:5173").origin;
 assert(["localhost", "127.0.0.1"].includes(new URL(root).hostname), "Disposable local data only");
 const artifacts = resolve(".amp/in/artifacts");
 await mkdir(artifacts, { recursive: true });
+const withoutRevision = <T extends { readonly revision?: string }>({ revision: _revision, ...value }: T) => value;
+// Fixture restoration rotates tokens; compare every household domain field separately.
+const householdContent = (state: typeof HouseholdSchema.Encoded) => ({ ...state,
+  recipes: state.recipes.map(withoutRevision), meals: state.meals.map(withoutRevision),
+  groceries: state.groceries.map(withoutRevision), collections: state.collections.map(withoutRevision),
+  extras: state.extras.map(withoutRevision), shoppingOrder: withoutRevision(state.shoppingOrder),
+});
 const original = Schema.decodeUnknownSync(HouseholdSchema)(await (await fetch(`${root}/api/household`)).json());
 const id = () => crypto.randomUUID();
 const collection = { id: id(), name: "Navigation smoke collection" };
@@ -37,6 +44,15 @@ const edgeMeals = [
   { ...noteMeal, id: id(), date: "2026-10-23", note: "Navigation earlier-week meal" },
 ];
 async function api(path: string, method: string, body?: unknown) {
+  // These are intentional fixture writes, not the browser's stale-write requests.
+  const resource = path.split("/")[0];
+  if ((method === "PUT" || method === "DELETE") && (resource === "recipes" || resource === "meals" || resource === "groceries" || resource === "collections" || resource === "extras")) {
+    const current = Schema.decodeUnknownSync(HouseholdSchema)(await (await fetch(`${root}/api/household`)).json());
+    const id = method === "DELETE" ? decodeURIComponent(path.slice(resource.length + 1)) : Schema.decodeUnknownSync(Schema.Struct({ id: Schema.String }))(body).id;
+    const saved = current[resource].find(item => item.id === id);
+    if (method === "DELETE" && !saved) return;
+    body = { ...(typeof body === "object" && body !== null ? body : {}), expectedRevision: saved?.revision ?? null };
+  }
   const response = await fetch(`${root}/api/${path}`, { method, headers: { "Content-Type": "application/json" }, body: body === undefined ? undefined : JSON.stringify(body) });
   assert(response.ok, `${method} ${path}: HTTP ${response.status}`);
 }
@@ -67,11 +83,16 @@ try {
     try {
       const check = async (name: string, run: () => Promise<void>) => {
         if (process.argv.includes("--plan-only") && !/meal.plan/.test(name)) return;
+        if (process.argv.includes("--meals-only") && !/meal|nested editors/.test(name)) return;
+        if (process.argv.includes("--substitutions-only") && !/same-source meals/.test(name)) return;
+        if (process.argv.includes("--grocery-links-only") && !/meal grocery link counts/.test(name)) return;
         scenario = name;
         await run(); count++; console.log(`PASS ${profile}: ${name}`);
       };
       const open = async (hash: string) => {
-        await page.goto(`${root}/${hash}`);
+        await page.goto(`${root}/${hash}`, { waitUntil: "networkidle" });
+        // Hash-only navigation does not reread fixtures restored through the API between scenarios.
+        await page.reload({ waitUntil: "networkidle" });
         await expect(page.locator(".calendar,.recipe-list,.shopping-layout,.grocery-catalog,.recipe-checklist").first()).toBeVisible();
       };
       const shot = async (name: string) => {
@@ -99,7 +120,7 @@ try {
           if (input === "click") await shot("scrolled-meal-actions");
           await edit[input]();
           await expect(dialog()).toHaveAttribute("aria-label", "Edit meal");
-          await expect(dialog().getByLabel(/A note for this meal/)).toHaveValue(meal.note);
+          await expect(dialog().getByLabel("Meal note", { exact: true })).toHaveValue(meal.note);
           await dialog().getByRole("button", { name: "Close dialog", exact: true })[input]();
           await expect(dialog()).toHaveCount(0);
         }
@@ -144,10 +165,10 @@ try {
         try {
           await open("#plan?week=2026-10-31");
           await card.tap();
-          await expect(dialog()).toHaveAttribute("aria-label", "Recipe details");
-          await expect(dialog().getByRole("button", { name: "Edit recipe", exact: true })).toHaveText("Edit");
+          await expect(dialog()).toHaveAttribute("aria-label", "Meal details");
+          await expect(dialog().getByRole("button", { name: "Edit meal", exact: true })).toHaveText("Edit meal");
           await expect(dialog().getByText("Manage ingredient links", { exact: true })).toHaveCount(0);
-          await expect(dialog().getByRole("button", { name: "Edit meal", exact: true })).toHaveCount(0);
+          await expect(dialog().getByRole("button", { name: "Edit recipe", exact: true })).toHaveCount(0);
           await dialog().getByRole("button", { name: "Close dialog" }).tap();
           await touch(-16, 0, 400);
           await expect(remove).toBeHidden();
@@ -182,8 +203,8 @@ try {
           await touch(0, 0, 650);
           await expect(dialog()).toHaveAttribute("aria-label", "Edit meal");
           await shot("hold-edit");
-          await dialog().getByLabel(/A note for this meal/).fill("Edited with a long press");
-          await dialog().getByRole("button", { name: "Save", exact: true }).tap();
+          await dialog().getByLabel("Meal note", { exact: true }).fill("Edited with a long press");
+          await dialog().getByRole("button", { name: "Save meal", exact: true }).tap();
           await expect(dialog()).toHaveCount(0);
           const edited = Schema.decodeUnknownSync(HouseholdSchema)(await (await fetch(`${root}/api/household`)).json());
           assert.equal(edited.meals.find(item => item.id === meal.id)?.note, "Edited with a long press");
@@ -200,6 +221,8 @@ try {
           await expect(card).toHaveCount(0);
           await page.locator(".meal-card").filter({ hasText: noteMeal.note }).tap();
           await expect(dialog()).toHaveAttribute("aria-label", "Edit meal");
+          await expect(dialog().getByLabel(/^What’s the plan\?/)).toHaveValue(noteMeal.note);
+          await expect(dialog().getByRole("button", { name: "Save", exact: true })).toBeVisible();
         } finally {
           await cdp.detach();
           await api("meals", "PUT", meal);
@@ -256,7 +279,7 @@ try {
         await open("#plan?week=2026-10-31");
         const bodyStyle = await page.evaluate(() => document.body.style.cssText);
         await page.locator(".meal-card").filter({ hasText: recipe.title }).click();
-        await dialog().getByRole("button", { name: "Edit recipe", exact: true }).click();
+        await dialog().getByRole("button", { name: "Edit meal", exact: true }).click();
         await dialog().locator(".ingredient-link-editor > summary").first().click();
         await dialog().getByRole("button", { name: "Edit product", exact: true }).click();
         const nested = page.getByRole("dialog", { name: "Grocery item for ingredient", exact: true });
@@ -266,7 +289,7 @@ try {
         await dialog().getByRole("button", { name: "Edit product", exact: true }).click();
         await expect(nested).toBeVisible();
         await page.goBack();
-        await expect(dialog()).toHaveAttribute("aria-label", "Recipe details");
+        await expect(dialog()).toHaveAttribute("aria-label", "Meal details");
         await page.goBack();
         await expect(dialog()).toHaveCount(0);
         assert.equal(await page.evaluate(() => document.body.style.cssText), bodyStyle);
@@ -278,7 +301,7 @@ try {
       await check("meal actions remain pointer-accessible at the calendar's first column and final row", async () => {
         try {
           for (const entry of edgeMeals) {
-            await open("#plan?week=2026-10-31");
+            await open(`#plan?week=${entry.date}`);
             const toggle = page.getByRole("button", { name: `Actions for meal ${entry.note}`, exact: true });
             await toggle.scrollIntoViewIfNeeded();
             await toggle.click();
@@ -365,7 +388,11 @@ try {
           for (const [index, packages] of [[0, 2], [1, 5], [2, 2], [3, 5], [4, 1], [5, 2], [7, 5]] as const)
             assert.equal(state.checks.find(entry => entry.key === JSON.stringify(["shopping-list", products[index].id]))?.packages, packages);
           assert(!state.checks.some(entry => entry.key === JSON.stringify(["shopping-list", products[6].id])));
-          for (const product of products) assert.deepEqual(state.groceries.find(entry => entry.id === product.id), product);
+          for (const product of products) {
+            const saved = state.groceries.find(entry => entry.id === product.id);
+            assert(saved?.revision, "Saved grocery has a revision");
+            assert.deepEqual(withoutRevision(saved), product);
+          }
           await shot("recipe-package-list");
         } finally {
           for (const entry of reviewRecipes) await api(`recipes/${entry.id}`, "DELETE");
@@ -514,18 +541,19 @@ try {
         await page.locator(".page-options summary").click();
         await expect(page.getByRole("button", { name: "Done arranging", exact: true })).toHaveAttribute("aria-pressed", "true");
       });
-      await check("recipe details, saved meal context, scaling and editor Back", async () => {
+      await check("meal details, saved meal context, scaling and editor Back", async () => {
         await open(`#plan?week=2026-10-31&view=recipe&id=${recipe.id}&meal=${meal.id}&scale=2`);
+        await expect(dialog()).toHaveAttribute("aria-label", "Meal details");
         await expect(dialog().locator("h1")).toHaveText(recipe.title);
         await expect(dialog().getByLabel("Preview recipe scale")).toHaveValue("2");
         await expect(dialog()).toContainText("6 servings");
-        await dialog().getByRole("button", { name: "Edit recipe", exact: true }).click();
+        await dialog().getByRole("button", { name: "Edit meal", exact: true }).click();
         await expect(page).toHaveURL(/view=editor/);
         await page.goBack();
         await expect(dialog().locator("h1")).toHaveText(recipe.title);
         await expect(dialog().getByLabel("Preview recipe scale")).toHaveValue("2");
         await page.goForward();
-        await expect(dialog()).toHaveAttribute("aria-label", "Edit recipe");
+        await expect(dialog()).toHaveAttribute("aria-label", "Edit meal");
         await page.goBack();
         await shot("recipe");
       });
@@ -558,6 +586,8 @@ try {
       await check("all saved entity and flow links hydrate from household data", async () => {
         for (const [hash, title] of [
           [`#plan?week=2026-10-31&view=meal&id=${meal.id}`, "Edit meal"],
+          [`#plan?week=2026-10-31&view=editor&id=${recipe.id}&meal=${meal.id}`, "Edit meal"],
+          [`#plan?week=2026-10-31&view=meal&id=${noteMeal.id}`, "Edit meal"],
           [`#groceries?view=grocery&id=${grocery.id}`, "Grocery item"],
           [`#recipes?view=collection&id=${collection.id}`, "Edit collection"],
           [`#recipes?view=editor&id=${recipe.id}`, "Edit recipe"],
@@ -579,7 +609,7 @@ try {
         await open(`#plan?week=2026-10-31&view=meal&date=2026-11-06&recipe=${recipe.id}`);
         await dialog().getByLabel(/A note for this meal/).fill("PRIVATE DRAFT DO NOT SHARE");
         await dialog().getByRole("button", { name: /View recipe/ }).click();
-        await expect(dialog()).toHaveAttribute("aria-label", "Recipe details");
+        await expect(dialog()).toHaveAttribute("aria-label", "Meal details");
         assert(!page.url().includes("PRIVATE"));
         assert(!JSON.stringify(await page.evaluate(() => history.state)).includes("PRIVATE"));
         await page.goBack();
@@ -627,27 +657,260 @@ try {
         await expect(rows).toHaveText(oldest);
       });
       await check("UI navigation creates shareable meal links; saved edits close to a reloadable page", async () => {
-        await open("#plan?week=2026-10-31");
-        await page.locator(".meal-card").filter({ hasText: recipe.title }).click();
-        await expect(page).toHaveURL(`${root}/#plan?week=2026-10-31&view=recipe&id=${recipe.id}&meal=${meal.id}`);
-        await expect(dialog().getByRole("button", { name: "Edit meal", exact: true })).toHaveCount(0);
-        await dialog().getByRole("button", { name: "Close dialog" }).click();
-        await page.getByRole("button", { name: `Actions for meal ${recipe.title}`, exact: true }).click();
-        await page.getByRole("button", { name: "Edit meal", exact: true }).focus();
-        await page.keyboard.press("Escape");
-        await expect(page.getByRole("button", { name: `Actions for meal ${recipe.title}`, exact: true })).toBeFocused();
-        await expect(page.getByRole("button", { name: "Edit meal", exact: true })).toHaveCount(0);
-        await page.getByRole("button", { name: `Actions for meal ${recipe.title}`, exact: true }).click();
-        await page.getByRole("button", { name: "Edit meal", exact: true }).click();
-        await expect(page).toHaveURL(new RegExp(`view=meal&id=${meal.id}`));
-        await dialog().getByLabel(/A note for this meal/).fill("Saved by navigation E2E");
-        await dialog().getByRole("button", { name: "Save", exact: true }).click();
-        await expect(dialog()).toHaveCount(0);
-        await expect(page).toHaveURL(`${root}/#plan?week=2026-10-31`);
-        await page.reload();
-        await open(`#plan?week=2026-10-31&view=meal&id=${meal.id}`);
-        await expect(dialog().getByLabel(/A note for this meal/)).toHaveValue("Saved by navigation E2E");
-        await api("meals", "PUT", meal);
+        try {
+          await open("#plan?week=2026-10-31");
+          await page.locator(".meal-card").filter({ hasText: recipe.title }).click();
+          await expect(page).toHaveURL(`${root}/#plan?week=2026-10-31&view=recipe&id=${recipe.id}&meal=${meal.id}`);
+          await expect(dialog()).toHaveAttribute("aria-label", "Meal details");
+          await expect(dialog().getByRole("button", { name: "Edit meal", exact: true })).toBeVisible();
+          await dialog().getByRole("button", { name: "Close dialog" }).click();
+          await page.getByRole("button", { name: `Actions for meal ${recipe.title}`, exact: true }).click();
+          await page.getByRole("button", { name: "Edit meal", exact: true }).focus();
+          await page.keyboard.press("Escape");
+          await expect(page.getByRole("button", { name: `Actions for meal ${recipe.title}`, exact: true })).toBeFocused();
+          await expect(page.getByRole("button", { name: "Edit meal", exact: true })).toHaveCount(0);
+          await page.getByRole("button", { name: `Actions for meal ${recipe.title}`, exact: true }).click();
+          await page.getByRole("button", { name: "Edit meal", exact: true }).click();
+          await expect(page).toHaveURL(new RegExp(`view=editor&id=${recipe.id}&meal=${meal.id}`));
+          await expect(dialog()).toHaveAttribute("aria-label", "Edit meal");
+          await dialog().getByLabel("Meal note", { exact: true }).fill("Saved by navigation E2E");
+          const saved = page.waitForResponse(response => new URL(response.url()).pathname === "/api/meals" && response.request().method() === "PUT");
+          await dialog().getByRole("button", { name: "Save meal", exact: true }).click();
+          assert.equal((await saved).status(), 200, "Meal editor save must be accepted before closing");
+          await expect(dialog()).toHaveCount(0);
+          await expect(page).toHaveURL(`${root}/#plan?week=2026-10-31`);
+          await page.reload();
+          await open(`#plan?week=2026-10-31&view=editor&id=${recipe.id}&meal=${meal.id}`);
+          await expect(dialog().getByLabel("Meal note", { exact: true })).toHaveValue("Saved by navigation E2E");
+        } finally { await api("meals", "PUT", meal); }
+      });
+      await check("same-source meals keep independent snapshots, inline notes and navigation identity", async () => {
+        const before = Schema.decodeUnknownSync(HouseholdSchema)(await (await fetch(`${root}/api/household`)).json());
+        const first = before.meals.find(entry => entry.id === meal.id);
+        assert(first?.recipe, "The first fixture must have a persisted meal snapshot");
+        const second = { ...meal, id: id(), note: "Independent second meal control" };
+        const substitute = { ...grocery, id: id(), name: "Navigation smoke chickpeas", aliases: [] };
+        const edited = {
+          ...first,
+          note: "Only the first meal gets this editor note.",
+          recipe: {
+            ...first.recipe,
+            title: "Navigation independently edited lentil dinner",
+            ingredients: first.recipe.ingredients.map(item => ({ ...item, name: substitute.name, quantity: 375, groceryItemId: substitute.id })),
+            instructions: ["Simmer this dinner gently, then rest for five minutes."],
+          },
+        };
+        try {
+          await api("groceries", "PUT", substitute);
+          await api("meals", "PUT", second);
+          const seeded = Schema.decodeUnknownSync(HouseholdSchema)(await (await fetch(`${root}/api/household`)).json());
+          const secondSaved = seeded.meals.find(entry => entry.id === second.id);
+          assert(secondSaved?.recipe);
+          assert.deepEqual(secondSaved.recipe, first.recipe, "Both meals start with the same source content");
+          await open("#plan?week=2026-10-31");
+          await page.locator(".meal-card").filter({ hasText: first.note }).click();
+          await expect(dialog()).toHaveAttribute("aria-label", "Meal details");
+          const detailUrl = page.url();
+          assert.equal(new URLSearchParams(new URL(detailUrl).hash.split("?")[1]).get("meal"), first.id);
+          await dialog().getByRole("button", { name: "Edit meal", exact: true }).click();
+          await expect(dialog()).toHaveAttribute("aria-label", "Edit meal");
+          await expect(dialog().getByLabel("Meal name", { exact: true })).toHaveValue(first.recipe.title);
+          await expect(dialog().getByLabel("Date", { exact: true })).toHaveValue(first.date);
+          await expect(dialog().getByLabel("Meal", { exact: true })).toHaveValue(first.slot);
+          await expect(dialog().getByLabel("Scale", { exact: true })).toHaveValue(String(first.scale));
+          await dialog().getByLabel("Meal name", { exact: true }).fill(edited.recipe.title);
+          await dialog().getByLabel("Ingredient 1 name", { exact: true }).fill(edited.recipe.ingredients[0].name);
+          await dialog().getByLabel("Ingredient 1 quantity", { exact: true }).fill("375");
+          await dialog().getByLabel("Step 1", { exact: true }).fill(edited.recipe.instructions[0]);
+          await dialog().getByLabel("Meal note", { exact: true }).fill(edited.note);
+          const editorUrl = page.url();
+          await dialog().getByRole("button", { name: "Save meal", exact: true }).click();
+          await expect(dialog()).toHaveCount(0);
+          await page.reload();
+          await expect(page.locator(".meal-card").filter({ hasText: edited.recipe.title })).toContainText(edited.note);
+          await expect(page.locator(".meal-card").filter({ hasText: second.note })).toContainText(recipe.title);
+          const saved = Schema.decodeUnknownSync(HouseholdSchema)(await (await fetch(`${root}/api/household`)).json());
+          assert.deepEqual(householdContent(saved), householdContent({ ...seeded, meals: seeded.meals.map(entry => entry.id === first.id ? edited : entry) }), "Editing one meal must preserve the second snapshot, source recipes and the rest of the household");
+
+          await page.locator(".meal-card").filter({ hasText: edited.recipe.title }).click();
+          await expect(page).toHaveURL(detailUrl);
+          await expect(dialog().locator(".ingredient-list")).toContainText(edited.recipe.ingredients[0].name);
+          await expect(dialog().locator(".instructions")).toContainText(edited.recipe.instructions[0]);
+          await dialog().getByRole("button", { name: "View recipe", exact: true }).click();
+          await expect(dialog()).toHaveAttribute("aria-label", "Recipe details");
+          await expect(dialog().locator("h1")).toHaveText(recipe.title);
+          await expect(dialog().getByRole("button", { name: "Edit recipe", exact: true })).toHaveText("Edit recipe");
+          await expect(dialog().locator(".ingredient-list li")).toHaveCount(1);
+          await expect(dialog().locator(".ingredient-list")).toContainText(grocery.name);
+          await expect(dialog().locator(".ingredient-list strong")).toHaveText("250 g");
+          await expect(dialog().locator(".instructions li p")).toHaveText(recipe.instructions);
+          const historyEntries = dialog().locator(".meal-history-entry");
+          await expect(historyEntries).toHaveCount(2);
+          await expect(historyEntries.filter({ hasText: edited.recipe.title })).toContainText(edited.note);
+          await historyEntries.filter({ hasText: edited.recipe.title }).click();
+          await expect(page).toHaveURL(detailUrl);
+          await expect(dialog()).toHaveAttribute("aria-label", "Meal details");
+          await expect(dialog().locator("h1")).toHaveText(edited.recipe.title);
+          await page.goBack();
+          await expect(dialog()).toHaveAttribute("aria-label", "Recipe details");
+          await page.goBack();
+          await expect(page).toHaveURL(detailUrl);
+          await expect(dialog().locator("h1")).toHaveText(edited.recipe.title);
+
+          const firstNote = "First meal inline note; keep its edited ingredients and steps.";
+          await dialog().getByRole("button", { name: "Edit meal note", exact: true }).click();
+          await dialog().getByLabel("Meal note", { exact: true }).fill(firstNote);
+          await dialog().getByRole("button", { name: "Save note", exact: true }).click();
+          await expect(dialog().locator(".meal-detail-note p")).toHaveText(firstNote);
+          await expect(page).toHaveURL(detailUrl);
+          const firstNoted = Schema.decodeUnknownSync(HouseholdSchema)(await (await fetch(`${root}/api/household`)).json());
+          assert.deepEqual(householdContent(firstNoted), householdContent({ ...saved, meals: saved.meals.map(entry => entry.id === first.id ? { ...edited, note: firstNote } : entry) }));
+          await dialog().getByRole("button", { name: "Close dialog", exact: true }).click();
+          await page.locator(".meal-card").filter({ hasText: second.note }).click();
+          await expect(dialog().locator("h1")).toHaveText(recipe.title);
+          const secondNote = "Second meal inline note; keep the original snapshot.";
+          await dialog().getByRole("button", { name: "Edit meal note", exact: true }).click();
+          await dialog().getByLabel("Meal note", { exact: true }).fill(secondNote);
+          await dialog().getByRole("button", { name: "Save note", exact: true }).click();
+          await expect(dialog().locator(".meal-detail-note p")).toHaveText(secondNote);
+          await page.reload();
+          await expect(dialog().locator("h1")).toHaveText(recipe.title);
+          await expect(dialog().locator(".meal-detail-note p")).toHaveText(secondNote);
+          await expect(dialog().locator(".ingredient-list strong")).toHaveText("375 g");
+          await expect(dialog().locator(".instructions li p")).toHaveText(recipe.instructions);
+          const bothNoted = Schema.decodeUnknownSync(HouseholdSchema)(await (await fetch(`${root}/api/household`)).json());
+          assert.deepEqual(householdContent(bothNoted), householdContent({ ...firstNoted, meals: firstNoted.meals.map(entry => entry.id === second.id ? { ...secondSaved, note: secondNote } : entry) }));
+
+          const direct = await context.newPage();
+          try {
+            await direct.goto(detailUrl);
+            await expect(direct.getByRole("dialog", { name: "Meal details", exact: true })).toBeVisible();
+            await expect(direct.locator("dialog[open] h1")).toHaveText(edited.recipe.title);
+            await expect(direct.locator(".meal-detail-note p")).toHaveText(firstNote);
+            const length = await direct.evaluate(() => history.length);
+            await direct.reload();
+            await expect(direct.locator("dialog[open] h1")).toHaveText(edited.recipe.title);
+            assert.equal(await direct.evaluate(() => history.length), length);
+            await direct.goBack();
+            await expect(direct).toHaveURL(`${root}/#plan?week=2026-10-31`);
+            await expect(direct.locator("dialog[open]")).toHaveCount(0);
+            await direct.goForward();
+            await expect(direct).toHaveURL(detailUrl);
+            await expect(direct.locator("dialog[open] h1")).toHaveText(edited.recipe.title);
+          } finally { await direct.close(); }
+          await page.goto(editorUrl);
+          await expect(dialog().getByLabel("Meal name", { exact: true })).toHaveValue(edited.recipe.title);
+          await expect(dialog().getByLabel("Ingredient 1 name", { exact: true })).toHaveValue(edited.recipe.ingredients[0].name);
+          await expect(dialog().getByLabel("Ingredient 1 quantity", { exact: true })).toHaveValue("375");
+          await expect(dialog().getByLabel("Step 1", { exact: true })).toHaveValue(edited.recipe.instructions[0]);
+          await expect(dialog().getByLabel("Meal note", { exact: true })).toHaveValue(firstNote);
+          await shot("independent-meal-editor");
+
+          await open("#shopping?view=shopping-recipes");
+          await dialog().getByRole("checkbox", { name: new RegExp(edited.recipe.title) }).check();
+          await dialog().getByRole("button", { name: "Review items", exact: true }).click();
+          await expect(dialog().locator(".shopping-review-item")).toHaveCount(1);
+          await expect(dialog().locator(".shopping-review-item")).toContainText(substitute.name);
+          await expect(dialog().locator(".shopping-review-item")).toContainText("Recipes need 562.5 g");
+          await expect(dialog().getByLabel(`Packages to buy for ${substitute.name}`, { exact: true })).toHaveValue("2");
+          await shot("substituted-meal-groceries");
+          await dialog().getByRole("button", { name: "Back", exact: true }).click();
+          await dialog().getByRole("checkbox", { name: new RegExp(recipe.title) }).check();
+          await dialog().getByRole("button", { name: "Review items", exact: true }).click();
+          await expect(dialog().locator(".shopping-review-item")).toHaveCount(2);
+          await expect(dialog().getByLabel(`Packages to buy for ${grocery.name}`, { exact: true })).toHaveValue("1");
+          await dialog().getByRole("button", { name: "Add 2 items", exact: true }).click();
+          await expect(dialog()).toHaveCount(0);
+          await page.reload();
+          const shopped = Schema.decodeUnknownSync(HouseholdSchema)(await (await fetch(`${root}/api/household`)).json());
+          assert.equal(shopped.checks.find(entry => entry.key === JSON.stringify(["shopping-list", substitute.id]))?.packages, 2);
+          assert.equal(shopped.checks.find(entry => entry.key === JSON.stringify(["shopping-list", grocery.id]))?.packages, 1);
+          assert.deepEqual(shopped.recipes, bothNoted.recipes);
+          assert.deepEqual(shopped.meals, bothNoted.meals);
+
+          const checklist = `#recipe-checklist?selectedMeal=${first.id}&selectedMeal=${second.id}&checklist=1`;
+          await open(checklist);
+          const ingredientsNeeded = page.getByLabel("Ingredients needed", { exact: true });
+          await expect(ingredientsNeeded.locator("label")).toHaveCount(2);
+          await expect(ingredientsNeeded.locator("label").filter({ hasText: substitute.name })).toContainText("562.5 g");
+          await expect(ingredientsNeeded.locator("label").filter({ hasText: grocery.name })).toContainText("375 g");
+          await page.reload();
+          await expect(ingredientsNeeded.locator("label").filter({ hasText: substitute.name })).toContainText("562.5 g");
+          await ingredientsNeeded.scrollIntoViewIfNeeded();
+          await shot("substituted-meal-checklist");
+        } finally {
+          // Omission preserves a snapshot, so restoration must send the captured content explicitly.
+          try { await api("meals", "PUT", first); }
+          finally {
+            await api(`meals/${second.id}`, "DELETE");
+            await api("checks", "PUT", { key: JSON.stringify(["shopping-list", grocery.id]), checked: 1 });
+            await api(`groceries/${substitute.id}`, "DELETE");
+          }
+          const restored = Schema.decodeUnknownSync(HouseholdSchema)(await (await fetch(`${root}/api/household`)).json());
+          assert.deepEqual(householdContent(restored), householdContent(before), "Independent-meal cleanup must preserve all pre-scenario data");
+        }
+      });
+      await check("meal grocery link counts agree with review and recovery names the owning editor", async () => {
+        const automatic = { ...grocery, id: id(), name: "Late matching chickpeas", aliases: [] };
+        const deleted = { ...grocery, id: id(), name: "Deleted grocery", aliases: [] };
+        const ambiguous = [
+          { ...grocery, id: id(), name: "First ambiguous product", aliases: ["Ambiguous ingredient"] },
+          { ...grocery, id: id(), name: "Second ambiguous product", aliases: ["Ambiguous ingredient"] },
+        ];
+        const source = { ...recipe, id: id(), title: "Grocery link meal", ingredients: [
+          { name: automatic.name, quantity: 100, unit: "g" },
+          { name: automatic.name, quantity: 200, unit: "g" },
+          { name: deleted.name, quantity: 100, unit: "g", groceryItemId: deleted.id },
+          { name: automatic.name, quantity: 100, unit: "g", groceryItemId: null },
+          { name: "Ambiguous ingredient", quantity: 100, unit: "g" },
+        ] };
+        const unplanned = { ...recipe, id: id(), title: "Unlinked source recipe", ingredients: [{ name: automatic.name, quantity: 100, unit: "g", groceryItemId: null }] };
+        const planned = { ...meal, id: id(), recipeId: source.id, scale: 2 };
+        try {
+          await api("groceries", "PUT", deleted);
+          await api("recipes", "PUT", source);
+          await api("recipes", "PUT", unplanned);
+          await api("meals", "PUT", planned);
+          for (const product of [automatic, ...ambiguous]) await api("groceries", "PUT", product);
+          await api(`groceries/${deleted.id}`, "DELETE");
+          await open("#shopping?view=shopping-recipes");
+          const row = dialog().locator("label.shopping-recipe-option").filter({ hasText: source.title });
+          const preview = dialog().locator(".shopping-recipe-preview");
+          await expect(row).toContainText("2 of 5 ingredients linked");
+          await row.getByRole("checkbox").check();
+          await expect(preview).toContainText("3 unlinked ingredients will be skipped. Open Edit meal");
+          await dialog().getByRole("button", { name: "Review items", exact: true }).click();
+          await expect(dialog().locator(".shopping-review-item")).toHaveCount(1);
+          await expect(dialog().locator(".shopping-review-item")).toContainText("Recipes need 600 g");
+          await expect(dialog().getByLabel(`Packages to buy for ${automatic.name}`, { exact: true })).toHaveValue("2");
+          await dialog().getByRole("button", { name: "Back", exact: true }).click();
+          await shot("meal-grocery-links");
+
+          // Losing the sole usable product must disable review, without reviving explicit null/deleted links.
+          await api(`groceries/${automatic.id}`, "DELETE");
+          await open("#shopping?view=shopping-recipes");
+          await expect(row).toContainText("0 of 5 ingredients linked");
+          await row.getByRole("checkbox").check();
+          await expect(dialog().getByRole("button", { name: "Review items", exact: true })).toBeDisabled();
+          await expect(dialog().locator("#shopping-recipe-blocked")).toHaveText("No linked grocery items. Open Edit meal to link these ingredients.");
+          await preview.scrollIntoViewIfNeeded();
+          await shot("meal-grocery-recovery");
+          const recipeRow = dialog().locator("label.shopping-recipe-option").filter({ hasText: unplanned.title });
+          await recipeRow.getByRole("checkbox").check();
+          await expect(preview).toContainText("Use Edit meal for planned meals and Edit recipe for unplanned recipes");
+          await expect(dialog().locator("#shopping-recipe-blocked")).toContainText("Use Edit meal for planned meals and Edit recipe for unplanned recipes");
+          await preview.scrollIntoViewIfNeeded();
+          await shot("mixed-grocery-recovery");
+          await row.getByRole("checkbox").uncheck();
+          await expect(preview).toContainText("Open Edit recipe to link these ingredients.");
+          await expect(dialog().locator("#shopping-recipe-blocked")).toHaveText("No linked grocery items. Open Edit recipe to link these ingredients.");
+          await preview.scrollIntoViewIfNeeded();
+          await shot("recipe-grocery-recovery");
+        } finally {
+          await api(`meals/${planned.id}`, "DELETE");
+          for (const entry of [source, unplanned]) await api(`recipes/${entry.id}`, "DELETE");
+          for (const product of [automatic, deleted, ...ambiguous]) await api(`groceries/${product.id}`, "DELETE");
+        }
       });
       await check("Change recipe opens choices and Save persists the replacement without losing meal fields", async () => {
         const replacement = { ...recipe, id: id(), title: "Navigation replacement dinner" };
@@ -671,18 +934,23 @@ try {
           await dialog().getByRole("button", { name: "Save", exact: true }).click();
           await expect(dialog()).toHaveCount(0);
           const state = Schema.decodeUnknownSync(HouseholdSchema)(await (await fetch(`${root}/api/household`)).json());
-          assert.deepEqual(state.meals.find(entry => entry.id === meal.id), { ...meal, recipeId: replacement.id, note: "Keep this meal note" });
+          const replacementSource = state.recipes.find(entry => entry.id === replacement.id);
+          assert(replacementSource);
+          const saved = state.meals.find(entry => entry.id === meal.id);
+          assert(saved?.revision, "Saved meal has a revision");
+          assert(saved.recipe, "Replacement meal has a recipe snapshot");
+          assert.deepEqual({ ...withoutRevision(saved), recipe: withoutRevision(saved.recipe) }, { ...meal, recipeId: replacement.id, recipe: withoutRevision(replacementSource), note: "Keep this meal note" });
         } finally {
           await api("meals", "PUT", meal);
           await api(`recipes/${replacement.id}`, "DELETE");
           await page.reload();
         }
       });
-      await check("Back during a pending save keeps the user's destination after the write completes", async () => {
+      await check("Back during a pending meal save keeps the user's destination after the write completes", async () => {
         await open("#plan?week=2026-10-31");
         await page.getByRole("button", { name: `Actions for meal ${recipe.title}`, exact: true }).click();
         await page.getByRole("button", { name: "Edit meal", exact: true }).click();
-        await dialog().getByLabel(/A note for this meal/).fill("Pending navigation save");
+        await dialog().getByLabel("Meal note", { exact: true }).fill("Pending navigation save");
         let release: (() => void) | undefined;
         let requested: (() => void) | undefined;
         const held = new Promise<void>((done) => { release = done; });
@@ -690,12 +958,12 @@ try {
         const hold = async (route: Playwright.Route) => { requested?.(); await held; await route.continue(); };
         await page.route("**/api/meals", hold);
         try {
-          await dialog().getByRole("button", { name: "Save", exact: true }).click();
+          await dialog().getByRole("button", { name: "Save meal", exact: true }).click();
           await started;
           await page.goBack();
           await expect(dialog()).toHaveCount(0);
           release?.();
-          await expect(page.getByText("Meal plan updated", { exact: true })).toBeVisible();
+          await expect(page.getByText("Meal saved", { exact: true })).toBeVisible();
           await expect(dialog()).toHaveCount(0);
           await expect(page).toHaveURL(`${root}/#plan?week=2026-10-31`);
           const saved = Schema.decodeUnknownSync(HouseholdSchema)(await (await fetch(`${root}/api/household`)).json());
@@ -766,5 +1034,5 @@ try {
   await api(`collections/${collection.id}`, "DELETE");
 }
 const after = Schema.decodeUnknownSync(HouseholdSchema)(await (await fetch(`${root}/api/household`)).json());
-assert.deepEqual(after, original, "Fixture cleanup must preserve original household");
+assert.deepEqual(householdContent(after), householdContent(original), "Fixture cleanup must preserve original household");
 console.log(`PASS ${count} navigation scenarios across desktop/native-touch Chromium and touch iPhone/iPad WebKit; household unchanged.`);

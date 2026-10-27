@@ -3,8 +3,7 @@ import { Miniflare, convertV4MiniflareOptions } from "miniflare";
 import { rolldown } from "rolldown";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { generateKeyPair, exportJWK, SignJWT } from "jose";
-import { Effect, Schema } from "effect";
-import { updateRecipes } from "../src/recipes";
+import { Option, Schema } from "effect";
 import {
   RecipeSchema,
   RecipeFields,
@@ -179,6 +178,7 @@ const outputs = {
     recipes: Schema.Array(
       Schema.Struct({
         id: RecipeSchema.fields.id,
+        revision: Schema.NonEmptyString,
         title: RecipeFields.fields.title,
         ingredients: RecipeFields.fields.ingredients,
       }),
@@ -225,7 +225,7 @@ const outputs = {
   delete_meal: okOutput,
   delete_shopping_extra: okOutput,
   set_shopping_checked: okOutput,
-  set_shopping_order: okOutput,
+  set_shopping_order: Schema.Struct({ ...okOutput.fields, revision: Schema.String }),
   add_demo_data: okOutput,
 };
 
@@ -238,6 +238,63 @@ async function listTools(bearer = token) {
 }
 
 const call = async <Name extends keyof typeof outputs>(name: Name, args: Json, bearer = token) => {
+  // Fresh-write convenience for existing scenarios only. Explicit guards are never replaced.
+  const tables: Partial<Record<keyof typeof outputs, string>> = {
+    save_collection: "collections",
+    delete_collection: "collections",
+    save_grocery: "groceries",
+    delete_grocery: "groceries",
+    save_meal: "meals",
+    delete_meal: "meals",
+    save_shopping_extra: "extras",
+    delete_shopping_extra: "extras",
+    delete_recipe: "recipes",
+    set_shopping_order: "shopping_order",
+  };
+
+  const input = Schema.decodeUnknownSync(Schema.Record(Schema.String, Schema.Unknown))(args);
+  const db = await worker.getD1Database("DB");
+
+  const revisionFor = async (table: string, id: string | number | undefined) => {
+    const row =
+      id === undefined ? null : await db.prepare(`SELECT revision FROM ${table} WHERE id=?`).bind(id).first();
+
+    return row ? Schema.decodeUnknownSync(Schema.Struct({ revision: Schema.String }))(row).revision : null;
+  };
+
+  const table = tables[name];
+
+  if (table && !("expectedRevision" in input)) {
+    const id =
+      name === "set_shopping_order"
+        ? 1
+        : Option.getOrUndefined(Schema.decodeUnknownOption(Schema.String)(input.id));
+
+    args = {
+      ...Schema.decodeUnknownSync(Schema.Record(Schema.String, Schema.Json))(args),
+      expectedRevision: (await revisionFor(table, id)) ?? (name.startsWith("delete_") ? "missing" : null),
+    };
+  } else if (name === "update_recipes" && Array.isArray(input.updates)) {
+    const updates = await Promise.all(
+      input.updates.map(async (value) => {
+        const update = Schema.decodeUnknownSync(Schema.Record(Schema.String, Schema.Json))(value);
+
+        return "expectedRevision" in update
+          ? update
+          : {
+              ...update,
+              expectedRevision:
+                (await revisionFor(
+                  "recipes",
+                  Option.getOrUndefined(Schema.decodeUnknownOption(Schema.String)(update.id)),
+                )) ?? "missing",
+            };
+      }),
+    );
+
+    args = { updates };
+  }
+
   const response = await rpc("tools/call", { name, arguments: args }, bearer);
 
   const result =
@@ -453,15 +510,20 @@ beforeAll(async () => {
     "0002_recipe_rating.sql",
     "0003_collections.sql",
     "0004_groceries.sql",
+    "0005_ingredient_matching.sql",
     "0006_meal_notes.sql",
     "0007_shopping_membership.sql",
     "0008_grocery_delete_unlink.sql",
     "0010_shopping_packages.sql",
+    "0011_meal_recipes.sql",
+    "0012_entity_revisions.sql",
+    "0013_photos.sql",
   ]) {
     const sql = await readFile(`migrations/${file}`, "utf8");
     await db.batch(
       sql
-        .split(/;\n(?=CREATE|INSERT|DROP|ALTER)|;\s*$/)
+        .replace(/^--.*$/gm, "")
+        .split(/;\s*\n(?=CREATE|INSERT|DROP|ALTER|UPDATE)|;\s*$/)
         .filter((s) => s.trim())
         .map((s) => db.prepare(s)),
     );
@@ -565,6 +627,15 @@ it("publishes all 22 code-mode-friendly schemas with the single recipes scope", 
     expect(tool.outputSchema?.type).toBe("object");
   }
 
+  const saveMeal = tools.find((tool) => tool.name === "save_meal");
+  const listMeals = tools.find((tool) => tool.name === "list_meals");
+  expect(saveMeal?.inputSchema).toHaveProperty("properties.recipe");
+  expect(saveMeal?.inputSchema.required).not.toContain("recipe");
+  expect(saveMeal?.outputSchema).toHaveProperty("properties.meal.properties.recipe");
+  expect(listMeals?.outputSchema).toHaveProperty("properties.meals.items.properties.recipe");
+  expect(saveMeal?.description).toContain("never the source or another meal");
+  expect(listMeals?.description).toContain("independent editable recipe snapshot");
+
   const create = tools.find((tool) => tool.name === "create_recipes");
 
   if (!create) throw new Error("create_recipes tool missing");
@@ -625,7 +696,7 @@ it("decodes shared Effect defaults and trimming while rejecting nested excess fi
 
 it("lists empty and custom collections with exact names and tracks renames and deletion", async () => {
   const db = await worker.getD1Database("DB");
-  const before = (await db.prepare("SELECT id,name FROM collections ORDER BY name,id").all()).results;
+  const before = (await db.prepare("SELECT * FROM collections ORDER BY name,id").all()).results;
   const recipesBefore = (await db.prepare("SELECT * FROM recipes ORDER BY id").all()).results;
   // Migration-generated IDs can exceed the recipe ID input limit, even after the collection is renamed.
   const collectionId = `legacy-${"x".repeat(100)}`;
@@ -638,7 +709,10 @@ it("lists empty and custom collections with exact names and tracks renames and d
     const listed = await call("list_collections", {});
     expect(listed.isError).not.toBe(true);
     expect(listed.structuredContent).toEqual({
-      collections: [{ id: collectionId, name: "A holiday & brunch" }, ...before],
+      collections: [
+        { id: collectionId, name: "A holiday & brunch", revision: expect.any(String) },
+        ...before,
+      ],
     });
     expect(JSON.parse(listed.content[0].text)).toEqual(listed.structuredContent);
     expect((await db.prepare("SELECT * FROM recipes ORDER BY id").all()).results).toEqual(recipesBefore);
@@ -665,7 +739,7 @@ it("lists empty and custom collections with exact names and tracks renames and d
         .run();
       expect((await call("list_collections", {})).structuredContent.collections).toEqual([
         ...before,
-        { id: collectionId, name: "Z holiday & brunch" },
+        { id: collectionId, name: "Z holiday & brunch", revision: expect.any(String) },
       ]);
       await db.prepare("DELETE FROM collections WHERE id=?").bind(collectionId).run();
       expect((await call("list_collections", {})).structuredContent.collections).toEqual(before);
@@ -756,7 +830,8 @@ it("creates batches, searches like the app, paginates empty/end pages, and gets 
   const first = (await call("search_recipes", { query: "CHICKPEAS" })).structuredContent;
   expect(first.recipes).toHaveLength(25);
   expect(first.pagination).toEqual({ total: 26, limit: 25, offset: 0, hasMore: true, nextOffset: 25 });
-  expect(Object.keys(first.recipes[0]).sort()).toEqual(["id", "ingredients", "title"]);
+  expect(Object.keys(first.recipes[0]).sort()).toEqual(["id", "ingredients", "revision", "title"]);
+  expect(first.recipes[0].revision).toBe(created.structuredContent.recipes[0].revision);
 
   const last = (await call("search_recipes", { query: "CHICKPEAS", offset: first.pagination.nextOffset }))
     .structuredContent;
@@ -782,50 +857,136 @@ it("creates batches, searches like the app, paginates empty/end pages, and gets 
   });
 });
 
-it("rejects the entire batch when a recipe is deleted after validation", async () => {
+it("rejects stale and deleted recipe batches atomically through RPC and advertises required guards", async () => {
   const created = (await call("create_recipes", { recipes: [draft("Race A"), draft("Race B")] }))
     .structuredContent.recipes;
 
   const [a, b] = created;
   const db = await worker.getD1Database("DB");
 
-  // Forward the complete database interface to real Miniflare D1; inject only deletion timing.
-  const racingDb: D1Database = {
-    prepare: db.prepare.bind(db),
-    dump: db.dump.bind(db),
-    exec: db.exec.bind(db),
-    withSession: db.withSession.bind(db),
-    async batch<T>(statements: D1PreparedStatement[]) {
-      await db.prepare("DELETE FROM recipes WHERE id=?").bind(b.id).run();
+  if (!a.revision || !b.revision) throw new Error("Missing persisted revisions");
 
-      return db.batch<T>(statements);
-    },
-  };
+  const updates = [
+    { id: a.id, expectedRevision: a.revision, changes: { minutes: 91 } },
+    { id: b.id, expectedRevision: b.revision, changes: { title: "Must not persist" } },
+  ];
 
-  const update = updateRecipes(racingDb, [
-    { id: a.id, changes: { minutes: 91 } },
-    { id: b.id, changes: { title: "Deleted" } },
-  ]);
-
-  // Constructing an operation must not start the write or the deletion race.
-  expect((await call("get_recipes", { ids: [a.id, b.id] })).structuredContent.recipes).toEqual([a, b]);
-
-  const outcome = await Effect.runPromise(
-    update.pipe(
-      Effect.match({
-        onSuccess: () => "unexpected success",
-        onFailure: (error) => error,
-      }),
-    ),
-  );
-
-  expect(outcome).toMatchObject({
-    _tag: "NotFound",
-    message: "A recipe was deleted before the update. No recipes were updated.",
-  });
+  // Real old-worker SQL rotates the token without consulting the new contract.
+  await db.prepare("UPDATE recipes SET description='Concurrent description' WHERE id=?").bind(b.id).run();
+  const before = (await call("get_recipes", { ids: [a.id, b.id] })).structuredContent.recipes;
+  const failed = await call("update_recipes", { updates });
+  expect(failed.isError).toBe(true);
+  expect((await call("get_recipes", { ids: [a.id, b.id] })).structuredContent.recipes).toEqual(before);
+  expect((await call("delete_recipe", { id: b.id, expectedRevision: b.revision })).isError).toBe(true);
+  await db.prepare("DELETE FROM recipes WHERE id=?").bind(b.id).run();
+  expect((await call("update_recipes", { updates })).isError).toBe(true);
   const remaining = (await call("get_recipes", { ids: [a.id, b.id] })).structuredContent;
   expect(remaining.recipes).toEqual([a]);
   expect(remaining.missingIds).toEqual([b.id]);
+
+  const unguarded = await rpc("tools/call", {
+    name: "update_recipes",
+    arguments: { updates: [{ id: a.id, changes: { minutes: 99 } }] },
+  });
+
+  if ("result" in unguarded) expect(CallToolResultSchema.parse(unguarded.result).isError).toBe(true);
+  else expect(unguarded.error).toBeDefined();
+  expect((await call("get_recipes", { ids: [a.id] })).structuredContent.recipes).toEqual([a]);
+  const tools = await listTools();
+
+  for (const name of [
+    "save_collection",
+    "save_grocery",
+    "save_meal",
+    "save_shopping_extra",
+    "set_shopping_order",
+    "delete_recipe",
+    "delete_grocery",
+    "delete_collection",
+    "delete_meal",
+    "delete_shopping_extra",
+  ])
+    expect(tools.find((tool) => tool.name === name)?.inputSchema.required).toContain("expectedRevision");
+});
+
+it("saves a maximum-size recipe batch exceeding 2 MB while preserving omitted fields and stale guards", async () => {
+  const before = (
+    await call("create_recipes", {
+      recipes: Array.from({ length: 25 }, (_, index) => draft(`Large batch ${index}`)),
+    })
+  ).structuredContent.recipes;
+
+  const updates = before.map((recipe, index) => ({
+    id: recipe.id,
+    expectedRevision: recipe.revision,
+    changes: {
+      instructions:
+        index < 2
+          ? Array.from({ length: 100 }, (_, step) => `${index}:${step}:`.padEnd(10_000, "x"))
+          : [`Serve recipe ${index}.`],
+    },
+  }));
+
+  expect(Buffer.byteLength(JSON.stringify(updates))).toBeGreaterThan(2_000_000);
+  const result = await call("update_recipes", { updates });
+  expect(result.isError).toBeUndefined();
+  const saved = result.structuredContent.recipes;
+  expect(saved).toEqual(
+    before.map((recipe, index) => ({
+      ...recipe,
+      instructions: updates[index].changes.instructions,
+      revision: expect.any(String),
+    })),
+  );
+
+  for (const [index, recipe] of saved.entries()) expect(recipe.revision).not.toBe(before[index].revision);
+
+  // A single stale member still rejects the entire large batch.
+  const stale = updates.map((update, index) => ({
+    ...update,
+    expectedRevision: index === 24 ? update.expectedRevision : saved[index].revision,
+    changes: { ...update.changes, minutes: 83 },
+  }));
+
+  expect((await call("update_recipes", { updates: stale })).isError).toBe(true);
+  expect(
+    (await call("get_recipes", { ids: before.map((recipe) => recipe.id) })).structuredContent.recipes,
+  ).toEqual(saved);
+
+  for (const recipe of saved)
+    await call("delete_recipe", { id: recipe.id, expectedRevision: recipe.revision });
+});
+
+it("rolls back recipe batch fields and revisions when SQLite rejects a later row", async () => {
+  const before = (await call("create_recipes", { recipes: [draft("Atomic A"), draft("Atomic B")] }))
+    .structuredContent.recipes;
+
+  const db = await worker.getD1Database("DB");
+  await db
+    .prepare(
+      "CREATE TRIGGER fail_recipe_batch BEFORE UPDATE OF title ON recipes WHEN NEW.title='Reject batch' BEGIN SELECT RAISE(ABORT, 'private storage detail'); END",
+    )
+    .run();
+
+  try {
+    const failed = await call("update_recipes", {
+      updates: before.map((recipe, index) => ({
+        id: recipe.id,
+        expectedRevision: recipe.revision,
+        changes: { title: index ? "Reject batch" : "Must roll back" },
+      })),
+    });
+
+    expect(failed.isError).toBe(true);
+    expect(failed.content[0].text).toBe(
+      "Household storage is unavailable. Read the current state before retrying a write.",
+    );
+    expect(
+      (await call("get_recipes", { ids: before.map((recipe) => recipe.id) })).structuredContent.recipes,
+    ).toEqual(before);
+  } finally {
+    await db.prepare("DROP TRIGGER fail_recipe_batch").run();
+  }
 });
 
 it("patches only requested fields and rejects invalid batches without partial writes", async () => {
@@ -843,8 +1004,10 @@ it("patches only requested fields and rejects invalid batches without partial wr
     })
   ).structuredContent.recipes;
 
-  expect(updated[0]).toEqual({ ...a, title: "Renamed", rating: "up" });
-  expect(updated[1]).toEqual({ ...b, minutes: 37 });
+  expect(updated[0]).toEqual({ ...a, title: "Renamed", rating: "up", revision: expect.any(String) });
+  expect(updated[1]).toEqual({ ...b, minutes: 37, revision: expect.any(String) });
+  expect(updated[0].revision).not.toBe(a.revision);
+  expect(updated[1].revision).not.toBe(b.revision);
 
   for (const changes of [
     { unknown: 1 },
@@ -932,8 +1095,16 @@ it("keeps storage failures distinct from actionable input errors through the hou
 
   // Operation errors retain their useful correction instructions.
   for (const [name, args, message] of [
-    ["delete_collection", { id: "missing-retry-collection" }, "That collection no longer exists."],
-    ["save_collection", { name: "Vegetarian" }, "A collection with that name already exists."],
+    [
+      "delete_collection",
+      { id: "missing-retry-collection" },
+      "This item changed or no longer exists. Reload the latest household before saving or deleting; your changes were not applied.",
+    ],
+    [
+      "save_collection",
+      { name: "Vegetarian" },
+      "This collection changed, no longer exists, or its name is already in use. Reload before saving.",
+    ],
   ] as const) {
     const failed = await call(name, args);
     expect(failed.isError).toBe(true);
@@ -988,7 +1159,11 @@ it("arranges unused catalog products before planning them through the documented
   // Reverse alphabetical order within one aisle; use only discovered IDs, not planned-item keys.
   const keys = [...catalog].reverse().map((item) => JSON.stringify(["grocery", item.id]));
   await success("set_shopping_order", { aisles: ["4"], items: keys });
-  expect((await success("get_shopping_list", range)).shoppingOrder).toEqual({ aisles: ["4"], items: keys });
+  expect((await success("get_shopping_list", range)).shoppingOrder).toEqual({
+    aisles: ["4"],
+    items: keys,
+    revision: expect.any(String),
+  });
 
   const {
     recipes: [recipe],
@@ -1063,6 +1238,7 @@ it("manages a collection, matched products, inclusive meal plan and shopping lif
   expect((await success("list_collections", {})).collections).toContainEqual({
     id: collection.id,
     name: "MCP renamed",
+    revision: expect.any(String),
   });
 
   const { grocery: rice } = await success("save_grocery", {
@@ -1088,6 +1264,7 @@ it("manages a collection, matched products, inclusive meal plan and shopping lif
     ...rice,
     url: "https://example.com/rice",
     aisle: "Pantry",
+    revision: expect.any(String),
   });
   const unavailable = await call("match_groceries", {});
   expect(unavailable.isError).toBe(true);
@@ -1167,15 +1344,15 @@ it("manages a collection, matched products, inclusive meal plan and shopping lif
   expect((await success("get_shopping_list", { start, end })).items).toEqual([]);
   const route = { aisles: ["Pantry", "Cold"], items: [riceItem.key, milkItem.key] };
   await success("set_shopping_order", route);
-  expect((await shopping()).shoppingOrder).toEqual(route);
+  expect((await shopping()).shoppingOrder).toEqual({ ...route, revision: expect.any(String) });
   expect((await shopping()).items.slice(0, 2).map((i) => i.key)).toEqual(route.items);
   await success("set_shopping_order", { aisles: [], items: [] });
-  expect((await shopping()).shoppingOrder).toEqual({ aisles: [], items: [] });
+  expect((await shopping()).shoppingOrder).toEqual({ aisles: [], items: [], revision: expect.any(String) });
   const { extra } = await success("save_shopping_extra", { name: "Paper towels", checked: 0 });
   await success("save_shopping_extra", { ...extra, name: "Kitchen towels", checked: 1 });
   expect(
     (await success("get_shopping_list", { start: "2031-01-01", end: "2031-01-01" })).extras,
-  ).toContainEqual({ ...extra, name: "Kitchen towels", checked: 1 });
+  ).toContainEqual({ ...extra, name: "Kitchen towels", checked: 1, revision: expect.any(String) });
   await success("delete_shopping_extra", { id: extra.id });
   expect((await shopping()).extras.some((e) => e.id === extra.id)).toBe(false);
 
@@ -1218,6 +1395,7 @@ it("manages a collection, matched products, inclusive meal plan and shopping lif
     linked.map((recipe) => ({
       ...recipe,
       category: "",
+      revision: expect.any(String),
       ingredients: recipe.ingredients.map((ingredient) => ({ ...ingredient, groceryItemId: null })),
     })),
   );
@@ -1238,6 +1416,227 @@ it("manages a collection, matched products, inclusive meal plan and shopping lif
   expect((await shopping()).items).toEqual([]);
 });
 
+it("shares small immutable photo references through MCP creation, updates, snapshot saves and reads", async () => {
+  const upload = `data:image/jpeg;base64,${Buffer.from(await readFile("public/photos/chicken.jpg")).toString("base64")}`;
+
+  const replacement =
+    "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a9S0AAAAASUVORK5CYII=";
+
+  const {
+    recipes: [source, other],
+  } = await success("create_recipes", {
+    recipes: [
+      { ...draft("Shared photo source"), photo: upload },
+      { ...draft("Shared photo copy"), photo: upload },
+    ],
+  });
+
+  expect(source.photo).toMatch(/^\/photos\/upload-[a-p]{64}\.jpg$/);
+  expect(source.photo).toMatch(/^\/photos\/[a-z-]+\.jpg$/);
+  expect(other.photo).toBe(source.photo);
+  const db = await worker.getD1Database("DB");
+  expect((await db.prepare("SELECT path,data FROM photos WHERE data=?").bind(upload).all()).results).toEqual([
+    { path: source.photo, data: upload },
+  ]);
+  const range = { start: "2036-05-06", end: "2036-05-06" };
+  const input = { recipeId: source.id, date: range.start, slot: "Dinner", scale: 1, note: "Shared photo" };
+  const { revision: _revision, ...snapshot } = source;
+  const { meal: first } = await success("save_meal", { ...input, recipe: { ...snapshot, photo: upload } });
+  expect(first.recipe?.photo).toBe(source.photo);
+
+  for (let index = 0; index < 12; index++)
+    expect((await success("save_meal", input)).meal.recipe?.photo).toBe(source.photo);
+  const listed = await call("list_meals", range);
+  expect(listed.isError).not.toBe(true);
+  expect(JSON.stringify(listed).length).toBeLessThan(upload.length);
+  expect(JSON.stringify(listed)).not.toContain("data:image/");
+  expect(listed.structuredContent.meals).toHaveLength(13);
+
+  const {
+    recipes: [updated],
+  } = await success("update_recipes", {
+    updates: [{ id: source.id, changes: { photo: replacement } }],
+  });
+
+  expect(updated.photo).toMatch(/^\/photos\/upload-[a-p]{64}\.jpg$/);
+  expect(updated.photo).not.toBe(source.photo);
+  expect(
+    (await success("list_meals", range)).meals.every((entry) => entry.recipe?.photo === source.photo),
+  ).toBe(true);
+
+  const { meal: changed } = await success("save_meal", {
+    ...first,
+    recipe: { ...snapshot, photo: replacement },
+  });
+
+  expect(changed.recipe?.photo).toBe(updated.photo);
+  expect((await success("get_recipes", { ids: [other.id] })).recipes[0].photo).toBe(source.photo);
+  expect((await success("get_recipes", { ids: [source.id] })).recipes[0].photo).toBe(updated.photo);
+
+  const pointer = await success("update_recipes", {
+    updates: [{ id: other.id, changes: { photo: updated.photo } }],
+  });
+
+  expect(pointer.recipes[0].photo).toBe(updated.photo);
+  await success("update_recipes", { updates: [{ id: source.id, changes: { photo: "" } }] });
+  expect(
+    (await success("list_meals", range)).meals.find((entry) => entry.id === first.id)?.recipe?.photo,
+  ).toBe(updated.photo);
+  expect(
+    (await success("save_meal", { ...changed, recipe: { ...snapshot, photo: "" } })).meal.recipe?.photo,
+  ).toBe("");
+  expect((await success("get_recipes", { ids: [other.id] })).recipes[0].photo).toBe(updated.photo);
+  expect((await db.prepare("SELECT path,data FROM photos WHERE data=?").bind(upload).all()).results).toEqual([
+    { path: source.photo, data: upload },
+  ]);
+  expect(
+    (await db.prepare("SELECT path,data FROM photos WHERE data=?").bind(replacement).all()).results,
+  ).toEqual([{ path: updated.photo, data: replacement }]);
+
+  for (const entry of (await success("list_meals", range)).meals)
+    await success("delete_meal", { id: entry.id });
+
+  for (const recipe of [source, other]) await success("delete_recipe", { id: recipe.id });
+  expect(
+    (
+      await db
+        .prepare("SELECT path,data FROM photos WHERE data IN (?,?) ORDER BY data")
+        .bind(upload, replacement)
+        .all()
+    ).results,
+  ).toEqual([
+    { path: source.photo, data: upload },
+    { path: updated.photo, data: replacement },
+  ]);
+});
+
+it("rejects missing photo pointers and malformed base64 through every MCP write without changing household records", async () => {
+  const {
+    recipes: [source],
+  } = await success("create_recipes", { recipes: [draft("Invalid upload guard")] });
+
+  const input = { recipeId: source.id, date: "2036-06-01", slot: "Dinner", scale: 1, note: "Guard" };
+  const { meal } = await success("save_meal", input);
+  const { revision: _revision, ...snapshot } = source;
+  const db = await worker.getD1Database("DB");
+
+  const read = async () => ({
+    recipes: (await db.prepare("SELECT * FROM recipes ORDER BY id").all()).results,
+    meals: (await db.prepare("SELECT * FROM meals ORDER BY id").all()).results,
+    photos: (await db.prepare("SELECT * FROM photos ORDER BY path").all()).results,
+  });
+
+  const before = await read();
+
+  for (const photo of [
+    `/photos/upload-${"a".repeat(64)}.jpg`,
+    "/photos/upload-not-an-asset.jpg",
+    "data:image/png;base64,A",
+    "data:image/png;base64,AA=A",
+    "data:image/png;base64,====",
+    "data:image/png;base64,not base64!",
+  ]) {
+    expect(
+      (
+        await call("create_recipes", {
+          recipes: [draft("Must not partially create"), { ...draft("Invalid photo"), photo }],
+        })
+      ).isError,
+    ).toBe(true);
+    expect((await call("update_recipes", { updates: [{ id: source.id, changes: { photo } }] })).isError).toBe(
+      true,
+    );
+    expect((await call("save_meal", { ...meal, recipe: { ...snapshot, photo } })).isError).toBe(true);
+    expect((await call("save_meal", { ...input, recipe: { ...snapshot, photo } })).isError).toBe(true);
+    expect(await read()).toEqual(before);
+  }
+
+  await success("delete_meal", { id: meal.id });
+  await success("delete_recipe", { id: source.id });
+});
+
+it("returns and edits independent meal recipes through MCP while preserving omitted snapshots", async () => {
+  const {
+    recipes: [source, otherSource],
+  } = await success("create_recipes", {
+    recipes: [draft("Meal snapshot source"), draft("Replacement meal source")],
+  });
+
+  const range = { start: "2035-05-06", end: "2035-05-08" };
+  const input = { recipeId: source.id, date: range.start, slot: "Dinner", scale: 1.5, note: "Plan" };
+  const { meal: first } = await success("save_meal", input);
+  const { meal: second } = await success("save_meal", input);
+  const { revision: _sourceRevision, ...sourceSnapshot } = source;
+  const { revision: _otherRevision, ...otherSnapshot } = otherSource;
+  expect(first.recipe).toEqual(sourceSnapshot);
+  expect(second.recipe).toEqual(sourceSnapshot);
+
+  const editedRecipe = {
+    ...source,
+    title: "Only this meal",
+    description: "Meal description",
+    servings: 3,
+    minutes: 17,
+    category: "Independent label",
+    photo: "https://example.com/meal.jpg",
+    source: "https://example.com/meal",
+    rating: "down",
+    ingredients: [
+      {
+        name: "Rice",
+        originalText: "1 cup rice, rinsed",
+        quantity: 1,
+        unit: "cup",
+        groceryItemId: null,
+        grocerySuggestions: ["remembered-product"],
+      },
+    ],
+    instructions: ["Meal-only instructions."],
+  };
+
+  expect((await success("save_meal", { ...first, recipe: editedRecipe })).meal.recipe).toEqual(editedRecipe);
+  expect((await success("get_recipes", { ids: [source.id] })).recipes).toEqual([source]);
+  await success("update_recipes", { updates: [{ id: source.id, changes: { title: "Changed source" } }] });
+
+  const moved = {
+    ...input,
+    id: first.id,
+    date: range.end,
+    slot: "Lunch",
+    scale: 2,
+    note: "Moved without recipe",
+  };
+
+  const movedMeal = (await success("save_meal", moved)).meal;
+  expect(movedMeal).toEqual({ ...moved, recipe: editedRecipe, revision: expect.any(String) });
+  expect((await success("list_meals", range)).meals).toEqual([second, movedMeal]);
+
+  for (const patch of [
+    { recipe: null },
+    { recipe: { ...source, id: otherSource.id } },
+    { recipe: { ...source, ingredients: [] } },
+    { recipe: { ...source, photo: `data:image/png;base64,${"a".repeat(1_900_000)}` } },
+    { recipeId: null, recipe: source },
+  ])
+    expect((await call("save_meal", { ...moved, ...patch })).isError).toBe(true);
+  expect((await success("list_meals", range)).meals).toEqual([second, movedMeal]);
+  const changed = { ...moved, recipeId: otherSource.id };
+  expect((await success("save_meal", changed)).meal).toEqual({
+    ...changed,
+    recipe: otherSnapshot,
+    revision: expect.any(String),
+  });
+  const note = { ...changed, recipeId: null, recipe: null, note: "Pizza" };
+  expect((await success("save_meal", note)).meal).toEqual({ ...note, revision: expect.any(String) });
+  expect((await success("get_recipes", { ids: [source.id] })).recipes).toEqual([
+    { ...source, title: "Changed source", revision: expect.any(String) },
+  ]);
+
+  for (const meal of [first, second]) await success("delete_meal", { id: meal.id });
+
+  for (const recipe of [source, otherSource]) await success("delete_recipe", { id: recipe.id });
+});
+
 it("saves, lists, edits and deletes note-only meals through RPC without shopping ingredients", async () => {
   const range = { start: "2032-04-05", end: "2032-04-05" };
 
@@ -1249,12 +1648,13 @@ it("saves, lists, edits and deletes note-only meals through RPC without shopping
     note: "Pizza",
   });
 
+  expect(meal.recipe).toBeNull();
   expect((await success("list_meals", range)).meals).toEqual([meal]);
   expect((await success("get_shopping_list", range)).items).toEqual([]);
   expect((await call("save_meal", { ...meal, note: " \n\t" })).isError).toBe(true);
   const edited = { ...meal, note: "Dinner out", slot: "Lunch" };
   await success("save_meal", edited);
-  expect((await success("list_meals", range)).meals).toEqual([edited]);
+  expect((await success("list_meals", range)).meals).toEqual([{ ...edited, revision: expect.any(String) }]);
   await success("delete_meal", { id: meal.id });
   expect((await success("list_meals", range)).meals).toEqual([]);
 });
@@ -1288,7 +1688,7 @@ it("imports an unsaved non-NYT draft, refuses unsafe URLs, and saves the reviewe
     recipes: [saved],
   } = await success("create_recipes", { recipes: [imported.recipe] });
 
-  expect(saved).toEqual({ ...imported.recipe, id: saved.id });
+  expect(saved).toEqual({ ...imported.recipe, id: saved.id, revision: expect.any(String) });
   await success("delete_recipe", { id: saved.id });
 });
 
@@ -1335,7 +1735,12 @@ it("does not derive shopping needs from scaled meals and seeds only an empty hou
     "2033-04-05",
     "2033-04-07",
   ]);
-  expect(shopping.extras).toContainEqual({ id: "sample-extra", name: "Greek yogurt", checked: 0 });
+  expect(shopping.extras).toContainEqual({
+    id: "sample-extra",
+    name: "Greek yogurt",
+    checked: 0,
+    revision: expect.any(String),
+  });
   expect((await call("add_demo_data", { today: "2033-04-04" })).isError).toBe(true);
   expect(await success("search_recipes", {})).toEqual(recipes);
   expect(await success("list_meals", { start: "2033-04-02", end: "2033-04-08" })).toEqual(meals);

@@ -17,7 +17,7 @@ import {
   RecipeId,
   GroceryId,
 } from "./domain";
-import { ValidationError, NotFound } from "./storage";
+import { ValidationError, NotFound, ExpectedRevisionSchema, requireRevision } from "./storage";
 import { saveRecipe, deleteRecipe, rateRecipe, importRecipeDraft } from "./recipes";
 import { saveGrocery, saveGroceryToList, deleteGrocery, renameAisle } from "./groceries";
 import {
@@ -26,8 +26,10 @@ import {
   deleteCollection,
   saveMeal,
   deleteMeal,
+  patchMealNote,
   saveExtra,
   deleteExtra,
+  patchExtraChecked,
   setShoppingChecked,
   setShoppingOrder,
   addDemoData,
@@ -35,10 +37,11 @@ import {
 import { matchGroceries, matchNewRecipes } from "./matching-run";
 import { submitFeedback, type FeedbackEnv } from "./feedback";
 import { FeedbackIdentitySchema, type Feedback } from "./feedback-contract";
+import { photoResponse } from "./photos";
 
 const invalid = (message: string) => new ValidationError({ message });
 
-const readJson = <S extends Schema.Constraint>(request: Request, schema: S, message: string) =>
+const readJson = <S extends Schema.Constraint>(request: Pick<Request, "json">, schema: S, message: string) =>
   Effect.gen(function* () {
     const body = yield* Effect.tryPromise({
       try: () => request.json(),
@@ -69,6 +72,36 @@ function api(request: Request, db: D1Database, ai?: Ai, ctx?: ExecutionContext) 
     const path = url.pathname;
     const method = request.method;
 
+    if (path.startsWith("/photos/upload-")) return yield* photoResponse(db, request);
+
+    const guarded =
+      (method === "PUT" &&
+        [
+          "/api/recipes",
+          "/api/meals",
+          "/api/groceries",
+          "/api/shopping-items",
+          "/api/collections",
+          "/api/extras",
+          "/api/shopping-order",
+        ].includes(path)) ||
+      (method === "DELETE" && /^\/api\/(recipes|meals|groceries|collections|extras)\//.test(path));
+
+    let expectedRevision: string | null | undefined;
+
+    if (guarded) {
+      const guard =
+        request.body === null
+          ? { expectedRevision: undefined }
+          : yield* readJson(
+              request.clone(),
+              Schema.Struct({ expectedRevision: Schema.optional(ExpectedRevisionSchema) }),
+              "Reload before saving.",
+            );
+
+      expectedRevision = yield* requireRevision(guard.expectedRevision);
+    }
+
     if (method === "GET" && path === "/api/household") {
       const household = yield* getHousehold(db);
       const started = performance.now();
@@ -82,21 +115,37 @@ function api(request: Request, db: D1Database, ai?: Ai, ctx?: ExecutionContext) 
     }
 
     if (method === "PUT" && path === "/api/groceries") {
-      yield* saveGrocery(db, yield* readJson(request, GroceryItemSchema, "Invalid grocery item."));
+      yield* saveGrocery(
+        db,
+        yield* readJson(request, GroceryItemSchema, "Invalid grocery item."),
+        expectedRevision,
+      );
     } else if (method === "DELETE" && path.startsWith("/api/groceries/")) {
-      yield* deleteGrocery(db, yield* brandedId(path, "/api/groceries/", GroceryId));
+      yield* deleteGrocery(db, yield* brandedId(path, "/api/groceries/", GroceryId), expectedRevision);
     } else if (method === "PUT" && path === "/api/shopping-items") {
-      yield* saveGroceryToList(db, yield* readJson(request, GroceryItemSchema, "Invalid grocery item."));
+      yield* saveGroceryToList(
+        db,
+        yield* readJson(request, GroceryItemSchema, "Invalid grocery item."),
+        expectedRevision,
+      );
     } else if (method === "PUT" && path === "/api/shopping-aisles") {
       yield* renameAisle(db, yield* readJson(request, RenameAisleSchema, "Enter a valid aisle name."));
     } else if (method === "PUT" && path === "/api/shopping-order") {
-      yield* setShoppingOrder(db, yield* readJson(request, ShoppingOrderSchema, "Invalid shopping order."));
+      yield* setShoppingOrder(
+        db,
+        yield* readJson(request, ShoppingOrderSchema, "Invalid shopping order."),
+        expectedRevision,
+      );
     } else if (method === "POST" && path === "/api/groceries/match") {
       return Response.json(yield* matchGroceries(db, ai, request.headers.get("Cf-Ray")));
     } else if (method === "PUT" && path === "/api/collections") {
-      yield* saveCollection(db, yield* readJson(request, CollectionSchema, "Add a collection name."));
+      yield* saveCollection(
+        db,
+        yield* readJson(request, CollectionSchema, "Add a collection name."),
+        expectedRevision,
+      );
     } else if (method === "DELETE" && path.startsWith("/api/collections/")) {
-      yield* deleteCollection(db, yield* decodeId(path, "/api/collections/"));
+      yield* deleteCollection(db, yield* decodeId(path, "/api/collections/"), expectedRevision);
     } else if (method === "POST" && path === "/api/recipes/import") {
       const input = yield* readJson(
         request,
@@ -110,16 +159,9 @@ function api(request: Request, db: D1Database, ai?: Ai, ctx?: ExecutionContext) 
 
       return Response.json(yield* matchGroceries(db, ai, request.headers.get("Cf-Ray"), undefined, draft));
     } else if (method === "PUT" && path === "/api/recipes") {
-      const { expectedIngredients, ...recipe } = yield* readJson(
-        request,
-        Schema.Struct({
-          ...RecipeSchema.fields,
-          expectedIngredients: Schema.optional(Schema.NullOr(RecipeSchema.fields.ingredients)),
-        }),
-        "The recipe is missing required fields.",
-      );
+      const recipe = yield* readJson(request, RecipeSchema, "The recipe is missing required fields.");
 
-      const saved = yield* saveRecipe(db, recipe, expectedIngredients);
+      const saved = yield* saveRecipe(db, recipe, expectedRevision);
 
       if (saved.created) matchNewRecipes(db, ai, ctx, [recipe.id]);
     } else if (method === "PUT" && path.startsWith("/api/recipes/rating/")) {
@@ -133,15 +175,41 @@ function api(request: Request, db: D1Database, ai?: Ai, ctx?: ExecutionContext) 
 
       yield* rateRecipe(db, id, rating);
     } else if (method === "DELETE" && path.startsWith("/api/recipes/")) {
-      yield* deleteRecipe(db, yield* brandedId(path, "/api/recipes/", RecipeId));
+      yield* deleteRecipe(db, yield* brandedId(path, "/api/recipes/", RecipeId), expectedRevision);
     } else if (method === "PUT" && path === "/api/meals") {
-      yield* saveMeal(db, yield* readJson(request, MealSchema, "The meal is missing required fields."));
+      yield* saveMeal(
+        db,
+        yield* readJson(request, MealSchema, "The meal is missing required fields."),
+        expectedRevision,
+      );
+    } else if (method === "PATCH" && path.startsWith("/api/meals/")) {
+      yield* patchMealNote(
+        db,
+        yield* decodeId(path, "/api/meals/"),
+        yield* readJson(
+          request,
+          Schema.Struct({ note: MealSchema.fields.note, expectedNote: MealSchema.fields.note }),
+          "Send the note and the previously read note.",
+        ),
+      );
     } else if (method === "DELETE" && path.startsWith("/api/meals/")) {
-      yield* deleteMeal(db, yield* decodeId(path, "/api/meals/"));
+      yield* deleteMeal(db, yield* decodeId(path, "/api/meals/"), expectedRevision);
     } else if (method === "PUT" && path === "/api/extras") {
-      yield* saveExtra(db, yield* readJson(request, ExtraSchema, "The item is missing required fields."));
+      yield* saveExtra(
+        db,
+        yield* readJson(request, ExtraSchema, "The item is missing required fields."),
+        expectedRevision,
+      );
+    } else if (method === "PATCH" && path.startsWith("/api/extras/")) {
+      const input = yield* readJson(
+        request,
+        Schema.Struct({ checked: ExtraSchema.fields.checked }),
+        "Choose checked or unchecked.",
+      );
+
+      yield* patchExtraChecked(db, yield* decodeId(path, "/api/extras/"), input.checked);
     } else if (method === "DELETE" && path.startsWith("/api/extras/")) {
-      yield* deleteExtra(db, yield* decodeId(path, "/api/extras/"));
+      yield* deleteExtra(db, yield* decodeId(path, "/api/extras/"), expectedRevision);
     } else if (method === "PUT" && path === "/api/checks") {
       yield* setShoppingChecked(db, yield* readJson(request, CheckWriteSchema, "Invalid shopping item."));
     } else if (method === "POST" && path === "/api/demo") {
@@ -202,7 +270,11 @@ export function householdApi(
         ),
       ),
     ),
-    Effect.tap((response) => Effect.sync(() => response.headers.set("Cache-Control", "no-store"))),
+    Effect.tap((response) =>
+      Effect.sync(() => {
+        if (!response.headers.has("Cache-Control")) response.headers.set("Cache-Control", "no-store");
+      }),
+    ),
   );
 
   return observation
@@ -395,6 +467,9 @@ export default {
         ) {
           return Response.json({ error: "Cross-site changes are not allowed." }, { status: 403 });
         }
+
+        if (new URL(request.url).pathname.startsWith("/photos/upload-"))
+          return householdApi(request, env.DB, env.AI, observation, tracer, ctx);
 
         if (!new URL(request.url).pathname.startsWith("/api/")) return env.ASSETS.fetch(request);
 

@@ -25,9 +25,28 @@ try {
   const dump = await exportProduction(api);
   source.exec(dump);
   const { batches, counts } = await seedSql(dump);
+  const namedRows = z.array(z.object({ name: z.string() }));
+  const history = namedRows.parse(source.prepare("SELECT name FROM sqlite_schema WHERE type='table' AND name IN ('__alchemy_migrations','d1_migrations')").all());
+  assert.equal(history.length, 1, "One authoritative migration history is required");
+  const applied = new Set(namedRows.parse(source.prepare(`SELECT name FROM "${history[0].name}"`).all()).map(row => row.name));
+  const revisionRow = z.object({ id: z.union([z.string(), z.number()]), revision: z.string() });
+  const originalRevisions = new Map<string, Map<string | number, string>>();
+  for (const table of Object.keys(counts)) {
+    if (namedRows.parse(source.prepare(`PRAGMA table_info("${table}")`).all()).some(column => column.name === "revision")) {
+      originalRevisions.set(table, new Map(z.array(revisionRow).parse(source.prepare(`SELECT id, revision FROM "${table}"`).all()).map(row => [row.id, row.revision])));
+    }
+  }
+  const photoRows = z.array(z.object({ path: z.string(), data: z.string() }));
+  const originalPhotos = new Map(namedRows.parse(source.prepare("SELECT name FROM sqlite_schema WHERE type='table' AND name='photos'").all()).length
+    ? photoRows.parse(source.prepare("SELECT path, data FROM photos").all()).map(row => [row.path, row.data])
+    : []);
   const schema = new DatabaseSync(":memory:");
   try {
-    for (const name of (await readdir("migrations")).filter((name) => name.endsWith(".sql")).sort()) schema.exec(await readFile(`migrations/${name}`, "utf8"));
+    for (const name of (await readdir("migrations")).filter((name) => name.endsWith(".sql")).sort()) {
+      const sql = await readFile(`migrations/${name}`, "utf8");
+      schema.exec(sql);
+      if (!applied.has(name)) source.exec(sql);
+    }
     const bundle = await rolldown({ input: "src/server.ts", platform: "browser" });
     const output = await bundle.generate({ format: "esm" });
     await bundle.close();
@@ -38,10 +57,66 @@ try {
     const statements = z.array(z.object({ sql: z.string() })).parse(schema.prepare("SELECT sql FROM sqlite_schema WHERE sql IS NOT NULL ORDER BY CASE type WHEN 'table' THEN 0 WHEN 'index' THEN 1 ELSE 2 END").all());
     for (const row of statements) await db.prepare(row.sql).run();
     for (const batch of batches) await db.batch(batch.split(/;\n(?=DROP|CREATE|INSERT|DELETE)|;\s*$/).filter((sql) => sql.trim()).map((sql) => db.prepare(sql)));
+
+    // Only assets absent from the export may have independent migration IDs. Match
+    // their complete data URLs, never just a digest or a recipe's current photo.
+    const migratedPhotos = photoRows.parse(source.prepare("SELECT path, data FROM photos").all()).filter(row => !originalPhotos.has(row.path));
+    const migratedPhotoByData = new Map(migratedPhotos.map(row => [row.data, row.path]));
+    assert.equal(migratedPhotoByData.size, migratedPhotos.length, "Migrated photo data is unique");
+    const photoPaths = new Map<string, string>();
+    const mappedPaths = new Set<string>();
+    for (const row of photoRows.parse((await db.prepare("SELECT path, data FROM photos").all()).results)) {
+      if (originalPhotos.has(row.path)) {
+        assert(row.data === originalPhotos.get(row.path), "Exported photo data is copied byte-for-byte at its original path");
+        continue;
+      }
+      const expectedPath = migratedPhotoByData.get(row.data);
+      assert(expectedPath !== undefined, "New photo preserves exact migrated data");
+      assert(/^\/photos\/upload-[a-p]{64}\.jpg$/.test(row.path) && /^\/photos\/upload-[a-p]{64}\.jpg$/.test(expectedPath), "New migration photo IDs use the legacy-compatible namespace");
+      assert(!mappedPaths.has(expectedPath), "Migrated photo mapping is one-to-one");
+      mappedPaths.add(expectedPath);
+      photoPaths.set(row.path, expectedPath);
+    }
+    assert.equal(mappedPaths.size, migratedPhotos.length, "Every migrated photo is copied");
     for (const table of Object.keys(counts)) {
       const expected = source.prepare(`SELECT * FROM "${table}" ORDER BY 1`).all();
       const actual = (await db.prepare(`SELECT * FROM "${table}" ORDER BY 1`).all()).results;
-      assert.equal(hash(actual), hash(expected), `${table}: exact row/column values match production export`);
+      const revisions = namedRows.parse(source.prepare(`PRAGMA table_info("${table}")`).all()).some(column => column.name === "revision")
+        ? new Map(z.array(revisionRow).parse(expected).map(row => [row.id, row.revision]))
+        : undefined;
+      const normalized = actual.map(row => {
+        const copy = { ...row };
+        if (table === "photos" && typeof copy.path === "string") copy.path = photoPaths.get(copy.path) ?? copy.path;
+        if (table === "recipes" && typeof copy.photo === "string") copy.photo = photoPaths.get(copy.photo) ?? copy.photo;
+        if (table === "meals" && typeof copy.recipe === "string") {
+          const snapshot = z.object({ photo: z.string() }).parse(JSON.parse(copy.recipe));
+          const path = photoPaths.get(snapshot.photo);
+          if (path !== undefined) {
+            // Use the migration's JSON writer so all other snapshot values retain
+            // SQLite's representation, including numbers and escaped strings.
+            copy.recipe = z.object({ recipe: z.string() }).parse(source.prepare("SELECT json_set(?, '$.photo', ?) AS recipe").get(copy.recipe, path)).recipe;
+          }
+        }
+        if (revisions) {
+          const token = revisionRow.parse(row);
+          const expectedRevision = revisions.get(token.id);
+          assert(expectedRevision !== undefined, `${table}: revision belongs to an expected row`);
+          const original = originalRevisions.get(table)?.get(token.id);
+          // Photo extraction can rotate tokens that already existed in the export.
+          // Exempt only rows actually changed by migration, never the entire table.
+          if (expectedRevision !== original) {
+            assert(/^[a-f0-9]{32}$/.test(token.revision) && /^[a-f0-9]{32}$/.test(expectedRevision), `${table}: migrated revision present`);
+            assert(token.revision !== original, `${table}: migrated revision rotated`);
+            copy.revision = expectedRevision;
+          }
+        }
+        return copy;
+      });
+      if (table === "photos") {
+        // Random IDs sort differently before normalization; compare by mapped key.
+        normalized.sort((a, b) => String(a.path) < String(b.path) ? -1 : String(a.path) > String(b.path) ? 1 : 0);
+      }
+      assert.equal(hash(normalized), hash(expected), `${table}: exact row/column values match after migration ID normalization`);
     }
     const response = await worker.dispatchFetch("http://localhost/api/household");
     assert.equal(response.status, 200);

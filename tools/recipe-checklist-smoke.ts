@@ -15,7 +15,17 @@ const check = (expression: string, message: string) => {
   console.log(`PASS ${message}`);
 };
 const request = async (path: string, method = "GET", body?: GroceryDraft | RecipeDraft | MealDraft) => {
-  const response = await fetch(`${url}/api/${path}`, { method, headers: { "Content-Type": "application/json" }, body: body ? JSON.stringify(body) : undefined });
+  // Only fixture setup/cleanup uses a freshly read revision; UI requests stay untouched.
+  let payload = body ? JSON.stringify(body) : undefined;
+  const resource = path.split("/")[0];
+  if ((method === "PUT" || method === "DELETE") && (resource === "recipes" || resource === "groceries" || resource === "meals")) {
+    const current = await household();
+    const id = method === "DELETE" ? decodeURIComponent(path.slice(resource.length + 1)) : body?.id;
+    const saved = current[resource].find(item => item.id === id);
+    if (method === "DELETE" && !saved) return new Response(null, { status: 200 });
+    payload = JSON.stringify({ ...body, expectedRevision: saved?.revision ?? null });
+  }
+  const response = await fetch(`${url}/api/${path}`, { method, headers: { "Content-Type": "application/json" }, body: payload });
   assert(response.ok, `${method} ${path}: ${response.status}`);
   return response;
 };
@@ -63,7 +73,7 @@ const recipes = [
   ]),
   recipe("other", "Unselected recipe", [{ name: "rice", quantity: 9, unit: "kg" }]),
 ];
-// This week repeats and scales one recipe; each planned recipe still counts as one batch.
+// This week repeats and scales one recipe; each meal contributes its own planned quantities.
 const week = weekStart();
 const meal = (id: string, recipeId: string, date: string, scale = 1): MealDraft => ({ id: `${prefix}-${id}`, recipeId: `${prefix}-${recipeId}`, date, slot: "Dinner", scale, note: "" });
 const meals = [
@@ -105,12 +115,12 @@ try {
   browser("wait", '.recipe-checklist form .recipe-checklist-row');
   check("!document.querySelector('.sidebar') && document.querySelector('.primary').disabled", "new tab has a standalone, initially unselected recipe picker");
   screenshot("recipe-checklist-picker");
-  check(`${weekButton}.textContent.includes('(2 recipes)') && !${weekButton}.disabled`, "current meal-plan week offers its two distinct planned recipes");
+  check(`${weekButton}.textContent.includes('(3 meals)') && !${weekButton}.disabled`, "current meal-plan week offers all three meals, including repeated sources");
   browser("click", '[aria-label="Previous week"]');
   check(`${weekButton}.disabled && ${weekButton}.textContent === 'No recipes planned this week'`, "week without planned recipes cannot generate a checklist");
   browser("click", '[aria-label="Next week"]');
   browser("click", '[aria-label="Next week"]');
-  check(`${weekButton}.textContent.includes('(1 recipe)')`, "next week offers only its planned recipe");
+  check(`${weekButton}.textContent.includes('(1 meal)')`, "next week offers only its planned meal");
   browser("click", ".recipe-checklist-week .secondary");
   browser("wait", '[aria-label="Ingredients needed"]');
   assert.deepEqual(totals(), { "Long-grain rice": "9 kg" });
@@ -124,12 +134,16 @@ try {
   screenshot("recipe-checklist-week");
   browser("click", ".recipe-checklist-week .secondary");
   browser("wait", '[aria-label="Ingredients needed"]');
-  check("document.body.textContent.includes('Rice dinner (2 servings) · Rice lunch (2 servings)') && !document.body.textContent.includes('Unselected recipe')", "week checklist names this week's recipes and replaces the previous selection");
-  assert.deepEqual(totals(), { Butter: "0.75 lb", Lime: "5", "Long-grain rice": "1 kg", Milk: "1.25 l", "Olive oil": "280.95 ml", "Panko bread crumbs": "2 cup", Parsley: "3 bunch", Salt: "10 g + 1 tsp", Sugar: "1.25 cup" });
-  console.log("PASS this week's checklist totals one batch of each distinct planned recipe");
+  check("document.body.textContent.includes('Rice dinner (4 servings, 2×)') && document.body.textContent.includes('Rice lunch (2 servings, 1×)') && !document.body.textContent.includes('Unselected recipe')", "week checklist names this week's scaled meals and replaces the previous selection");
+  assert.deepEqual(totals(), { Butter: "1.25 lb", Lime: "9", "Long-grain rice": "1.5 kg", Milk: "2.75 l", "Olive oil": "754.13 ml", "Panko bread crumbs": "5.5 cup", Parsley: "5 bunch", Salt: "30 g + 1 tsp", Sugar: "3.25 cup" });
+  browser("reload");
+  browser("wait", '[aria-label="Ingredients needed"]');
+  assert.equal(totals()["Long-grain rice"], "1.5 kg");
+  console.log("PASS this week's checklist totals every scaled meal and survives reload");
   screenshot("recipe-checklist-week-totals");
   browser("click", ".secondary");
   browser("wait", ".recipe-checklist form");
+  for (let index = 0; index < 3; index++) browser("click", '[aria-label="Selected meals"] label:first-child input');
   browser("find", "label", "Rice dinner", "check");
   browser("fill", 'input[type="search"]', "lunch");
   browser("find", "label", "Rice lunch", "check");
@@ -175,11 +189,11 @@ try {
   const shoppingGroups = "[...document.querySelectorAll('section[aria-labelledby^=\"recipe-week-\"]')].map(group => ({ heading: group.querySelector('h4').innerText.replaceAll('\\n', ' '), recipes: [...group.querySelectorAll('strong')].map(title => title.textContent) }))";
   assert.deepEqual(JSON.parse(browser("eval", shoppingGroups)), [
     { heading: "Saturday, October 24 – Friday, October 30, 2026", recipes: ["Rice dinner"] },
-    { heading: "Saturday, October 17 – Friday, October 23, 2026", recipes: ["Rice lunch"] },
+    { heading: "Saturday, October 17 – Friday, October 23, 2026", recipes: ["Rice dinner", "Rice lunch"] },
     { heading: "Not yet planned", recipes: ["Unselected recipe"] },
   ]);
-  console.log("PASS latest planned date groups each recipe once, Friday and Saturday split weeks, unplanned recipes remain available");
-  browser("find", "label", "Rice dinner", "click");
+  console.log("PASS each meal stays in its own week, Friday and Saturday split weeks, unplanned recipes remain available");
+  browser("click", 'section[aria-labelledby="recipe-week-2026-10-24"] input');
   browser("find", "label", "Search recipes", "fill", "lunch");
   check("document.querySelectorAll('.shopping-recipe-week').length === 1 && document.querySelector('.shopping-recipe-week').textContent.includes('Saturday, October 17')", "search removes empty weeks and keeps the matching recipe's heading");
   browser("find", "label", "Rice lunch", "click");
@@ -205,6 +219,7 @@ try {
   assert.deepEqual(JSON.parse(browser("eval", shoppingGroups)), [
     { heading: "Saturday, December 26 – Friday, January 1, 2027", recipes: ["Rice lunch"] },
     { heading: "Saturday, October 31 – Friday, November 6, 2026", recipes: ["Rice dinner"] },
+    { heading: "Saturday, October 17 – Friday, October 23, 2026", recipes: ["Rice dinner"] },
     { heading: "Not yet planned", recipes: ["Unselected recipe"] },
   ]);
   console.log("PASS week ranges cross month/year boundaries and the November daylight-saving transition");

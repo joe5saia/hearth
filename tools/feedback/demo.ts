@@ -43,19 +43,19 @@ const worker = new Miniflare(convertV4MiniflareOptions({ workers: [{
 const db = await worker.getD1Database("DB");
 for (const file of (await readdir("migrations")).filter(file => file.endsWith(".sql")).sort()) {
   const sql = await readFile(`migrations/${file}`, "utf8");
-  await db.batch(sql.split(/;\n(?=CREATE|INSERT|DROP|ALTER)|;\s*$/).filter(statement => statement.trim()).map(statement => db.prepare(statement)));
+  await db.batch(sql.replace(/^--.*$/gm, "").split(/;\n+(?=CREATE|INSERT|DROP|ALTER|UPDATE|DELETE)|;\s*$/).filter(statement => statement.trim()).map(statement => db.prepare(statement)));
 }
 await worker.dispatchFetch(`http://localhost/api/demo?today=${dateKey(new Date())}`, { method: "POST", headers: { "Content-Type": "application/json" } });
 const mime: Record<string, string> = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".woff2": "font/woff2", ".svg": "image/svg+xml", ".jpg": "image/jpeg", ".png": "image/png", ".webmanifest": "application/manifest+json" };
 const server = createServer(async (request, response) => {
   try {
     const url = new URL(request.url ?? "/", "http://localhost:8790");
-    if (url.pathname.startsWith("/api/")) {
+    if (url.pathname.startsWith("/api/") || url.pathname.startsWith("/photos/upload-")) {
       const chunks: Buffer[] = [];
       let size = 0;
       for await (const chunk of request) {
         size += chunk.length;
-        if (size > 32000) { response.writeHead(413); response.end(); return; }
+        if (size > (url.pathname === "/api/feedback" ? 32000 : 2_000_000)) { response.writeHead(413); response.end(); return; }
         chunks.push(chunk);
       }
       const headers = new Headers();

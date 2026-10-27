@@ -1,5 +1,7 @@
 import { execFileSync } from "node:child_process";
 import { setTimeout } from "node:timers/promises";
+import { Schema } from "effect";
+import { HouseholdSchema } from "../src/domain.ts";
 
 // Real browser/app/localStorage/Web Audio; no mocked API or accelerated clock.
 const url = process.argv[2] ?? "http://localhost:5173";
@@ -224,7 +226,7 @@ try {
   const saved = await fetch(new URL("/api/recipes", target), {
     method: "PUT",
     headers: { "Content-Type": "application/json", Origin: target.origin },
-    body: JSON.stringify(recipe),
+    body: JSON.stringify({ ...recipe, expectedRevision: null }),
   });
   if (!saved.ok) throw new Error(`Could not create disposable recipe fixture: ${saved.status}`);
   recipeCreated = true;
@@ -256,9 +258,12 @@ try {
 } finally {
   try {
     if (recipeCreated) {
+      const current = Schema.decodeUnknownSync(HouseholdSchema)(await (await fetch(new URL("/api/household", target))).json());
+      const saved = current.recipes.find(item => item.id === recipe.id);
       const removed = await fetch(new URL(`/api/recipes/${recipe.id}`, target), {
         method: "DELETE",
         headers: { "Content-Type": "application/json", Origin: target.origin },
+        body: JSON.stringify({ expectedRevision: saved?.revision }),
       });
       if (!removed.ok) throw new Error(`Could not clean up disposable recipe fixture: ${removed.status}`);
     }

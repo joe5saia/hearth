@@ -39,7 +39,7 @@ type Inventory = {
 const previewStateSchema = z.object({ url: z.url() });
 const householdSmokeSchema = z.object({
   recipes: z.array(z.object({}).passthrough()),
-  extras: z.array(z.object({ id: z.string(), name: z.string() })),
+  extras: z.array(z.object({ id: z.string(), name: z.string(), revision: z.string() })),
 });
 
 /** Derives a seven-day disposable resource identity from the full owning thread ID. */
@@ -464,15 +464,19 @@ async function smoke(name: string): Promise<void> {
       name,
       "/api/extras",
       "PUT",
-      JSON.stringify({ id, name: "Preview persistence check", checked: 0 }),
+      JSON.stringify({ id, name: "Preview persistence check", checked: 0, expectedRevision: null }),
     );
     if (!saved.ok) throw new Error(`D1 write failed: ${saved.status}`);
     const household = householdSmokeSchema.parse(await (await previewFetch(name, "/api/household")).json());
     if (!household.extras.some((e) => e.id === id && e.name === "Preview persistence check"))
       throw new Error("D1 read-after-write failed.");
   } finally {
-    const deleted = await previewFetch(name, `/api/extras/${id}`, "DELETE", "{}");
-    if (!deleted.ok) throw new Error(`Smoke fixture cleanup failed: ${deleted.status}`);
+    const current = householdSmokeSchema.parse(await (await previewFetch(name, "/api/household")).json());
+    const saved = current.extras.find(extra => extra.id === id);
+    if (saved) {
+      const deleted = await previewFetch(name, `/api/extras/${id}`, "DELETE", JSON.stringify({ expectedRevision: saved.revision }));
+      if (!deleted.ok) throw new Error(`Smoke fixture cleanup failed: ${deleted.status}`);
+    }
   }
   const final = householdSmokeSchema.parse(await (await previewFetch(name, "/api/household")).json());
   if (final.extras.some((e) => e.id === id)) throw new Error("D1 delete did not persist.");

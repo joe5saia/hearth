@@ -1,8 +1,8 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, expectTypeOf, it } from "vitest";
 import { Miniflare, convertV4MiniflareOptions } from "miniflare";
 import { rolldown } from "rolldown";
-import { readFile } from "node:fs/promises";
-import { createHmac } from "node:crypto";
+import { readFile, readdir } from "node:fs/promises";
+import { createHash, createHmac } from "node:crypto";
 import { exportJWK, generateKeyPair, SignJWT, type JSONWebKeySet, type JWTPayload } from "jose";
 import { sampleRecipes } from "../src/seed";
 import { Schema } from "effect";
@@ -16,7 +16,7 @@ import {
   type MealDraft,
   type Ingredient,
   type IngredientDraft,
-  type RecipeId,
+  RecipeId,
   type GroceryId,
 } from "../src/domain";
 import server from "../src/server";
@@ -30,6 +30,11 @@ let script = "";
 let signingKey: CryptoKey;
 
 let publicKeys: JSONWebKeySet;
+
+const uploadedPng =
+  "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a9S0AAAAASUVORK5CYII=";
+
+const uploadedWebp = "data:image/webp;base64,UklGRiIAAABXRUJQVlA4IBYAAAAwAQCdASoBAAEADsD+JaQAA3AAAAAA";
 
 const feedbackDeliveries: { body: string; id: string | null; signature: string | null }[] = [];
 
@@ -68,7 +73,7 @@ const defaultCollections = [
   { id: "special", name: "Something special" },
   { id: "vegetarian", name: "Vegetarian" },
   { id: "weeknight", name: "Weeknight favorites" },
-];
+].map((collection) => ({ ...collection, revision: expect.any(String) }));
 
 expectTypeOf<RecipeId>().not.toExtend<GroceryId>();
 
@@ -354,7 +359,13 @@ beforeAll(async () => {
       .map((s) => db.prepare(s)),
   );
   // Upgrade a populated plan, not just an empty schema.
-  await recipeStatement(db, sampleRecipes[0]).run();
+  await db.batch(
+    (await readFile("migrations/0005_ingredient_matching.sql", "utf8"))
+      .split(/;\s*(?=CREATE|INSERT|DROP|ALTER|UPDATE)|;\s*$/)
+      .filter((s) => s.trim())
+      .map((s) => db.prepare(s)),
+  );
+  await legacyRecipeStatement(db, sampleRecipes[0]).run();
   await db
     .prepare("INSERT INTO meals(id,recipeId,date,slot,scale,note) VALUES(?,?,?,?,?,?)")
     .bind(meal.id, meal.recipeId, meal.date, meal.slot, meal.scale, meal.note)
@@ -384,6 +395,92 @@ beforeAll(async () => {
   await db.prepare(await readFile("migrations/0010_shopping_packages.sql", "utf8")).run();
   expect(await db.prepare("SELECT * FROM meals").first()).toEqual(meal);
   await expect(db.prepare("DELETE FROM recipes WHERE id=?").bind(meal.recipeId).run()).rejects.toThrow();
+
+  const historicalRecipe = Schema.decodeUnknownSync(RecipeSchema)({
+    ...sampleRecipes[0],
+    description: 'Historical description with Unicode: café and "quotes".',
+    rating: "down",
+    servings: 2.5,
+    minutes: 137,
+    ingredients: [
+      { name: "Rice", quantity: 1.25, unit: "cup", originalText: "1¼ cups rice, rinsed" },
+      { name: "Salt", quantity: 2, unit: "pinch", groceryItemId: null },
+      { name: "Oil", quantity: 3, unit: "tbsp", grocerySuggestions: ["historical-suggestion"] },
+      { name: "Beans", quantity: 1, unit: "can", groceryItemId: "historical-product" },
+    ],
+    instructions: ["First step.\nKeep this newline.", "Second step — simmer."],
+  });
+
+  await db
+    .prepare(
+      "INSERT INTO groceries(id,name,url,aisle,quantity,unit,aliases) VALUES('historical-product','Beans','','5',1,'can','[]')",
+    )
+    .run();
+  await legacyRecipeStatement(db, historicalRecipe).run();
+  await db
+    .prepare("UPDATE recipes SET rating=? WHERE id=?")
+    .bind(historicalRecipe.rating, historicalRecipe.id)
+    .run();
+
+  const historicalMeals = [
+    meal,
+    {
+      ...meal,
+      id: "historical-second",
+      date: "2024-02-29",
+      slot: "Breakfast",
+      scale: 0.25,
+      note: "Older meal",
+    },
+    { ...meal, id: "historical-note", recipeId: null, note: "Same date, separate note" },
+    { ...meal, id: "historical-note-other", recipeId: null, date: "2023-01-01", note: "No recipe" },
+  ];
+
+  await db.batch(
+    historicalMeals
+      .slice(1)
+      .map((entry) =>
+        db
+          .prepare("INSERT INTO meals(id,recipeId,date,slot,scale,note) VALUES(?,?,?,?,?,?)")
+          .bind(entry.id, entry.recipeId, entry.date, entry.slot, entry.scale, entry.note),
+      ),
+  );
+  const snapshotsSql = await readFile("migrations/0011_meal_recipes.sql", "utf8");
+  await db.batch(
+    snapshotsSql
+      .replace(/^--.*$/gm, "")
+      .split(/;\s*(?=CREATE|INSERT|DROP|ALTER|UPDATE)|;\s*$/)
+      .filter((s) => s.trim())
+      .map((s) => db.prepare(s)),
+  );
+  await db.batch(
+    (await readFile("migrations/0012_entity_revisions.sql", "utf8"))
+      .replace(/^--.*$/gm, "")
+      .split(/;\s*(?=CREATE|INSERT|DROP|ALTER|UPDATE)|;\s*$/)
+      .filter((s) => s.trim())
+      .map((s) => db.prepare(s)),
+  );
+  await db.batch(
+    (await readFile("migrations/0013_photos.sql", "utf8"))
+      .replace(/^--.*$/gm, "")
+      .split(/;\s*\n(?=CREATE|INSERT|DROP|ALTER|UPDATE)|;\s*$/)
+      .filter((s) => s.trim())
+      .map((s) => db.prepare(s)),
+  );
+
+  const migrated = Schema.decodeUnknownSync(HouseholdSchema)(
+    await (await worker.dispatchFetch("http://localhost/api/household")).json(),
+  );
+
+  expect(migrated.meals).toHaveLength(historicalMeals.length);
+
+  for (const entry of historicalMeals)
+    expect(migrated.meals.find((saved) => saved.id === entry.id)).toEqual({
+      ...entry,
+      revision: expect.any(String),
+      recipe: entry.recipeId === null ? null : historicalRecipe,
+    });
+  await expect(db.prepare("DELETE FROM recipes WHERE id=?").bind(meal.recipeId).run()).rejects.toThrow();
 }, 30000);
 
 beforeEach(async () => {
@@ -395,8 +492,10 @@ beforeEach(async () => {
     db.prepare("DELETE FROM feedback"),
     db.prepare("DELETE FROM meals"),
     db.prepare("DELETE FROM recipes"),
+    db.prepare("DELETE FROM photos"),
     db.prepare("DELETE FROM groceries"),
     db.prepare("DELETE FROM shopping_order"),
+    db.prepare("INSERT INTO shopping_order(id,aisles,items) VALUES(1,'[]','[]')"),
     db.prepare("DELETE FROM extras"),
     db.prepare("DELETE FROM checks"),
     db.prepare("DELETE FROM collections"),
@@ -410,14 +509,607 @@ afterAll(async () => {
   await worker?.dispose();
 });
 
-const send = (path: string, method: string, body: string) =>
-  worker.dispatchFetch(`http://localhost/api/${path}`, {
+// Ordinary legacy scenarios deliberately read fresh state; regression scenarios use raw requests.
+const send = async (path: string, method: string, body: string) => {
+  const dispatch = () =>
+    worker.dispatchFetch(`http://localhost/api/${path}`, {
+      method,
+      headers: { "Content-Type": "application/json" },
+      body,
+    });
+
+  const resource = path.split("/")[0];
+
+  if (
+    ((method === "PUT" && !path.includes("/")) || method === "DELETE") &&
+    ["recipes", "meals", "groceries", "shopping-items", "collections", "extras", "shopping-order"].includes(
+      resource,
+    )
+  ) {
+    let input: Record<string, typeof Schema.Json.Type>;
+
+    try {
+      input = Schema.decodeUnknownSync(Schema.Record(Schema.String, Schema.Json))(JSON.parse(body || "{}"));
+    } catch {
+      return dispatch();
+    }
+
+    if (!("expectedRevision" in input)) {
+      const db = await worker.getD1Database("DB");
+
+      const table =
+        resource === "shopping-items"
+          ? "groceries"
+          : resource === "shopping-order"
+            ? "shopping_order"
+            : resource;
+
+      let id: typeof Schema.Json.Type | undefined;
+
+      try {
+        id =
+          resource === "shopping-order"
+            ? 1
+            : method === "DELETE"
+              ? decodeURIComponent(path.slice(resource.length + 1))
+              : input.id;
+      } catch {
+        body = JSON.stringify({ ...input, expectedRevision: "invalid-id" });
+
+        return dispatch();
+      }
+
+      const row =
+        id === undefined
+          ? null
+          : await db.prepare(`SELECT revision FROM ${table} WHERE id=?`).bind(id).first();
+
+      const revision = row
+        ? Schema.decodeUnknownSync(Schema.Struct({ revision: Schema.String }))(row).revision
+        : null;
+
+      body = JSON.stringify({ ...input, expectedRevision: revision });
+    }
+  }
+
+  return worker.dispatchFetch(`http://localhost/api/${path}`, {
     method,
     headers: { "Content-Type": "application/json" },
     body,
   });
+};
+
+// Historical writer intentionally predates revision and snapshot columns.
+function legacyRecipeStatement(db: D1Database, recipe: typeof RecipeSchema.Type) {
+  return db
+    .prepare(`INSERT INTO recipes(id,title,description,servings,minutes,category,photo,source,ingredients,instructions)
+    VALUES(?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET title=excluded.title,description=excluded.description,
+    servings=excluded.servings,minutes=excluded.minutes,category=excluded.category,photo=excluded.photo,source=excluded.source,
+    ingredients=excluded.ingredients,instructions=excluded.instructions`)
+    .bind(
+      recipe.id,
+      recipe.title,
+      recipe.description,
+      recipe.servings,
+      recipe.minutes,
+      recipe.category,
+      recipe.photo,
+      recipe.source,
+      JSON.stringify(recipe.ingredients),
+      JSON.stringify(recipe.instructions),
+    );
+}
 
 describe("real Worker with disposable SQLite D1", () => {
+  it("extracts legacy uploads once, keeps customized snapshots, supports old SQL writers and safely reapplies the photo migration", async () => {
+    const legacy = new Miniflare(options("true"));
+
+    try {
+      const db = await legacy.getD1Database("DB");
+
+      const migrate = async (name: string) => {
+        const sql = await readFile(`migrations/${name}`, "utf8");
+        await db.batch(
+          sql
+            .replace(/^--.*$/gm, "")
+            .split(/;\s*\n(?=CREATE|INSERT|DROP|ALTER|UPDATE)|;\s*$/)
+            .filter((s) => s.trim())
+            .map((s) => db.prepare(s)),
+        );
+      };
+
+      for (const name of (await readdir("migrations"))
+        .filter((name) => name.endsWith(".sql") && name < "0013_photos.sql")
+        .sort())
+        await migrate(name);
+      const source = { ...sampleRecipes[0], photo: uploadedPng };
+      const custom = { ...source, title: "Customized meal photo", photo: uploadedWebp };
+      const external = { ...source, photo: "https://example.com/private-dinner.png" };
+      await legacyRecipeStatement(db, source).run();
+      await legacyRecipeStatement(db, { ...sampleRecipes[1], photo: uploadedPng }).run();
+
+      for (const [id, recipe] of [
+        ["shared", source],
+        ["custom", custom],
+        ["external", external],
+      ] as const)
+        await db
+          .prepare(
+            "INSERT INTO meals(id,recipeId,date,slot,scale,note,recipe) VALUES(?,?,'2026-09-21','Dinner',1,'',?)",
+          )
+          .bind(id, source.id, JSON.stringify(recipe))
+          .run();
+      await db
+        .prepare(
+          "INSERT INTO meals(id,recipeId,date,slot,scale,note) VALUES('note',NULL,'2026-09-21','Lunch',1,'Picnic')",
+        )
+        .run();
+
+      await migrate("0013_photos.sql");
+
+      const read = async () =>
+        Schema.decodeUnknownSync(HouseholdSchema)(
+          await (await legacy.dispatchFetch("http://localhost/api/household")).json(),
+        );
+
+      const photos = async () =>
+        Schema.decodeUnknownSync(Schema.Array(Schema.Struct({ path: Schema.String, data: Schema.String })))(
+          (await db.prepare("SELECT path,data FROM photos ORDER BY path").all()).results,
+        );
+
+      const assets = await photos();
+      expect(assets).toHaveLength(2);
+      const sharedPath = assets.find((asset) => asset.data === uploadedPng)?.path;
+      const customPath = assets.find((asset) => asset.data === uploadedWebp)?.path;
+      expect(sharedPath).toMatch(/^\/photos\/upload-[a-p]{64}\.jpg$/);
+      expect(customPath).toMatch(/^\/photos\/upload-[a-p]{64}\.jpg$/);
+      const migrated = await read();
+      expect(migrated.recipes.map((recipe) => recipe.photo)).toEqual([sharedPath, sharedPath]);
+      expect(migrated.meals.find((entry) => entry.id === "shared")?.recipe).toEqual({
+        ...source,
+        photo: sharedPath,
+      });
+      expect(migrated.meals.find((entry) => entry.id === "custom")?.recipe).toEqual({
+        ...custom,
+        photo: customPath,
+      });
+      expect(migrated.meals.find((entry) => entry.id === "external")?.recipe).toEqual(external);
+      expect(migrated.meals.find((entry) => entry.id === "note")?.recipe).toBeNull();
+
+      // A current upload must reuse a migrated random ID, not create a second hash-addressed asset.
+      const saved = await legacy.dispatchFetch("http://localhost/api/recipes", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ...source, id: "current-upload", expectedRevision: null }),
+      });
+
+      expect(saved.status).toBe(200);
+      expect((await read()).recipes.find((recipe) => recipe.id === "current-upload")?.photo).toBe(sharedPath);
+      expect(await photos()).toEqual(assets);
+
+      // Both INSERT and UPDATE from pre-photo Workers still extract inline values.
+      await legacyRecipeStatement(db, { ...source, id: RecipeId.make("old-writer") }).run();
+      expect((await read()).recipes.find((recipe) => recipe.id === "old-writer")?.photo).toBe(sharedPath);
+      await legacyRecipeStatement(db, {
+        ...source,
+        id: RecipeId.make("old-writer"),
+        photo: uploadedWebp,
+      }).run();
+      await db
+        .prepare(
+          "INSERT INTO meals(id,recipeId,date,slot,scale,note) VALUES('old-capture','old-writer','2026-09-21','Dinner',1,'')",
+        )
+        .run();
+      expect((await read()).meals.find((entry) => entry.id === "old-capture")?.recipe?.photo).toBe(
+        customPath,
+      );
+      await db
+        .prepare(
+          "INSERT INTO meals(id,recipeId,date,slot,scale,note,recipe) VALUES('old-explicit',?,'2026-09-21','Dinner',1,'',?)",
+        )
+        .bind(source.id, JSON.stringify(custom))
+        .run();
+      expect((await read()).meals.find((entry) => entry.id === "old-explicit")?.recipe?.photo).toBe(
+        customPath,
+      );
+      await db
+        .prepare("UPDATE meals SET recipe=? WHERE id='old-explicit'")
+        .bind(JSON.stringify(source))
+        .run();
+      expect((await read()).meals.find((entry) => entry.id === "old-explicit")?.recipe?.photo).toBe(
+        sharedPath,
+      );
+      expect((await read()).meals.find((entry) => entry.id === "custom")?.recipe?.photo).toBe(customPath);
+      expect(await photos()).toEqual(assets);
+
+      // Old INSERT and UPDATE triggers must also create previously unseen assets.
+      for (const [index, file] of ["chicken", "pasta", "bowl", "soup"].entries()) {
+        const data = `data:image/jpeg;base64,${Buffer.from(await readFile(`public/photos/${file}.jpg`)).toString("base64")}`;
+
+        if (index < 2) {
+          await legacyRecipeStatement(db, {
+            ...source,
+            id: RecipeId.make("old-new-upload"),
+            photo: data,
+          }).run();
+        } else if (index === 2) {
+          await db
+            .prepare(
+              "INSERT INTO meals(id,recipeId,date,slot,scale,note,recipe) VALUES('old-new-meal',?,'2026-09-21','Dinner',1,'',?)",
+            )
+            .bind(source.id, JSON.stringify({ ...source, photo: data }))
+            .run();
+        } else {
+          await db
+            .prepare("UPDATE meals SET recipe=? WHERE id='old-new-meal'")
+            .bind(JSON.stringify({ ...source, photo: data }))
+            .run();
+        }
+
+        const asset = (await photos()).find((asset) => asset.data === data);
+        expect(asset?.path).toMatch(/^\/photos\/upload-[a-p]{64}\.jpg$/);
+        const state = await read();
+        expect(
+          index < 2
+            ? state.recipes.find((recipe) => recipe.id === "old-new-upload")?.photo
+            : state.meals.find((entry) => entry.id === "old-new-meal")?.recipe?.photo,
+        ).toBe(asset?.path);
+        expect(await photos()).toHaveLength(3 + index);
+      }
+
+      const orphanPath = `/photos/upload-${"d".repeat(64)}.jpg`;
+      await db
+        .prepare("INSERT INTO photos(path,data) VALUES(?,?)")
+        .bind(orphanPath, "data:image/jpeg;base64,/9j/2Q==")
+        .run();
+      const beforeReapply = await read();
+      const retained = await photos();
+      await migrate("0013_photos.sql");
+      expect(await photos()).toEqual(retained);
+      expect(await read()).toEqual(beforeReapply);
+      await expect(
+        db.prepare("UPDATE photos SET data=? WHERE path=?").bind(uploadedPng, orphanPath).run(),
+      ).rejects.toThrow();
+      expect(await photos()).toEqual(retained);
+    } finally {
+      await legacy.dispose();
+    }
+  }, 30_000);
+
+  it("upgrades an already-applied snapshot-only 0011 without losing customized meals", async () => {
+    const legacy = new Miniflare(options("true"));
+
+    try {
+      const db = await legacy.getD1Database("DB");
+
+      const migrate = async (file: string, originalSnapshot = false) => {
+        let sql = await readFile(`migrations/${file}`, "utf8");
+
+        if (originalSnapshot) sql = sql.split("-- Overlapping Workers")[0];
+        await db.batch(
+          sql
+            .replace(/^--.*$/gm, "")
+            .split(/;\s*\n(?=CREATE|INSERT|DROP|ALTER|UPDATE)|;\s*$/)
+            .filter((s) => s.trim())
+            .map((s) => db.prepare(s)),
+        );
+      };
+
+      for (const file of [
+        "0001_initial.sql",
+        "0002_recipe_rating.sql",
+        "0003_collections.sql",
+        "0004_groceries.sql",
+        "0005_ingredient_matching.sql",
+        "0006_meal_notes.sql",
+        "0010_shopping_packages.sql",
+      ])
+        await migrate(file);
+      await legacyRecipeStatement(db, sampleRecipes[0]).run();
+      await legacyRecipeStatement(db, sampleRecipes[1]).run();
+      await migrate("0011_meal_recipes.sql", true);
+      const custom = { ...sampleRecipes[0], title: "Keep this customized dinner" };
+      await db.batch([
+        db
+          .prepare(
+            "INSERT INTO meals(id,recipeId,date,slot,scale,note) VALUES('null-snapshot',?,'2026-09-21','Dinner',1,'')",
+          )
+          .bind(sampleRecipes[0].id),
+        db
+          .prepare(
+            "INSERT INTO meals(id,recipeId,date,slot,scale,note,recipe) VALUES('wrong-source',?,'2026-09-21','Dinner',1,'',?)",
+          )
+          .bind(sampleRecipes[1].id, JSON.stringify(sampleRecipes[0])),
+        db
+          .prepare(
+            "INSERT INTO meals(id,recipeId,date,slot,scale,note,recipe) VALUES('custom',?,'2026-09-21','Dinner',1,'',?)",
+          )
+          .bind(sampleRecipes[0].id, JSON.stringify(custom)),
+        db
+          .prepare(
+            "INSERT INTO meals(id,recipeId,date,slot,scale,note,recipe) VALUES('note',NULL,'2026-09-21','Dinner',1,'Takeout',?)",
+          )
+          .bind(JSON.stringify(sampleRecipes[0])),
+      ]);
+      await migrate("0012_entity_revisions.sql");
+      await migrate("0013_photos.sql");
+
+      const read = async () =>
+        Schema.decodeUnknownSync(HouseholdSchema)(
+          await (await legacy.dispatchFetch("http://localhost/api/household")).json(),
+        );
+
+      const upgraded = await read();
+      expect(upgraded.meals.find((row) => row.id === "custom")?.recipe).toEqual(custom);
+      expect(upgraded.meals.find((row) => row.id === "null-snapshot")?.recipe).toEqual(sampleRecipes[0]);
+      expect(upgraded.meals.find((row) => row.id === "wrong-source")?.recipe).toEqual(sampleRecipes[1]);
+      expect(upgraded.meals.find((row) => row.id === "note")?.recipe).toBeNull();
+      expect(upgraded.meals.every((row) => row.revision?.length === 32)).toBe(true);
+      // The old writer still omits both new columns after the additive migration.
+      await db
+        .prepare(
+          "INSERT INTO meals(id,recipeId,date,slot,scale,note) VALUES('after-upgrade',?,'2026-09-21','Dinner',1,'')",
+        )
+        .bind(sampleRecipes[0].id)
+        .run();
+      expect((await read()).meals.find((row) => row.id === "after-upgrade")?.recipe).toEqual(
+        sampleRecipes[0],
+      );
+      await db
+        .prepare("UPDATE meals SET recipeId=? WHERE id='after-upgrade'")
+        .bind(sampleRecipes[1].id)
+        .run();
+      expect((await read()).meals.find((row) => row.id === "after-upgrade")?.recipe).toEqual(
+        sampleRecipes[1],
+      );
+    } finally {
+      await legacy.dispose();
+    }
+  });
+
+  it("rejects stale, missing, creation-conflicting and deleted-version writes for every structural resource", async () => {
+    const raw = (path: string, method: string, input: typeof Schema.Json.Type) =>
+      worker.dispatchFetch(`http://localhost/api/${path}`, {
+        method,
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(input),
+      });
+
+    const read = async () =>
+      Schema.decodeUnknownSync(HouseholdSchema)(
+        await (await worker.dispatchFetch("http://localhost/api/household")).json(),
+      );
+
+    const fixtures = [
+      ["recipes", { ...sampleRecipes[0], id: "guard-recipe", category: "" }],
+      ["meals", { ...meal, id: "guard-meal", recipeId: null, note: "Original note" }],
+      [
+        "groceries",
+        { id: "guard-grocery", name: "Beans", url: "", aisle: "1", quantity: 1, unit: "can", aliases: [] },
+      ],
+      [
+        "shopping-items",
+        { id: "guard-shopping", name: "Rice", url: "", aisle: "2", quantity: 1, unit: "kg", aliases: [] },
+      ],
+      ["collections", { id: "guard-collection", name: "Guard collection" }],
+      ["extras", { id: "guard-extra", name: "Soap", checked: 0 }],
+    ] as const;
+
+    for (const [path, fixture] of fixtures) {
+      const resource = path === "shopping-items" ? "groceries" : path;
+      const oldClient = await raw(path, "PUT", fixture);
+      expect(oldClient.status).toBe(409);
+      expect(await oldClient.json()).toEqual({
+        error: "Reload the app to get the latest version before saving or deleting; no changes were applied.",
+      });
+      expect((await raw(path, "PUT", { ...fixture, expectedRevision: null })).status).toBe(200);
+      const first = (await read())[resource].find((row) => row.id === fixture.id);
+
+      if (!first?.revision) throw new Error("Persisted revision missing");
+      expect(first.revision).toMatch(/^[a-f0-9]{32}$/);
+      expect((await raw(path, "PUT", { ...fixture, expectedRevision: null })).status).toBe(409);
+      expect((await raw(path, "PUT", { ...fixture, expectedRevision: first.revision })).status).toBe(200);
+      const second = (await read())[resource].find((row) => row.id === fixture.id);
+
+      if (!second?.revision) throw new Error("Updated revision missing");
+      expect(second.revision).not.toBe(first.revision);
+      const beforeRejected = await read();
+      const staleClient = await raw(path, "PUT", { ...fixture, expectedRevision: first.revision });
+      expect(staleClient.status).toBe(409);
+      expect(await staleClient.json()).toEqual({
+        error:
+          path === "collections"
+            ? "This collection changed, no longer exists, or its name is already in use. Reload before saving."
+            : "This item changed or no longer exists. Reload the latest household before saving or deleting; your changes were not applied.",
+      });
+      expect((await raw(path, "PUT", fixture)).status).toBe(409);
+
+      for (const body of [undefined, "{}", JSON.stringify({ revision: second.revision })]) {
+        const unguardedDelete = await worker.dispatchFetch(`http://localhost/api/${resource}/${fixture.id}`, {
+          method: "DELETE",
+          headers: { "Content-Type": "application/json" },
+          body,
+        });
+
+        expect(unguardedDelete.status).toBe(409);
+        expect(await unguardedDelete.json()).toEqual({
+          error:
+            "Reload the app to get the latest version before saving or deleting; no changes were applied.",
+        });
+      }
+
+      expect(
+        (await raw(`${resource}/${fixture.id}`, "DELETE", { expectedRevision: first.revision })).status,
+      ).toBe(409);
+      expect(await read()).toEqual(beforeRejected);
+      expect(
+        (await raw(`${resource}/${fixture.id}`, "DELETE", { expectedRevision: second.revision })).status,
+      ).toBe(200);
+      expect((await raw(path, "PUT", { ...fixture, expectedRevision: second.revision })).status).toBe(409);
+      expect(
+        (await raw(`${resource}/${fixture.id}`, "DELETE", { expectedRevision: second.revision })).status,
+      ).toBe(409);
+      expect((await raw(path, "PUT", { ...fixture, expectedRevision: null })).status).toBe(200);
+      const recreated = (await read())[resource].find((row) => row.id === fixture.id);
+      expect(recreated?.revision).not.toBe(second.revision);
+      expect(
+        (await raw(`${resource}/${fixture.id}`, "DELETE", { expectedRevision: second.revision })).status,
+      ).toBe(409);
+    }
+
+    const order = { aisles: ["1"], items: [] };
+    expect((await raw("shopping-order", "PUT", order)).status).toBe(409);
+    expect((await raw("shopping-order", "PUT", { ...order, expectedRevision: null })).status).toBe(409);
+    const first = (await read()).shoppingOrder;
+
+    if (!first.revision) throw new Error("Order revision missing");
+    expect((await raw("shopping-order", "PUT", { ...order, expectedRevision: null })).status).toBe(409);
+    expect(
+      (await raw("shopping-order", "PUT", { ...order, aisles: ["2"], expectedRevision: first.revision }))
+        .status,
+    ).toBe(200);
+    expect((await raw("shopping-order", "PUT", { ...order, expectedRevision: first.revision })).status).toBe(
+      409,
+    );
+    expect((await read()).shoppingOrder.aisles).toEqual(["2"]);
+  });
+
+  it("merges note-only intent with newer meal structure and never resurrects deleted meals or extras", async () => {
+    const raw = (path: string, method: string, input: typeof Schema.Json.Type) =>
+      worker.dispatchFetch(`http://localhost/api/${path}`, {
+        method,
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(input),
+      });
+
+    const read = async () =>
+      Schema.decodeUnknownSync(HouseholdSchema)(
+        await (await worker.dispatchFetch("http://localhost/api/household")).json(),
+      );
+
+    await send("recipes", "PUT", JSON.stringify(sampleRecipes[0]));
+    await send("meals", "PUT", JSON.stringify(meal));
+    const stale = (await read()).meals[0];
+
+    if (!stale.revision || !stale.recipe) throw new Error("Missing meal");
+
+    const latest = {
+      ...stale,
+      date: "2026-09-22",
+      recipe: { ...stale.recipe, title: "Meal-only edit" },
+      expectedRevision: stale.revision,
+    };
+
+    expect((await raw("meals", "PUT", latest)).status).toBe(200);
+    expect(
+      (await raw("meals", "PUT", { ...stale, note: "Lost update", expectedRevision: stale.revision })).status,
+    ).toBe(409);
+    expect(
+      (await raw(`meals/${stale.id}`, "PATCH", { note: "New note", expectedNote: stale.note })).status,
+    ).toBe(200);
+    expect((await read()).meals[0]).toMatchObject({
+      date: latest.date,
+      note: "New note",
+      recipe: { title: "Meal-only edit" },
+    });
+    expect(
+      (await raw(`meals/${stale.id}`, "PATCH", { note: "Other note", expectedNote: stale.note })).status,
+    ).toBe(409);
+    const current = (await read()).meals[0];
+    expect(
+      (await raw(`meals/${stale.id}`, "DELETE", { expectedRevision: current.revision ?? "missing" })).status,
+    ).toBe(200);
+    expect(
+      (await raw(`meals/${stale.id}`, "PATCH", { note: "Recreate", expectedNote: "New note" })).status,
+    ).toBe(409);
+    await send("extras", "PUT", JSON.stringify({ id: "patch-extra", name: "Original", checked: 0 }));
+    await send("extras", "PUT", JSON.stringify({ id: "patch-extra", name: "Renamed", checked: 0 }));
+    expect((await raw("extras/patch-extra", "PATCH", { checked: 1 })).status).toBe(200);
+    expect((await read()).extras[0]).toMatchObject({ name: "Renamed", checked: 1 });
+    await send("extras/patch-extra", "DELETE", "{}");
+    expect((await raw("extras/patch-extra", "PATCH", { checked: 0 })).status).toBe(409);
+  });
+
+  it("captures snapshots and rotates tokens for overlapping old SQL writers and indirect cleanup", async () => {
+    const db = await worker.getD1Database("DB");
+
+    const read = async () =>
+      Schema.decodeUnknownSync(HouseholdSchema)(
+        await (await worker.dispatchFetch("http://localhost/api/household")).json(),
+      );
+
+    await legacyRecipeStatement(db, sampleRecipes[0]).run();
+    await legacyRecipeStatement(db, sampleRecipes[1]).run();
+
+    const oldMeal = (recipeId: string | null, note = "Old writer") =>
+      db
+        .prepare(
+          `INSERT INTO meals(id,recipeId,date,slot,scale,note) VALUES('rolling',?,'2026-09-21','Dinner',1,?) ON CONFLICT(id) DO UPDATE SET recipeId=excluded.recipeId,note=excluded.note`,
+        )
+        .bind(recipeId, note)
+        .run();
+
+    await oldMeal(sampleRecipes[0].id);
+    const initial = (await read()).meals[0];
+    expect(initial.recipe).toEqual(sampleRecipes[0]);
+    await db
+      .prepare("UPDATE recipes SET title='New source title' WHERE id=?")
+      .bind(sampleRecipes[0].id)
+      .run();
+    await oldMeal(sampleRecipes[0].id, "Same source");
+    const preserved = (await read()).meals[0];
+    expect(preserved.recipe).toEqual(initial.recipe);
+    expect(preserved.revision).not.toBe(initial.revision);
+    await oldMeal(sampleRecipes[1].id);
+    expect((await read()).meals[0].recipe).toEqual(sampleRecipes[1]);
+    await oldMeal(null, "Now a note");
+    expect((await read()).meals[0].recipe).toBeNull();
+    await oldMeal(sampleRecipes[0].id);
+    expect((await read()).meals[0].recipe?.title).toBe("New source title");
+    const beforeRename = (await read()).recipes.find((row) => row.id === sampleRecipes[0].id);
+    await db
+      .prepare("UPDATE collections SET name='Renamed category' WHERE name=?")
+      .bind(sampleRecipes[0].category)
+      .run();
+    const renamed = (await read()).recipes.find((row) => row.id === sampleRecipes[0].id);
+    expect(renamed?.revision).not.toBe(beforeRename?.revision);
+    await send(
+      "groceries",
+      "PUT",
+      JSON.stringify({
+        id: "indirect",
+        name: "Oil",
+        url: "",
+        aisle: "1",
+        quantity: 1,
+        unit: "l",
+        aliases: [],
+      }),
+    );
+    await db
+      .prepare("UPDATE recipes SET ingredients=? WHERE id=?")
+      .bind(
+        JSON.stringify([{ name: "Oil", quantity: 1, unit: "l", groceryItemId: "indirect" }]),
+        sampleRecipes[0].id,
+      )
+      .run();
+    const linked = (await read()).recipes.find((row) => row.id === sampleRecipes[0].id);
+    await send("groceries/indirect", "DELETE", "{}");
+    const unlinked = (await read()).recipes.find((row) => row.id === sampleRecipes[0].id);
+    expect(unlinked?.revision).not.toBe(linked?.revision);
+    expect(unlinked?.ingredients[0].groceryItemId).toBeNull();
+    expect(
+      (
+        await send(
+          "checks",
+          "PUT",
+          JSON.stringify({ key: '["shopping-list","indirect"]', checked: 0, packages: 5 }),
+        )
+      ).status,
+    ).toBe(400);
+    expect((await read()).groceries).toEqual([]);
+  });
+
   it("authenticates feedback, signs its preserved context and deduplicates safe retries without household writes", async () => {
     const ticket = {
       schemaVersion: 2,
@@ -650,7 +1342,10 @@ describe("real Worker with disposable SQLite D1", () => {
     for (const [path, method, message] of routes) {
       for (const [body, error] of [
         ["{", "Please send valid JSON."],
-        ["null", message],
+        [
+          "null",
+          method === "PUT" && !path.includes("/") && path !== "checks" ? "Reload before saving." : message,
+        ],
       ]) {
         const response = await send(path, method, body);
         expect(response.status).toBe(400);
@@ -735,7 +1430,12 @@ describe("real Worker with disposable SQLite D1", () => {
 
       const recovered = await worker.dispatchFetch("http://localhost/api/household");
       expect(recovered.status).toBe(200);
-      expect(Schema.decodeUnknownSync(HouseholdSchema)(await recovered.json())).toEqual(before);
+      expect(Schema.decodeUnknownSync(HouseholdSchema)(await recovered.json())).toEqual({
+        ...before,
+        recipes: before.recipes.map((row) => ({ ...row, revision: expect.any(String) })),
+        groceries: before.groceries.map((row) => ({ ...row, revision: expect.any(String) })),
+        shoppingOrder: { ...before.shoppingOrder, revision: expect.any(String) },
+      });
     }
   });
   it("builds a persistent manual grocery list independently of recipes and meal scales", async () => {
@@ -876,7 +1576,7 @@ describe("real Worker with disposable SQLite D1", () => {
     expect(household.checks).toContainEqual({ key: checkedKey, checked: 0, packages: 1 });
     await put("checks", { key: checkedKey, checked: 1 });
     expect((await state()).checks.some((entry) => entry.key === checkedKey)).toBe(false);
-    expect(household.shoppingOrder).toEqual(order);
+    expect(household.shoppingOrder).toEqual({ ...order, revision: expect.any(String) });
   });
 
   it("does not revive membership after a late check write and same-ID product recreation", async () => {
@@ -1011,7 +1711,7 @@ describe("real Worker with disposable SQLite D1", () => {
         await (await worker.dispatchFetch("http://localhost/api/household")).json(),
       );
 
-    expect((await state()).shoppingOrder).toEqual({ aisles: [], items: [] });
+    expect((await state()).shoppingOrder).toEqual({ aisles: [], items: [], revision: expect.any(String) });
 
     const item = Schema.decodeUnknownSync(GroceryItemSchema)({
       id: "rice",
@@ -1068,7 +1768,7 @@ describe("real Worker with disposable SQLite D1", () => {
         }),
       ).run(),
     ).rejects.toThrow();
-    await recipeStatement(
+    await legacyRecipeStatement(
       db,
       Schema.decodeUnknownSync(RecipeSchema)({
         ...recipe,
@@ -1096,7 +1796,7 @@ describe("real Worker with disposable SQLite D1", () => {
     ]);
     const order = { aisles: ["Dry goods", ""], items: ["rice", "unresolved:test"] };
     expect((await put("shopping-order", order)).status).toBe(200);
-    expect((await state()).shoppingOrder).toEqual(order);
+    expect((await state()).shoppingOrder).toEqual({ ...order, revision: expect.any(String) });
     expect((await put("shopping-order", { ...order, items: ["rice", "rice"] })).status).toBe(400);
     expect((await send("groceries/other", "DELETE", "")).status).toBe(200);
     expect((await state()).groceries).toHaveLength(1);
@@ -1156,6 +1856,7 @@ describe("real Worker with disposable SQLite D1", () => {
 
     const expectedRecipes = before.recipes.map((recipe) => ({
       ...recipe,
+      revision: expect.any(String),
       ingredients: recipe.ingredients.map((ingredient) =>
         ingredient.groceryItemId === removed.id ? { ...ingredient, groceryItemId: null } : ingredient,
       ),
@@ -1172,7 +1873,14 @@ describe("real Worker with disposable SQLite D1", () => {
     expect((await send(`groceries/${encodeURIComponent(removed.id)}`, "DELETE", "")).status).toBe(409);
     expect(await state()).toEqual(after);
     // A stale editor cannot resurrect dangling links or overwrite the unlinked recipe.
-    expect((await put("recipes", before.recipes[0])).status).toBe(400);
+    expect(
+      (
+        await put("recipes", {
+          ...before.recipes[0],
+          expectedRevision: before.recipes[0].revision ?? "missing",
+        })
+      ).status,
+    ).toBe(409);
     expect(await state()).toEqual(after);
     expect(
       (await put("checks", { key: JSON.stringify(["shopping-list", removed.id]), checked: 0 })).status,
@@ -1181,7 +1889,7 @@ describe("real Worker with disposable SQLite D1", () => {
     // Recreating an identical name/ID does not silently re-match explicitly unlinked ingredients.
     expect((await put("groceries", removed)).status).toBe(200);
 
-    for (const recipe of expectedRecipes) expect((await put("recipes", recipe)).status).toBe(200);
+    for (const recipe of after.recipes) expect((await put("recipes", recipe)).status).toBe(200);
     expect((await state()).recipes).toEqual(expectedRecipes);
     // Failure of the second batch statement rolls back the product deletion and recipe unlinking.
     const db = await worker.getD1Database("DB");
@@ -1238,9 +1946,15 @@ describe("real Worker with disposable SQLite D1", () => {
     expect((await put("shopping-aisles", { from: "Meat", to: "  Butcher  " })).status).toBe(200);
     const after = await state();
     expect(after.groceries).toEqual(
-      before.groceries.map((item) => (item.aisle === "Meat" ? { ...item, aisle: "Butcher" } : item)),
+      before.groceries.map((item) =>
+        item.aisle === "Meat" ? { ...item, aisle: "Butcher", revision: expect.any(String) } : item,
+      ),
     );
-    expect(after.shoppingOrder).toEqual({ ...order, aisles: ["Produce", "Butcher", ""] });
+    expect(after.shoppingOrder).toEqual({
+      ...order,
+      aisles: ["Produce", "Butcher", ""],
+      revision: expect.any(String),
+    });
     expect(after.checks).toEqual(before.checks);
     expect((await put("shopping-aisles", { from: "Butcher", to: "Butcher" })).status).toBe(200);
     expect(await state()).toEqual(after);
@@ -1297,7 +2011,7 @@ describe("real Worker with disposable SQLite D1", () => {
     expect(response.status).toBe(200);
     const state = Schema.decodeUnknownSync(HouseholdSchema)(await response.json());
     expect(state.collections).toEqual(defaultCollections);
-    expect(state.recipes).toEqual([recipe]);
+    expect(state.recipes).toEqual([{ ...recipe, revision: expect.any(String) }]);
     expect(await db.prepare("SELECT category FROM recipes WHERE id=?").bind(recipe.id).first()).toEqual({
       category: "Plant-based",
     });
@@ -1317,9 +2031,17 @@ describe("real Worker with disposable SQLite D1", () => {
       await (await worker.dispatchFetch("http://localhost/api/household")).json(),
     );
 
-    expect(state.recipes).toEqual([recipe]);
-    expect(state.collections).toContainEqual({ id: "double", name: "Sunday  suppers" });
-    expect(state.collections).toContainEqual({ id: "single", name: "Sunday suppers" });
+    expect(state.recipes).toEqual([{ ...recipe, revision: expect.any(String) }]);
+    expect(state.collections).toContainEqual({
+      id: "double",
+      name: "Sunday  suppers",
+      revision: expect.any(String),
+    });
+    expect(state.collections).toContainEqual({
+      id: "single",
+      name: "Sunday suppers",
+      revision: expect.any(String),
+    });
   });
   it("migrates existing collection assignments without changing saved recipes", async () => {
     const legacy = new Miniflare(options("true"));
@@ -1337,7 +2059,7 @@ describe("real Worker with disposable SQLite D1", () => {
         );
       }
 
-      await recipeStatement(db, { ...sampleRecipes[0], category: "" }).run();
+      await legacyRecipeStatement(db, { ...sampleRecipes[0], category: "" }).run();
       await db
         .prepare("UPDATE recipes SET category=? WHERE id=?")
         .bind("Weeknight favorites", sampleRecipes[0].id)
@@ -1357,12 +2079,30 @@ describe("real Worker with disposable SQLite D1", () => {
           .map((s) => db.prepare(s)),
       );
 
+      for (const file of [
+        "0005_ingredient_matching.sql",
+        "0006_meal_notes.sql",
+        "0010_shopping_packages.sql",
+        "0011_meal_recipes.sql",
+        "0012_entity_revisions.sql",
+        "0013_photos.sql",
+      ]) {
+        const migration = await readFile(`migrations/${file}`, "utf8");
+        await db.batch(
+          migration
+            .replace(/^--.*$/gm, "")
+            .split(/;\s*\n(?=CREATE|INSERT|DROP|ALTER|UPDATE)|;\s*$/)
+            .filter((s) => s.trim())
+            .map((s) => db.prepare(s)),
+        );
+      }
+
       const state = Schema.decodeUnknownSync(HouseholdSchema)(
         await (await legacy.dispatchFetch("http://localhost/api/household")).json(),
       );
 
       expect(state.collections).toEqual(defaultCollections);
-      expect(state.recipes).toEqual([sampleRecipes[0]]);
+      expect(state.recipes).toEqual([{ ...sampleRecipes[0], revision: expect.any(String) }]);
     } finally {
       await legacy.dispose();
     }
@@ -1403,17 +2143,29 @@ describe("real Worker with disposable SQLite D1", () => {
       );
 
     const renamed = await read();
-    expect(renamed.collections).toContainEqual({ id: collection.id, name: "Weekend dinners" });
+    expect(renamed.collections).toContainEqual({
+      id: collection.id,
+      name: "Weekend dinners",
+      revision: expect.any(String),
+    });
     expect(renamed.recipes.find((item) => item.id === recipe.id)).toEqual({
       ...recipe,
       category: "Weekend dinners",
+      revision: expect.any(String),
     });
-    expect(renamed.recipes.find((item) => item.id === sampleRecipes[1].id)).toEqual(sampleRecipes[1]);
+    expect(renamed.recipes.find((item) => item.id === sampleRecipes[1].id)).toEqual({
+      ...sampleRecipes[1],
+      revision: expect.any(String),
+    });
     expect((await send(`collections/${encodeURIComponent(collection.id)}`, "DELETE", "{}")).status).toBe(200);
     const deleted = await read();
     expect(deleted.collections).toEqual(defaultCollections);
-    expect(deleted.recipes.find((item) => item.id === recipe.id)).toEqual({ ...recipe, category: "" });
-    expect(deleted.meals).toEqual([meal]);
+    expect(deleted.recipes.find((item) => item.id === recipe.id)).toEqual({
+      ...recipe,
+      category: "",
+      revision: expect.any(String),
+    });
+    expect(deleted.meals).toEqual([{ ...meal, recipe, revision: expect.any(String) }]);
     expect((await send("recipes", "PUT", JSON.stringify(recipe))).status).toBe(400);
     expect((await send("recipes", "PUT", JSON.stringify({ ...recipe, category: "" }))).status).toBe(200);
   });
@@ -1435,15 +2187,15 @@ describe("real Worker with disposable SQLite D1", () => {
     );
 
     expect(state.collections).toEqual(defaultCollections);
-    expect(state.recipes).toEqual([sampleRecipes[0]]);
-    expect((await send("collections/missing", "DELETE", "{}")).status).toBe(404);
+    expect(state.recipes).toEqual([{ ...sampleRecipes[0], revision: expect.any(String) }]);
+    expect((await send("collections/missing", "DELETE", "{}")).status).toBe(409);
   });
   it("starts empty and saves recipe JSON, decimal quantities, source, and photo", async () => {
     const initial = await worker.dispatchFetch("http://localhost/api/household");
     expect(await initial.json()).toEqual({
       collections: defaultCollections,
       groceries: [],
-      shoppingOrder: { aisles: [], items: [] },
+      shoppingOrder: { aisles: [], items: [], revision: expect.any(String) },
       recipes: [],
       recipesAdded: [],
       meals: [],
@@ -1471,6 +2223,251 @@ describe("real Worker with disposable SQLite D1", () => {
     expect(stored.source).toBe(sampleRecipes[0].source);
     expect(stored.ingredients).toEqual(sampleRecipes[0].ingredients);
   });
+
+  it("shares immutable uploaded assets across recipes and meals without repeating bytes in household responses", async () => {
+    const upload = `data:image/jpeg;base64,${Buffer.from(await readFile("public/photos/chicken.jpg")).toString("base64")}`;
+
+    const hash = createHash("sha256")
+      .update(Buffer.from(upload.split(",")[1], "base64"))
+      .digest("hex")
+      .replace(/[0-9]/g, (digit) => String.fromCharCode(103 + Number(digit)));
+
+    const path = `/photos/upload-${hash}.jpg`;
+    const source = { ...sampleRecipes[0], photo: upload };
+
+    const read = async () =>
+      Schema.decodeUnknownSync(HouseholdSchema)(
+        await (await worker.dispatchFetch("http://localhost/api/household")).json(),
+      );
+
+    expect((await send("recipes", "PUT", JSON.stringify(source))).status).toBe(200);
+    expect(
+      (await send("recipes", "PUT", JSON.stringify({ ...sampleRecipes[1], photo: upload }))).status,
+    ).toBe(200);
+
+    for (let index = 0; index < 32; index++)
+      expect(
+        (await send("meals", "PUT", JSON.stringify({ ...meal, id: `photo-meal-${index}` }))).status,
+      ).toBe(200);
+    const response = await worker.dispatchFetch("http://localhost/api/household");
+    const body = await response.text();
+    expect(response.status).toBe(200);
+    expect(Buffer.byteLength(body)).toBeLessThan(upload.length);
+    expect(body).not.toContain("data:image/");
+    const state = Schema.decodeUnknownSync(HouseholdSchema)(JSON.parse(body));
+    expect(state.meals).toHaveLength(32);
+    expect(state.meals.every((entry) => entry.recipe?.photo === path)).toBe(true);
+    expect(state.recipes.every((recipe) => recipe.photo === path)).toBe(true);
+    // This intentionally restates the OLD reader's path constraint, not the new schema.
+    expect(path).toMatch(/^\/photos\/[a-z-]+\.jpg$/);
+    const db = await worker.getD1Database("DB");
+    expect((await db.prepare("SELECT path,data FROM photos").all()).results).toEqual([
+      { path, data: upload },
+    ]);
+    expect(
+      await db.prepare("SELECT count(*) AS count FROM meals WHERE recipe LIKE '%data:image/%'").first(),
+    ).toEqual({ count: 0 });
+
+    expect((await send("recipes", "PUT", JSON.stringify({ ...source, photo: uploadedPng }))).status).toBe(
+      200,
+    );
+    const replacement = (await read()).recipes.find((recipe) => recipe.id === source.id)?.photo;
+    expect(replacement).toMatch(/^\/photos\/upload-[a-p]{64}\.jpg$/);
+    expect(replacement).not.toBe(path);
+    expect((await read()).meals.every((entry) => entry.recipe?.photo === path)).toBe(true);
+    expect(
+      (
+        await send(
+          "meals",
+          "PUT",
+          JSON.stringify({ ...meal, id: "photo-meal-0", recipe: { ...source, photo: uploadedWebp } }),
+        )
+      ).status,
+    ).toBe(200);
+    const edited = await read();
+    expect(edited.meals.find((entry) => entry.id === "photo-meal-0")?.recipe?.photo).not.toBe(path);
+    expect(
+      edited.meals
+        .filter((entry) => entry.id !== "photo-meal-0")
+        .every((entry) => entry.recipe?.photo === path),
+    ).toBe(true);
+    expect(edited.recipes.find((recipe) => recipe.id === sampleRecipes[1].id)?.photo).toBe(path);
+    expect(edited.recipes.find((recipe) => recipe.id === source.id)?.photo).toBe(replacement);
+    // Explicit snapshots may share an existing pointer without uploading again.
+    expect(
+      (
+        await send(
+          "meals",
+          "PUT",
+          JSON.stringify({ ...meal, id: "photo-meal-1", recipe: { ...source, photo: replacement } }),
+        )
+      ).status,
+    ).toBe(200);
+    expect((await send("recipes", "PUT", JSON.stringify({ ...source, photo: "" }))).status).toBe(200);
+    expect((await read()).meals.find((entry) => entry.id === "photo-meal-1")?.recipe?.photo).toBe(
+      replacement,
+    );
+
+    const beforeRace = (await read()).recipes.find((recipe) => recipe.id === source.id);
+
+    if (!beforeRace) throw new Error("Photo source missing");
+
+    const candidates = await Promise.all(
+      ["bowl", "soup"].map(
+        async (name) =>
+          `data:image/jpeg;base64,${Buffer.from(await readFile(`public/photos/${name}.jpg`)).toString("base64")}`,
+      ),
+    );
+
+    const raced = await Promise.all(
+      candidates.map((photo) =>
+        worker.dispatchFetch("http://localhost/api/recipes", {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ ...beforeRace, photo, expectedRevision: beforeRace.revision }),
+        }),
+      ),
+    );
+
+    expect(raced.map((response) => response.status).sort()).toEqual([200, 409]);
+    const winner = candidates[raced.findIndex((response) => response.status === 200)];
+    const winnerPath = (await read()).recipes.find((recipe) => recipe.id === source.id)?.photo;
+    expect(
+      await db
+        .prepare("SELECT data FROM photos WHERE path=?")
+        .bind(winnerPath ?? "")
+        .first(),
+    ).toEqual({ data: winner });
+    // Rejecting a concurrent upload must not leave its unreferenced bytes behind.
+    const assets = (await db.prepare("SELECT path,data FROM photos ORDER BY path").all()).results;
+    expect(assets).toHaveLength(4);
+
+    for (const entry of (await read()).meals)
+      expect((await send(`meals/${entry.id}`, "DELETE", "{}")).status).toBe(200);
+
+    for (const recipe of (await read()).recipes)
+      expect((await send(`recipes/${recipe.id}`, "DELETE", "{}")).status).toBe(200);
+    expect((await db.prepare("SELECT path,data FROM photos ORDER BY path").all()).results).toEqual(assets);
+    const retained = await worker.dispatchFetch(`http://localhost${path}`);
+    expect(retained.status).toBe(200);
+    expect(Buffer.from(await retained.arrayBuffer())).toEqual(Buffer.from(upload.split(",")[1], "base64"));
+  }, 30_000);
+
+  it("serves exact PNG/JPEG/WebP bytes only behind normal Access, with private headers and GET/HEAD semantics", async () => {
+    const uploads = [
+      uploadedPng,
+      uploadedWebp,
+      `data:image/jpeg;base64,${Buffer.from(await readFile("public/photos/chicken.jpg")).toString("base64")}`,
+    ];
+
+    const paths: string[] = [];
+
+    for (const [index, photo] of uploads.entries()) {
+      expect(
+        (await send("recipes", "PUT", JSON.stringify({ ...sampleRecipes[0], id: `asset-${index}`, photo })))
+          .status,
+      ).toBe(200);
+
+      const household = Schema.decodeUnknownSync(HouseholdSchema)(
+        await (await worker.dispatchFetch("http://localhost/api/household")).json(),
+      );
+
+      const path = household.recipes.find((recipe) => recipe.id === `asset-${index}`)?.photo;
+
+      if (!path) throw new Error("Uploaded asset reference missing");
+      paths.push(path);
+    }
+
+    await worker.setOptions(options("false"));
+
+    const token = await new SignJWT({ email: "joe5saia@gmail.com" })
+      .setProtectedHeader({ alg: "RS256", kid: "test-key" })
+      .setIssuer("https://saiaai.cloudflareaccess.com")
+      .setAudience("test-hearth")
+      .setSubject("photo-reader")
+      .setExpirationTime("5m")
+      .sign(signingKey);
+
+    const headers = { "Cf-Access-Jwt-Assertion": token };
+
+    for (const [index, path] of paths.entries()) {
+      for (const method of ["GET", "HEAD"]) {
+        expect((await worker.dispatchFetch(`http://localhost${path}`, { method })).status).toBe(403);
+        expect(
+          (
+            await worker.dispatchFetch(`http://localhost${path}`, {
+              method,
+              headers: {
+                "Cf-Access-Jwt-Assertion": "forged",
+                "Cf-Access-Authenticated-User-Email": "joe5saia@gmail.com",
+              },
+            })
+          ).status,
+        ).toBe(403);
+        const asset = await worker.dispatchFetch(`http://localhost${path}`, { method, headers });
+        expect(asset.status).toBe(200);
+        expect(asset.headers.get("Content-Type")).toBe(uploads[index].slice(5, uploads[index].indexOf(";")));
+        expect(asset.headers.get("Cache-Control")).toContain("private");
+        expect(asset.headers.get("Cache-Control")).toContain("no-store");
+        expect(asset.headers.get("X-Content-Type-Options")).toBe("nosniff");
+        expect(Buffer.from(await asset.arrayBuffer())).toEqual(
+          method === "HEAD" ? Buffer.alloc(0) : Buffer.from(uploads[index].split(",")[1], "base64"),
+        );
+      }
+
+      for (const method of ["POST", "PUT", "PATCH", "DELETE", "OPTIONS"])
+        expect((await worker.dispatchFetch(`http://localhost${path}`, { method, headers })).status).toBe(405);
+    }
+
+    for (const method of ["GET", "HEAD"])
+      expect(
+        (
+          await worker.dispatchFetch(`http://localhost/photos/upload-${"a".repeat(64)}.jpg`, {
+            method,
+            headers,
+          })
+        ).status,
+      ).toBe(404);
+    expect((await worker.dispatchFetch(`http://localhost${paths[0]}`, { headers })).status).toBe(200);
+  });
+
+  it("rejects missing upload references and malformed base64 before recipe or explicit meal writes", async () => {
+    expect((await send("recipes", "PUT", JSON.stringify(sampleRecipes[0]))).status).toBe(200);
+    expect((await send("meals", "PUT", JSON.stringify(meal))).status).toBe(200);
+    const before = await (await worker.dispatchFetch("http://localhost/api/household")).json();
+    const db = await worker.getD1Database("DB");
+
+    for (const photo of [
+      `/photos/upload-${"a".repeat(64)}.jpg`,
+      "/photos/upload-not-an-asset.jpg",
+      "data:image/png;base64,A",
+      "data:image/png;base64,AA=A",
+      "data:image/png;base64,====",
+      "data:image/png;base64,not base64!",
+    ]) {
+      expect((await send("recipes", "PUT", JSON.stringify({ ...sampleRecipes[0], photo }))).status).toBe(400);
+      expect(
+        (await send("recipes", "PUT", JSON.stringify({ ...sampleRecipes[0], id: "invalid-photo", photo })))
+          .status,
+      ).toBe(400);
+      expect(
+        (await send("meals", "PUT", JSON.stringify({ ...meal, recipe: { ...sampleRecipes[0], photo } })))
+          .status,
+      ).toBe(400);
+      expect(
+        (
+          await send(
+            "meals",
+            "PUT",
+            JSON.stringify({ ...meal, id: "invalid-photo-meal", recipe: { ...sampleRecipes[0], photo } }),
+          )
+        ).status,
+      ).toBe(400);
+      expect(await (await worker.dispatchFetch("http://localhost/api/household")).json()).toEqual(before);
+      expect(await db.prepare("SELECT count(*) AS count FROM photos").first()).toEqual({ count: 0 });
+    }
+  });
+
   it("rejects malformed JSON, invalid URLs, quantities, empty ingredients, and invalid dates", async () => {
     expect((await send("recipes", "PUT", JSON.stringify(sampleRecipes[0]))).status).toBe(200);
     expect((await send("recipes", "PUT", "{")).status).toBe(400);
@@ -1517,6 +2514,243 @@ describe("real Worker with disposable SQLite D1", () => {
     expect(await db.prepare("SELECT count(*) AS count FROM recipes").first()).toEqual({ count: 0 });
   });
 
+  it("keeps complete meal snapshots independent from their source and each other across old-style and concurrent saves", async () => {
+    const put = (entry: MealDraft) => send("meals", "PUT", JSON.stringify(entry));
+
+    const read = async () =>
+      Schema.decodeUnknownSync(HouseholdSchema)(
+        await (await worker.dispatchFetch("http://localhost/api/household")).json(),
+      );
+
+    const source = sampleRecipes[0];
+    const otherSource = sampleRecipes[1];
+
+    for (const recipe of [source, otherSource])
+      expect((await send("recipes", "PUT", JSON.stringify(recipe))).status).toBe(200);
+    expect((await send(`recipes/rating/${source.id}`, "PUT", JSON.stringify({ rating: "up" }))).status).toBe(
+      200,
+    );
+    const original = { ...source, rating: "up" as const };
+    const secondMeal = { ...meal, id: "second-meal" };
+
+    for (const entry of [meal, secondMeal]) expect((await put(entry)).status).toBe(200);
+    expect((await read()).meals).toEqual([
+      { ...secondMeal, recipe: original, revision: expect.any(String) },
+      { ...meal, recipe: original, revision: expect.any(String) },
+    ]);
+
+    const editedRecipe = {
+      ...original,
+      title: "Only tonight's chicken",
+      description: "Independent description",
+      servings: 2,
+      minutes: 21,
+      category: "A meal-only collection label",
+      photo: "https://example.com/meal.png",
+      source: "https://example.com/meal",
+      rating: "down" as const,
+      ingredients: [
+        {
+          name: "Salt",
+          originalText: "a pinch of salt",
+          quantity: 2,
+          unit: "pinch" as const,
+          groceryItemId: null,
+          grocerySuggestions: ["remembered-product"],
+        },
+      ],
+      instructions: ["A completely different meal step."],
+    };
+
+    expect((await put({ ...meal, recipe: editedRecipe })).status).toBe(200);
+    let state = await read();
+    expect(state.recipes.find((recipe) => recipe.id === source.id)).toEqual({
+      ...original,
+      revision: expect.any(String),
+    });
+    expect(state.meals.find((entry) => entry.id === meal.id)?.recipe).toEqual(editedRecipe);
+    expect(state.meals.find((entry) => entry.id === secondMeal.id)?.recipe).toEqual(original);
+
+    const changedSource = {
+      ...source,
+      title: "Source changed after planning",
+      instructions: ["Source-only step."],
+    };
+
+    expect((await send("recipes", "PUT", JSON.stringify(changedSource))).status).toBe(200);
+    expect(
+      (await send(`recipes/rating/${source.id}`, "PUT", JSON.stringify({ rating: "neutral" }))).status,
+    ).toBe(200);
+
+    const rescheduled = {
+      ...meal,
+      date: "2027-02-12",
+      slot: "Lunch" as const,
+      scale: 2.25,
+      note: "Keep my independent recipe",
+    };
+
+    expect((await put(rescheduled)).status).toBe(200);
+    state = await read();
+    expect(state.meals.find((entry) => entry.id === meal.id)).toEqual({
+      ...rescheduled,
+      recipe: editedRecipe,
+      revision: expect.any(String),
+    });
+    expect(state.meals.find((entry) => entry.id === secondMeal.id)?.recipe).toEqual(original);
+    expect(state.recipes.find((recipe) => recipe.id === source.id)).toEqual({
+      ...changedSource,
+      revision: expect.any(String),
+    });
+
+    // Concurrent whole saves share a captured revision: exactly one wins, the other conflicts.
+    for (let round = 0; round < 4; round++) {
+      const concurrentRecipe = { ...editedRecipe, title: `Concurrent snapshot ${round}` };
+      const current = (await read()).meals.find((entry) => entry.id === meal.id);
+
+      if (!current?.revision) throw new Error("Missing meal revision");
+
+      const responses = await Promise.all([
+        send(
+          "meals",
+          "PUT",
+          JSON.stringify({ ...rescheduled, recipe: concurrentRecipe, expectedRevision: current.revision }),
+        ),
+        send(
+          "meals",
+          "PUT",
+          JSON.stringify({
+            ...rescheduled,
+            note: `Concurrent note ${round}`,
+            expectedRevision: current.revision,
+          }),
+        ),
+      ]);
+
+      expect(responses.map((response) => response.status).sort()).toEqual([200, 409]);
+      expect((await read()).meals.find((entry) => entry.id === meal.id)?.recipe).toEqual(
+        responses[0].status === 200 ? concurrentRecipe : current.recipe,
+      );
+    }
+
+    const changedMeal = { ...rescheduled, recipeId: otherSource.id };
+    expect((await put(changedMeal)).status).toBe(200);
+    expect((await read()).meals.find((entry) => entry.id === meal.id)).toEqual({
+      ...changedMeal,
+      recipe: otherSource,
+      revision: expect.any(String),
+    });
+    const note = { ...changedMeal, recipeId: null, note: "Takeout", recipe: null };
+    expect((await put(note)).status).toBe(200);
+    expect((await read()).meals.find((entry) => entry.id === meal.id)).toEqual({
+      ...note,
+      revision: expect.any(String),
+    });
+    expect((await put({ ...rescheduled })).status).toBe(200);
+    expect((await read()).meals.find((entry) => entry.id === meal.id)?.recipe).toEqual(changedSource);
+    // A supplied snapshot also wins on creation; it is not silently replaced with the source.
+    expect((await put({ ...meal, id: "explicit-new", recipe: editedRecipe })).status).toBe(200);
+    expect((await read()).meals.find((entry) => entry.id === "explicit-new")?.recipe).toEqual(editedRecipe);
+  });
+
+  it("links substituted meal ingredients without changing source recipes, other meals or explicit choices", async () => {
+    const read = async () =>
+      Schema.decodeUnknownSync(HouseholdSchema)(
+        await (await worker.dispatchFetch("http://localhost/api/household")).json(),
+      );
+
+    const pork = { id: "pork", name: "Pork", aliases: [], quantity: 500, unit: "g", aisle: "Meat", url: "" };
+    const chicken = { ...pork, id: "chicken", name: "Chicken", aliases: ["chicken breast"] };
+
+    for (const grocery of [pork, chicken])
+      expect((await send("groceries", "PUT", JSON.stringify(grocery))).status).toBe(200);
+    expect(
+      (
+        await send(
+          "recipes",
+          "PUT",
+          JSON.stringify({
+            ...sampleRecipes[0],
+            ingredients: [{ name: "Pork", quantity: 400, unit: "g", groceryItemId: "pork" }],
+          }),
+        )
+      ).status,
+    ).toBe(200);
+
+    for (const id of ["substitution", "unchanged"])
+      expect((await send("meals", "PUT", JSON.stringify({ ...meal, id }))).status).toBe(200);
+    const before = await read();
+    const first = before.meals.find((entry) => entry.id === "substitution");
+
+    if (!first?.recipe) throw new Error("Missing meal snapshot");
+
+    const ingredients = [
+      { name: " CHICKEN   breast ", quantity: 350, unit: "g" },
+      { name: "Chicken", quantity: 100, unit: "g", groceryItemId: null },
+      { name: "Cook's choice", quantity: 50, unit: "g", groceryItemId: "pork" },
+      { name: "Unknown substitute", quantity: 1, unit: "each" },
+    ];
+
+    expect(
+      (
+        await send(
+          "meals",
+          "PUT",
+          JSON.stringify({
+            ...first,
+            recipe: { ...first.recipe, ingredients },
+          }),
+        )
+      ).status,
+    ).toBe(200);
+    const after = await read();
+    expect(after.meals.find((entry) => entry.id === first.id)?.recipe?.ingredients).toEqual([
+      { ...ingredients[0], groceryItemId: "chicken" },
+      ...ingredients.slice(1),
+    ]);
+    expect(after.recipes).toEqual(before.recipes);
+    expect(after.meals.find((entry) => entry.id === "unchanged")).toEqual(
+      before.meals.find((entry) => entry.id === "unchanged"),
+    );
+    expect(after.groceries).toEqual(before.groceries);
+    expect(after.checks).toEqual(before.checks);
+  });
+
+  it("rejects invalid meal snapshots before writes and validates stored snapshot JSON at the read boundary", async () => {
+    const source = sampleRecipes[0];
+    expect((await send("recipes", "PUT", JSON.stringify(source))).status).toBe(200);
+    expect((await send("meals", "PUT", JSON.stringify(meal))).status).toBe(200);
+
+    const read = async () =>
+      Schema.decodeUnknownSync(HouseholdSchema)(
+        await (await worker.dispatchFetch("http://localhost/api/household")).json(),
+      );
+
+    const before = await read();
+
+    for (const patch of [
+      { recipe: null },
+      { recipe: { ...source, id: "wrong-provenance" } },
+      { recipe: { ...source, ingredients: [] } },
+      { recipe: { ...source, servings: 0 } },
+      { recipe: { ...source, source: "javascript:alert(1)" } },
+      { recipe: { ...source, ingredients: [{ name: "Salt", quantity: 0, unit: "g" }] } },
+      { recipe: { ...source, instructions: [""] } },
+      { recipe: { ...source, photo: `data:image/png;base64,${"a".repeat(1_900_000)}` } },
+      { recipeId: null, recipe: source, note: "Note-only" },
+      { recipeId: "missing", recipe: { ...source, id: "missing" } },
+    ]) {
+      expect((await send("meals", "PUT", JSON.stringify({ ...meal, ...patch }))).status).toBe(400);
+      expect(await read()).toEqual(before);
+    }
+
+    const db = await worker.getD1Database("DB");
+    await db.prepare("UPDATE meals SET recipe=? WHERE id=?").bind('{"id":"incomplete"}', meal.id).run();
+    const response = await worker.dispatchFetch("http://localhost/api/household");
+    expect(response.status).toBe(500);
+    expect(await response.text()).not.toContain("incomplete");
+  });
+
   it("reports recipe addition order independently of titles, edits, ratings and deletions", async () => {
     const [lemon, pasta, bowl, salmon] = sampleRecipes;
 
@@ -1561,7 +2795,7 @@ describe("real Worker with disposable SQLite D1", () => {
       );
 
     expect((await put(note)).status).toBe(200);
-    expect((await household()).meals).toEqual([note]);
+    expect((await household()).meals).toEqual([{ ...note, recipe: null, revision: expect.any(String) }]);
     expect((await household()).recipes).toEqual([]);
 
     for (const patch of [
@@ -1573,7 +2807,7 @@ describe("real Worker with disposable SQLite D1", () => {
       { date: "2026-02-30" },
     ])
       expect((await put({ ...note, ...patch })).status).toBe(400);
-    expect((await household()).meals).toEqual([note]);
+    expect((await household()).meals).toEqual([{ ...note, recipe: null, revision: expect.any(String) }]);
 
     expect((await send("recipes", "PUT", JSON.stringify(sampleRecipes[0]))).status).toBe(200);
     expect((await put(meal)).status).toBe(200);
@@ -1582,7 +2816,10 @@ describe("real Worker with disposable SQLite D1", () => {
     expect(ingredients).toEqual([]);
     const edited = { ...note, date: "2026-09-23", slot: "Lunch" as const, note: "Leftovers" };
     expect((await put(edited)).status).toBe(200);
-    expect((await household()).meals).toEqual([meal, edited]);
+    expect((await household()).meals).toEqual([
+      { ...meal, recipe: sampleRecipes[0], revision: expect.any(String) },
+      { ...edited, recipe: null, revision: expect.any(String) },
+    ]);
     // Both conversions replace the same row; no phantom ingredients or lost recipe links.
     expect((await put({ ...meal, id: note.id })).status).toBe(200);
     expect((await household()).meals).toHaveLength(2);
@@ -1590,7 +2827,9 @@ describe("real Worker with disposable SQLite D1", () => {
     state = await household();
     expect(shoppingList(state.groceries)).toEqual(ingredients);
     expect((await send(`meals/${note.id}`, "DELETE", "{}")).status).toBe(200);
-    expect((await household()).meals).toEqual([meal]);
+    expect((await household()).meals).toEqual([
+      { ...meal, recipe: sampleRecipes[0], revision: expect.any(String) },
+    ]);
   });
   it("defaults recipes to neutral and persists each rating without rewriting recipe fields", async () => {
     const recipe = sampleRecipes[0];
@@ -1642,7 +2881,9 @@ describe("real Worker with disposable SQLite D1", () => {
       );
 
     expect((await send("shopping-items", "PUT", JSON.stringify(coffee))).status).toBe(200);
-    expect((await state()).groceries).toEqual([{ ...coffee, name: "Coffee", aisle: "4" }]);
+    expect((await state()).groceries).toEqual([
+      { ...coffee, name: "Coffee", aisle: "4", revision: expect.any(String) },
+    ]);
     expect((await state()).checks).toEqual([{ key: '["shopping-list","coffee"]', checked: 0, packages: 1 }]);
 
     expect(
@@ -1687,11 +2928,11 @@ describe("real Worker with disposable SQLite D1", () => {
     expect(Schema.decodeUnknownSync(HouseholdSchema)(await state.json())).toEqual({
       collections: defaultCollections,
       groceries: [],
-      shoppingOrder: { aisles: [], items: [] },
+      shoppingOrder: { aisles: [], items: [], revision: expect.any(String) },
       recipes: [],
       recipesAdded: [],
       meals: [],
-      extras: [{ id: "snack", name: "Apples & peanut butter", checked: 1 }],
+      extras: [{ id: "snack", name: "Apples & peanut butter", checked: 1, revision: expect.any(String) }],
       checks: [{ key: "range-ingredient-total", checked: 1, packages: 1 }],
     });
     expect((await send("extras/snack", "DELETE", "{}")).status).toBe(200);
@@ -1793,11 +3034,22 @@ describe("real Worker with disposable SQLite D1", () => {
       await (await worker.dispatchFetch("http://localhost/api/household")).json(),
     );
 
+    for (const entry of household.meals) {
+      const recipe = household.recipes.find((recipe) => recipe.id === entry.recipeId);
+
+      if (!recipe) throw new Error("Missing demo recipe");
+      const { revision: _revision, ...snapshot } = recipe;
+      expect(entry.recipe).toEqual(snapshot);
+    }
+
     expect(
       household.recipes.find((recipe) => recipe.id === sampleRecipes[0].id)?.ingredients[0].groceryItemId,
     ).toBe("demo-link");
     expect(household.groceries).toHaveLength(8);
-    expect(household.groceries.find((item) => item.id === "demo-link")).toEqual(grocery);
+    expect(household.groceries.find((item) => item.id === "demo-link")).toEqual({
+      ...grocery,
+      revision: expect.any(String),
+    });
     expect(household.groceries.some((item) => item.id === "sample-chicken")).toBe(false);
 
     const items = shoppingList(household.groceries);
@@ -2136,7 +3388,7 @@ describe("real Worker with disposable SQLite D1", () => {
       expect(await response.json()).toEqual({
         collections: defaultCollections,
         groceries: [],
-        shoppingOrder: { aisles: [], items: [] },
+        shoppingOrder: { aisles: [], items: [], revision: expect.any(String) },
         recipes: [],
         recipesAdded: [],
         meals: [],
@@ -2199,7 +3451,12 @@ describe("real Worker with disposable SQLite D1", () => {
         ...headers,
         "Cf-Access-Jwt-Assertion": await sign({ sub: "household-user", common_name: undefined }),
       },
-      body: JSON.stringify({ id: "human-item", name: "Human shopping item", checked: 0 }),
+      body: JSON.stringify({
+        id: "human-item",
+        name: "Human shopping item",
+        checked: 0,
+        expectedRevision: null,
+      }),
     });
 
     expect(human.status).toBe(200);
@@ -2229,7 +3486,12 @@ describe("real Worker with disposable SQLite D1", () => {
           "Cf-Access-Jwt-Assertion": await sign(clientId, audience),
           "Content-Type": "application/json",
         },
-        body: JSON.stringify({ id: "preview-item", name: "Preview shopping item", checked: 0 }),
+        body: JSON.stringify({
+          id: "preview-item",
+          name: "Preview shopping item",
+          checked: 0,
+          expectedRevision: null,
+        }),
       });
 
     await worker.setOptions(options("false", "test-hearth", "smoke-test.access", "preview-test.access"));
@@ -2240,7 +3502,7 @@ describe("real Worker with disposable SQLite D1", () => {
     });
 
     expect(await read.json()).toHaveProperty("extras", [
-      { id: "preview-item", name: "Preview shopping item", checked: 0 },
+      { id: "preview-item", name: "Preview shopping item", checked: 0, revision: expect.any(String) },
     ]);
     expect((await put("unknown.access")).status).toBe(403);
     expect((await put("preview-test.access", "production-audience")).status).toBe(403);

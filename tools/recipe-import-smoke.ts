@@ -30,7 +30,7 @@ try {
   const db = await worker.getD1Database("DB");
   for (const file of (await readdir("migrations")).filter((name) => name.endsWith(".sql")).sort()) {
     const sql = await readFile(`migrations/${file}`, "utf8");
-    await db.batch(sql.split(/;\n(?=CREATE|INSERT|DROP|ALTER)|;\s*$/).filter((statement) => statement.trim()).map((statement) => db.prepare(statement)));
+    await db.batch(sql.replace(/^--.*$/gm, "").split(/;\n+(?=CREATE|INSERT|DROP|ALTER|UPDATE|DELETE)|;\s*$/).filter((statement) => statement.trim()).map((statement) => db.prepare(statement)));
   }
   const request = (path: string, method: string, value: unknown) => worker.dispatchFetch(`http://localhost/api/${path}`, {
     method, headers: { "Content-Type": "application/json", Origin: "http://localhost" }, body: JSON.stringify(value),
@@ -48,11 +48,14 @@ try {
     }
     const { recipe, warnings } = Schema.decodeUnknownSync(Schema.Struct({ recipe: RecipeSchema, warnings: Schema.Array(Schema.String) }))(body);
     assert.equal(recipe.source, source, "Original URL was not preserved");
-    const saved = await request("recipes", "PUT", recipe);
+    const saved = await request("recipes", "PUT", { ...recipe, expectedRevision: null });
     assert.equal(saved.status, 200, "The returned draft could not be saved");
     const household = Schema.decodeUnknownSync(HouseholdSchema)(await (await worker.dispatchFetch("http://localhost/api/household")).json());
-    assert.deepEqual(household.recipes.find((item) => item.id === recipe.id), recipe, "Saved recipe did not round-trip");
-    assert.equal((await request(`recipes/${recipe.id}`, "DELETE", {})).status, 200);
+    const persisted = household.recipes.find((item) => item.id === recipe.id);
+    assert(persisted?.revision, "Saved recipe has a revision");
+    const { revision: _revision, ...content } = persisted;
+    assert.deepEqual(content, recipe, "Saved recipe did not round-trip");
+    assert.equal((await request(`recipes/${recipe.id}`, "DELETE", { expectedRevision: persisted.revision })).status, 200);
     results.push({ source, status: response.status, title: recipe.title, ingredients: recipe.ingredients.length, steps: recipe.instructions.length, warnings });
   }
   assert.deepEqual(await db.prepare("SELECT count(*) AS count FROM recipes").first(), { count: 0 });

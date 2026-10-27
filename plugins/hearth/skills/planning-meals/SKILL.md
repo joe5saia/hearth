@@ -25,13 +25,20 @@ requesting credentials or inventing results.
 4. For a proposal, show dates, slots, recipe titles, desired servings, and tradeoffs
    without writing. When the user asks to save a concrete plan, use `save_meal`.
    If critical choices are unresolved, clarify them first.
-5. Compute **scale = desired servings / recipe.servings**. For example, a four-serving
+5. Compute **scale = desired servings / meal.recipe.servings** for an existing meal,
+   or use the source recipe's servings when creating it. For example, a four-serving
    recipe for six diners needs `scale: 1.5`, not 6. `save_meal` requires recipeId,
    date, slot (`Breakfast`, `Lunch`, or `Dinner`), scale, and note. For note-only
    meals, use `recipeId: null` and a nonblank note; notes do not add shopping quantities.
-6. Omit ID to create; reuse the existing meal ID to move or edit. All other fields
-   are replaced, so preserve unedited fields from the latest read. `delete_meal`
-   removes the selected meal, not its recipe. Confirm ambiguous targets before deleting.
+6. Omit ID and send `expectedRevision: null` to create; reuse the existing meal ID
+   and its original `revision` as `expectedRevision` to move, edit, or delete.
+   Preserve unedited fields from the read. Omit `recipe` to capture the source on
+   creation/source change or preserve the snapshot on a scheduling edit. To edit
+   only this meal's ingredients or instructions, supply its complete `recipe`
+   snapshot with `recipe.id` matching `recipeId`; this does not edit the source.
+   `delete_meal` removes the selected meal, not its recipe. Confirm ambiguous targets
+   before deleting. A revision conflict requires rereading and reconciling the edit,
+   never retrying an old payload with a fresh token.
 7. Await dependent writes. Separate calls are not atomic. If any write fails or times
    out, reread the range (both old and new ranges for a move) before retrying. Do not
    blindly recreate meals or roll back other household members' work.

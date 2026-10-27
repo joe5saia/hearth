@@ -1,7 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { MoreHorizontal, Pencil, Trash2 } from "lucide-react";
 
-/** Touch gestures affect only this planned meal; ordinary activation still opens its recipe. */
+/** Touch gestures and ordinary activation act on this meal, never its source recipe. */
 export function MealCard({
   title,
   noteOnly,

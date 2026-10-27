@@ -25,12 +25,23 @@ const checkRowAlignment = () => check(`
       && (row.querySelector('.item-info').getBoundingClientRect().height > 32 || label.height <= 48);
   })`, "shopping text, checkbox and 44px controls stay centered in compact and wrapped rows");
 const request = async (path: string, method = "GET", value?: GroceryDraft | RecipeDraft | MealDraft | ShoppingOrder | typeof CheckSchema.Encoded) => {
-  const response = await fetch(`${url}/api/${path}`, { method, headers: { "Content-Type": "application/json", Connection: "close" }, body: value ? JSON.stringify(value) : undefined });
+  // Deliberate fixture writes read fresh guards; browser writes retain their original guards.
+  let payload = value ? JSON.stringify(value) : undefined;
+  const resource = path.split("/")[0];
+  if ((method === "PUT" || method === "DELETE") && (resource === "recipes" || resource === "groceries" || resource === "meals" || resource === "shopping-order")) {
+    const current = Schema.decodeUnknownSync(HouseholdSchema)(await (await fetch(`${url}/api/household`)).json());
+    const id = method === "DELETE" ? decodeURIComponent(path.slice(resource.length + 1)) : value && "id" in value ? value.id : undefined;
+    const saved = resource === "shopping-order" ? current.shoppingOrder : current[resource].find(item => item.id === id);
+    if (method === "DELETE" && !saved) return new Response(null, { status: 200 });
+    payload = JSON.stringify({ ...value, expectedRevision: saved?.revision ?? null });
+  }
+  const response = await fetch(`${url}/api/${path}`, { method, headers: { "Content-Type": "application/json", Connection: "close" }, body: payload });
   assert(response.ok, `${method} ${path}: ${response.status}`);
 
   return response;
 };
 const household = async () => Schema.decodeUnknownSync(HouseholdSchema)(await (await request("household")).json());
+const withoutRevision = <T extends { readonly revision?: string }>({ revision: _revision, ...value }: T) => value;
 const original = await household();
 assert(!original.recipes.length && !original.groceries.length && !original.meals.length && !original.extras.length, "Use an empty disposable local household for grocery browser smoke.");
 const prefix = `grocery-smoke-${crypto.randomUUID()}`;
@@ -516,7 +527,7 @@ try {
     await cdp("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
     browser("wait", "--fn", "document.querySelector('[aria-label=\"Arrange Aisle 10\"] .route-product > span').textContent.startsWith('Olive oil') && !document.querySelector('[aria-label=\"Drag Olive oil within Aisle 10\"]').disabled");
     assert.deepEqual(aisleOrder(), ["Olive oil", "Long-grain rice", "Rolled oats"]);
-    assert.deepEqual((await household()).shoppingOrder, beforeDrag, "Reverse touch drag must restore the persisted order.");
+    assert.deepEqual(withoutRevision((await household()).shoppingOrder), withoutRevision(beforeDrag), "Reverse touch drag must restore the persisted order.");
     console.log("PASS touch drag up persists and touch cancellation leaves order unchanged");
   } finally { socket.close(); }
   browser("eval", "document.querySelector('.route-editor').scrollIntoView()");
@@ -662,6 +673,7 @@ try {
   for (const item of dragProducts) await request("groceries", "PUT", item);
   const searchOrder = { ...(await household()).shoppingOrder, items: dragProducts.map(item => JSON.stringify(["grocery", item.id])) };
   await request("shopping-order", "PUT", searchOrder);
+  const savedSearchOrder = (await household()).shoppingOrder;
   shopping();
   browser("click", '[aria-label="List Builder"]');
   browser("fill", '[aria-label="Search grocery items"]', "qa");
@@ -674,7 +686,7 @@ try {
   browser("wait", "--fn", "document.querySelectorAll('.purchase-row').length === 3 && document.querySelector('.item-info strong').textContent === 'qa qe Sage'");
   browser("mouse", "up", "left");
   browser("wait", "--fn", "!document.querySelector('.shopping-save-status')");
-  assert.deepEqual((await household()).shoppingOrder, searchOrder, "An equal-height search result replacement during drag must not persist an unintended reorder.");
+  assert.deepEqual((await household()).shoppingOrder, savedSearchOrder, "An equal-height search result replacement during drag must not persist an unintended reorder.");
   console.log("PASS search result changes safely cancel an active drag without changing saved route order");
   await request("checks", "PUT", { key: JSON.stringify(["shopping-list", products[1].id]), checked: 0 });
   shopping();
@@ -689,7 +701,7 @@ try {
   browser("eval", "window.rejectOrder()");
   browser("wait", "--fn", "!document.querySelector('.shopping-save-status')");
   check("document.querySelector('[aria-label=\"Aisle name\"]')?.value === 'Unsaved aisle draft'", "route rollback cancels stale drag state without discarding an unrelated aisle rename draft");
-  assert.deepEqual((await household()).shoppingOrder, searchOrder, "Rejected order write must leave saved route unchanged.");
+  assert.deepEqual((await household()).shoppingOrder, savedSearchOrder, "Rejected order write must leave saved route unchanged.");
   console.log("Grocery browser smoke passed.");
 } finally {
   try { browser("close"); } finally {
@@ -698,6 +710,7 @@ try {
     for (const item of current.recipes.filter((item) => item.id.startsWith(prefix))) await request(`recipes/${encodeURIComponent(item.id)}`, "DELETE");
     for (const item of (await household()).groceries.filter((item) => item.id.startsWith(prefix) || item.name.startsWith(prefix) || item.name === "Flat-leaf parsley")) await request(`groceries/${encodeURIComponent(item.id)}`, "DELETE");
     await request("shopping-order", "PUT", original.shoppingOrder);
-    assert.deepEqual(await household(), original, "Fixture cleanup must restore the starting household.");
+    const restored = await household();
+    assert.deepEqual({ ...restored, shoppingOrder: withoutRevision(restored.shoppingOrder) }, { ...original, shoppingOrder: withoutRevision(original.shoppingOrder) }, "Fixture cleanup must restore the starting household domain content.");
   }
 }

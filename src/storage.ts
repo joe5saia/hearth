@@ -13,6 +13,70 @@ export class NotFound extends Data.TaggedError("NotFound")<{ message: string }> 
 /** Current household state prevents the operation; message describes the public conflict. */
 export class Conflict extends Data.TaggedError("Conflict")<{ message: string }> {}
 
+/** Separate write precondition; omission is rejected rather than interpreted as creation. */
+export const ExpectedRevisionSchema = Schema.NullOr(Schema.NonEmptyString);
+
+/** Safe recovery for stale, deleted, and duplicate-create writes. */
+export const staleWrite = () =>
+  new Conflict({
+    message:
+      "This item changed or no longer exists. Reload the latest household before saving or deleting; your changes were not applied.",
+  });
+
+/** Rejects old clients with document-reload guidance, not just a household refetch. */
+export const requireRevision = (revision: string | null | undefined) =>
+  revision === undefined
+    ? Effect.fail(
+        new Conflict({
+          message:
+            "Reload the app to get the latest version before saving or deleting; no changes were applied.",
+        }),
+      )
+    : Effect.succeed(revision);
+
+/** Prioritizes stale-draft recovery over related-resource validation; final writes must still guard atomically. */
+export const checkRevision = (
+  db: D1Database,
+  table: "recipes" | "meals",
+  id: string,
+  expectedRevision?: string | null,
+) =>
+  Effect.gen(function* () {
+    const revision = yield* requireRevision(expectedRevision);
+
+    const valid = yield* database(() =>
+      db
+        .prepare(`SELECT 1 WHERE
+      (?2 IS NULL AND NOT EXISTS (SELECT 1 FROM ${table} WHERE id=?1))
+      OR EXISTS (SELECT 1 FROM ${table} WHERE id=?1 AND revision=?2)`)
+        .bind(id, revision)
+        .first(),
+    );
+
+    if (!valid) return yield* staleWrite();
+
+    return revision;
+  });
+
+/** Deletes exactly the observed version; never treats a missing target as success. */
+export const deleteVersion = (
+  db: D1Database,
+  table: "meals" | "extras" | "collections",
+  id: string,
+  expectedRevision?: string | null,
+) =>
+  Effect.gen(function* () {
+    const revision = yield* requireRevision(expectedRevision);
+
+    const result = yield* database(() =>
+      db.prepare(`DELETE FROM ${table} WHERE id=? AND revision=?`).bind(id, revision).run(),
+    );
+
+    if (!result.meta.changes) return yield* staleWrite();
+
+    return { ok: true as const };
+  });
+
 /** A database call rejected; its private cause does not prove a write failed to commit. */
 export class StorageError extends Data.TaggedError("StorageError")<{ cause: unknown }> {}
 

@@ -52,13 +52,15 @@ const household = async () => {
   const data = Schema.decodeUnknownSync(HouseholdSchema, { onExcessProperty: "error" })(await response.json());
   return { ...data, checks: [...data.checks].sort((a, b) => a.key.localeCompare(b.key)) };
 };
+const withoutRevision = <T extends { readonly revision?: string }>({ revision: _revision, ...value }: T) => value;
 const original = await household();
 if (process.argv.includes("--cleanup-check")) {
   const failure = spawnSync("npx", ["task", "shopping:smoke", "--", url, "--fail-during-save"], { encoding: "utf8", timeout: 90_000 });
   assert.notEqual(failure.status, 0);
   assert(failure.stderr.includes("Intentional cleanup regression"), failure.stderr);
   await new Promise(resolve => setTimeout(resolve, 1500));
-  assert.deepEqual(await household(), original, "Cleanup must still be correct after the delayed save would have completed.");
+  const restored = await household();
+  assert.deepEqual({ ...restored, shoppingOrder: withoutRevision(restored.shoppingOrder) }, { ...original, shoppingOrder: withoutRevision(original.shoppingOrder) }, "Cleanup must still be correct after the delayed save would have completed.");
   console.log("PASS intentional failure during a pending save drains/stops writes and restores the exact household durably");
   process.exit(0);
 }
@@ -484,14 +486,17 @@ try {
   assert.equal(await evaluate(() => document.querySelector('.shopping-save-status')?.textContent), "Saving…");
   browser("screenshot", resolve(".amp/in/artifacts/shopping-saving-desktop.png"));
   browser("wait", "--fn", "!document.querySelector('.shopping-save-status')");
-  const history = Schema.decodeUnknownSync(Schema.Array(Schema.Struct({ path: Schema.String, body: Schema.Union([ShoppingOrderSchema, CheckSchema]) })), { onExcessProperty: "error" })(await evaluate((w) => w.writeHistory));
+  const history = Schema.decodeUnknownSync(Schema.Array(Schema.Struct({ path: Schema.String, body: Schema.Union([Schema.Struct({ ...ShoppingOrderSchema.fields, expectedRevision: Schema.String }), CheckSchema]) })), { onExcessProperty: "error" })(await evaluate((w) => w.writeHistory));
   assert.deepEqual(history.map((write) => write.path.split("/").at(-1)), ["shopping-order", "shopping-order", "checks", "checks", "checks"]);
   assert.deepEqual(history.slice(2).map((write) => {
     assert("checked" in write.body, "Expected membership write body");
     return write.body.checked;
   }), [0, 1, 0]);
   assert.equal(await evaluate((w) => w.checkFrames.every((value) => !value)), true, "Older saves/refreshes must not flicker newer optimistic membership.");
-  assert.deepEqual((await household()).shoppingOrder, history[1].body);
+  const orderWrite = history[1].body;
+  assert("expectedRevision" in orderWrite, "Expected guarded order write");
+  const { expectedRevision: _expectedRevision, ...writtenOrder } = orderWrite;
+  assert.deepEqual(withoutRevision((await household()).shoppingOrder), withoutRevision(writtenOrder));
   const pendingWrite = history.at(-1);
   assert(pendingWrite, "Expected final membership write");
   assert("key" in pendingWrite.body, "Expected final membership write body");
@@ -574,7 +579,8 @@ try {
       finally { browser("close"); }
     }
   } finally {
-    const response = await fetch(`${url}/api/shopping-order`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(original.shoppingOrder) });
+    const expectedRevision = (await household()).shoppingOrder.revision;
+    const response = await fetch(`${url}/api/shopping-order`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ...original.shoppingOrder, expectedRevision }) });
     assert(response.ok, "Restore the original shopping order.");
     const current = await household();
     for (const key of new Set([...current.checks.map((check) => check.key), ...original.checks.map((check) => check.key)])) {
@@ -587,7 +593,7 @@ try {
       }
     }
     const restored = await household();
-    assert.deepEqual(restored.shoppingOrder, original.shoppingOrder);
+    assert.deepEqual(withoutRevision(restored.shoppingOrder), withoutRevision(original.shoppingOrder));
     assert.deepEqual(restored.checks, original.checks);
     console.log("PASS original order and checkmarks restored");
   }

@@ -131,7 +131,11 @@ export const RecipeFields = Schema.Struct({
 });
 
 /** Readable saved recipe shape, without the write-only size limit. */
-export const RecipeSchema = Schema.Struct({ id: RecipeId, ...RecipeFields.fields });
+export const RecipeSchema = Schema.Struct({
+  id: RecipeId,
+  revision: Schema.optional(Schema.String),
+  ...RecipeFields.fields,
+});
 
 /** Limits write inputs to less than 1.9 MB; linked or renamed saved recipes may grow beyond it. */
 export const RecipeWriteSchema = RecipeSchema.check(
@@ -140,10 +144,15 @@ export const RecipeWriteSchema = RecipeSchema.check(
   }),
 );
 
-/** Meal scale is a recipe multiplier; null recipeId represents a note-only meal. */
+/** Meals own editable recipe snapshots; omission on writes preserves or captures one. */
 export const MealSchema = Schema.Struct({
   id: IdSchema,
+  revision: Schema.optional(Schema.String),
   recipeId: Schema.NullOr(RecipeId),
+  recipe: Schema.optional(Schema.NullOr(RecipeSchema)).annotate({
+    description:
+      "Independent meal recipe, with id retaining source provenance. Omit to capture the source on creation/source change or preserve the existing snapshot. Null only for note-only meals.",
+  }),
   date: DateSchema,
   slot: Schema.Literals(["Breakfast", "Lunch", "Dinner"]),
   scale: PositiveQuantitySchema.check(Schema.isLessThanOrEqualTo(100)).annotate({
@@ -176,6 +185,7 @@ export type Meal = typeof MealSchema.Type;
 /** Manual shopping-list extra with a numeric checked flag. */
 export const ExtraSchema = Schema.Struct({
   id: IdSchema,
+  revision: Schema.optional(Schema.String),
   name: Schema.String.check(nonblank, Schema.isMaxLength(200)),
   checked: Schema.Literals([0, 1]),
 });
@@ -204,6 +214,7 @@ export const CheckWriteSchema = Schema.Struct({
 /** Allows legacy migration identifiers longer than newly written identifiers. */
 export const CollectionSchema = Schema.Struct({
   id: Schema.String,
+  revision: Schema.optional(Schema.String),
   name: Schema.String.check(nonblank, Schema.isMaxLength(100)),
 });
 
@@ -213,6 +224,7 @@ export type Collection = typeof CollectionSchema.Type;
 /** Catalog package data; product URLs may be empty but cannot contain credentials. */
 export const GroceryItemSchema = Schema.Struct({
   id: GroceryId,
+  revision: Schema.optional(Schema.String),
   name: NameSchema,
   url: Schema.String.check(
     Schema.isMaxLength(4000),
@@ -285,6 +297,7 @@ export type MatchReport = {
 
 /** Saved aisle and item precedence lists contain unique keys. */
 export const ShoppingOrderSchema = Schema.Struct({
+  revision: Schema.optional(Schema.String),
   aisles: Schema.Array(Schema.String.check(Schema.isMaxLength(1000))).check(
     Schema.isMaxLength(10000),
     Schema.isUnique(),

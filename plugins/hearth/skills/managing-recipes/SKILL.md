@@ -36,7 +36,11 @@ tokens or claim a write succeeded without a successful tool response.
 - For edits, read the latest recipe first. `update_recipes` patches supplied fields,
   but supplied ingredient and instruction arrays **replace the entire arrays**.
   Preserve all unedited entries, original text, and grocery links. Use small patches
-  for scalar edits. Changing a recipe affects all meals referencing it.
+  for scalar edits. Each entry needs `expectedRevision` from that recipe's `revision`.
+  Changing a recipe does not change already planned meals' independent snapshots.
+  Collection saves and all deletes also require the original entity's revision;
+  send `expectedRevision: null` when creating a collection. On conflict, reread and
+  reconcile the requested edit; never blindly retry an old payload with a new token.
 - Discover grocery IDs with `list_groceries`. Omitted `groceryItemId` permits exact
   automatic matching; `null` explicitly leaves an ingredient unlinked. Suggestions
   are not saved links. Do not call credit-consuming `match_groceries` merely to save.

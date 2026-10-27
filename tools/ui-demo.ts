@@ -30,6 +30,13 @@ const household = async () => {
   assert(Schema.is(HouseholdSchema)(data), "Expected a valid household snapshot");
   return data;
 };
+const withoutRevision = <T extends { readonly revision?: string }>({ revision: _revision, ...value }: T) => value;
+// Cleanup restores all domain content, not the write tokens rotated by the demo.
+const householdContent = (state: Household) => ({ ...state,
+  recipes: state.recipes.map(withoutRevision), meals: state.meals.map(withoutRevision),
+  groceries: state.groceries.map(withoutRevision), collections: state.collections.map(withoutRevision),
+  extras: state.extras.map(withoutRevision), shoppingOrder: withoutRevision(state.shoppingOrder),
+});
 const original = await household();
 assert(original.recipes.length && original.meals.length, "Load a disposable sample week first");
 const owned = {
@@ -325,9 +332,9 @@ try {
     await click(page.getByRole("button", { name: `Actions for meal ${recipeName}`, exact: true }));
     await click(page.getByRole("button", { name: "Edit meal", exact: true }));
     await dialog()
-      .getByLabel(/note for this meal/i)
+      .getByLabel("Meal note", { exact: true })
       .fill(`${note} — save leftovers`);
-    await click(dialog().getByRole("button", { name: "Save", exact: true }));
+    await click(dialog().getByRole("button", { name: "Save meal", exact: true }));
     await persisted((h) => h.meals.find((m) => m.id === meal.id)?.note.endsWith("save leftovers") === true);
     await click(page.getByRole("button", { name: "Add a meal", exact: true }));
     await dialog().getByLabel("Plan type").selectOption("note");
@@ -381,7 +388,7 @@ try {
       .first();
     await click(move);
     await persisted(
-      (h) => JSON.stringify(h.shoppingOrder) === JSON.stringify({ ...beforeOrder, aisles: expectedAisles }),
+      (h) => JSON.stringify(withoutRevision(h.shoppingOrder)) === JSON.stringify({ ...withoutRevision(beforeOrder), aisles: expectedAisles }),
     );
     await menu("Done arranging");
     await pause();
@@ -542,6 +549,14 @@ try {
         "Demo recording teardown failed",
       );
     const restore = async (path: string, method: string, body?: unknown) => {
+      const resource = path.split("/")[0];
+      if (method === "DELETE" && isOwnedKind(resource)) {
+        const saved = (await household())[resource].find(item => item.id === decodeURIComponent(path.slice(resource.length + 1)));
+        if (!saved) return;
+        body = { expectedRevision: saved.revision };
+      } else if (path === "shopping-order") {
+        body = { ...original.shoppingOrder, expectedRevision: (await household()).shoppingOrder.revision };
+      }
       const response = await fetch(`${root}/api/${path}`, {
         method,
         headers: { "content-type": "application/json" },
@@ -565,7 +580,7 @@ try {
       if ((wanted?.checked ?? fallback) !== (now?.checked ?? fallback) || (wanted?.packages ?? 1) !== (now?.packages ?? 1))
         await restore("checks", "PUT", { key, checked: wanted?.checked ?? fallback, packages: wanted?.packages ?? 1 });
     }
-    assert.deepEqual(await household(), original, "Exact original household must be restored");
+    assert.deepEqual(householdContent(await household()), householdContent(original), "Exact original household domain content must be restored");
     console.log("PASS demo cleanup: exact household restored");
   }
 

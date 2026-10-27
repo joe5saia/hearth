@@ -422,7 +422,7 @@ export function ShoppingItems({
             disabled={busy || editingAisle !== null || (!order.aisles.length && !order.items.length)}
             onClick={() => {
               capturePositions();
-              void saveOrder({ aisles: [], items: [] });
+              void saveOrder({ ...order, aisles: [], items: [] });
             }}
           >
             Reset to numeric / alphabetical order

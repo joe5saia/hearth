@@ -17,7 +17,17 @@ const check = (expression: string, message: string) => {
   console.log(`PASS ${message}`);
 };
 const request = async (path: string, method = "GET", value?: GroceryDraft | RecipeDraft | typeof ExtraSchema.Encoded | typeof CheckSchema.Encoded) => {
-  const response = await fetch(`${url}/api/${path}`, { method, headers: { "Content-Type": "application/json" }, body: value === undefined ? undefined : JSON.stringify(value) });
+  // Refresh guards only for intentional fixture setup/restoration, never browser writes.
+  let payload = value === undefined ? undefined : JSON.stringify(value);
+  const resource = path.split("/")[0];
+  if ((method === "PUT" || method === "DELETE") && (resource === "recipes" || resource === "groceries" || resource === "extras")) {
+    const current = await household();
+    const id = method === "DELETE" ? decodeURIComponent(path.slice(resource.length + 1)) : value && "id" in value ? value.id : undefined;
+    const saved = current[resource].find(item => item.id === id);
+    if (method === "DELETE" && !saved) return new Response(null, { status: 200 });
+    payload = JSON.stringify({ ...value, expectedRevision: saved?.revision ?? null });
+  }
+  const response = await fetch(`${url}/api/${path}`, { method, headers: { "Content-Type": "application/json" }, body: payload });
   assert(response.ok, `${method} ${path}: ${response.status}`);
   return response;
 };
@@ -26,6 +36,7 @@ const household = async () => {
   assert.ok(Schema.is(HouseholdSchema)(value), "Household response must match its contract.");
   return value;
 };
+const withoutRevision = <T extends { readonly revision?: string }>({ revision: _revision, ...value }: T) => value;
 const original = await household();
 const prefix = `delete-smoke-${crypto.randomUUID()}`;
 const products = ["rice", "oats", "oil"].map((name): GroceryDraft => ({ id: `${prefix}-${name}`, name: `Deletion ${name}`, aliases: [], quantity: 500, unit: "g", aisle: "Deletion smoke", url: "" }));
@@ -133,7 +144,7 @@ try {
     browser("set", "viewport", "1280", "900", "2");
     remove(); finished();
     const after = await household();
-    assert.deepEqual(after.recipes, before.recipes.map(recipe => ({ ...recipe, ingredients: recipe.ingredients.map(ingredient => ingredient.groceryItemId === products[0].id ? { ...ingredient, groceryItemId: null } : ingredient) })));
+    assert.deepEqual(after.recipes.map(withoutRevision), before.recipes.map(withoutRevision).map(recipe => ({ ...recipe, ingredients: recipe.ingredients.map(ingredient => ingredient.groceryItemId === products[0].id ? { ...ingredient, groceryItemId: null } : ingredient) })));
     assert(!after.groceries.some(item => item.id === products[0].id));
     assert(!after.checks.some(item => item.key === JSON.stringify(["shopping-list", products[0].id])));
     edit(products[1]); remove(); finished();

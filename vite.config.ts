@@ -34,6 +34,6 @@ export default defineConfig(({ mode }) => ({
     port: 5173,
     strictPort: true,
     allowedHosts: [".onamp.dev", "localhost"],
-    proxy: { "/api": "http://127.0.0.1:8787" },
+    proxy: { "/api": "http://127.0.0.1:8787", "/photos/upload-": "http://127.0.0.1:8787" },
   },
 }));

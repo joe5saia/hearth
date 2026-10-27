@@ -5,7 +5,7 @@ import { ingredientTotals } from "./ingredient-totals";
 import { ShareLink } from "./ShareLink";
 import "./recipe-checklist.css";
 
-/** Keeps recipe selections and ingredient checks in component memory without changing household data. */
+/** Combines one-batch source selections and scaled meal snapshots without changing household data. */
 export function RecipeChecklist({
   recipes,
   groceries,
@@ -16,6 +16,8 @@ export function RecipeChecklist({
   setSearch,
   selected,
   setSelected,
+  selectedMeals,
+  setSelectedMeals,
   showList,
   setShowList,
 }: Pick<Household, "recipes" | "groceries" | "meals"> & {
@@ -25,6 +27,8 @@ export function RecipeChecklist({
   setSearch: (search: string) => void;
   selected: string[];
   setSelected: (selected: string[]) => void;
+  selectedMeals: string[];
+  setSelectedMeals: (selectedMeals: string[]) => void;
   showList: boolean;
   setShowList: (showList: boolean) => void;
 }) {
@@ -32,17 +36,21 @@ export function RecipeChecklist({
   const [week, setWeek] = useState(weekStart);
   const weekEnd = addDays(week, 6);
 
-  // Each planned recipe counts once, in meal-plan order, like a manual selection.
-  const planned = [
-    ...new Set(
-      meals.flatMap((meal) =>
-        meal.recipeId && meal.date >= week && meal.date <= weekEnd ? [meal.recipeId] : [],
-      ),
-    ),
-  ];
+  const planned = meals.filter((meal) => meal.recipe && meal.date >= week && meal.date <= weekEnd);
 
   const chosen = recipes.filter((recipe) => selected.includes(recipe.id));
-  const rows = ingredientTotals({ recipes: chosen, groceries });
+
+  const chosenMeals = meals.flatMap((meal) =>
+    selectedMeals.includes(meal.id) && meal.recipe ? [{ meal, recipe: meal.recipe }] : [],
+  );
+
+  const rows = ingredientTotals({
+    recipes: chosen,
+    meals: chosenMeals.map(({ meal }) => meal),
+    groceries,
+  });
+
+  const selectionCount = chosen.length + chosenMeals.length;
   const visible = recipes.filter((recipe) => matchesRecipeSearch(recipe, search));
 
   return (
@@ -51,8 +59,9 @@ export function RecipeChecklist({
         <h1>Recipe checklist</h1>
         <a href="#recipes">Back to recipes</a> <ShareLink />
         <p className="muted">
-          A separate checklist for one batch of each recipe. Nothing changes your shopping list or recipes.
-          Recipe selections can be shared. Checks reset when this tab reloads.
+          A separate checklist for one batch of each selected recipe and the planned servings of each selected
+          meal. Nothing changes your shopping list or recipes. Selections can be shared. Checks reset when
+          this tab reloads.
         </p>
       </header>
       {error ? (
@@ -65,7 +74,13 @@ export function RecipeChecklist({
             Change recipes
           </button>
           <p className="muted">
-            {chosen.map((recipe) => `${recipe.title} (${recipe.servings} servings)`).join(" · ")}
+            {[
+              ...chosen.map((recipe) => `${recipe.title} (${recipe.servings} servings)`),
+              ...chosenMeals.map(
+                ({ meal, recipe }) =>
+                  `${recipe.title} (${recipe.servings * meal.scale} servings, ${meal.scale}×) — ${meal.date} ${meal.slot}`,
+              ),
+            ].join(" · ")}
           </p>
           <p role="status">
             {rows.filter((row) => !checked.includes(row.key)).length} of {rows.length} items left
@@ -137,16 +152,36 @@ export function RecipeChecklist({
               className="secondary"
               disabled={!planned.length}
               onClick={() => {
-                setSelected(planned);
+                setSelected([]);
+                setSelectedMeals(planned.map((meal) => meal.id));
                 setChecked([]);
                 setShowList(true);
               }}
             >
               {planned.length
-                ? `Show this week’s ingredients (${planned.length} ${planned.length === 1 ? "recipe" : "recipes"})`
+                ? `Show this week’s ingredients (${planned.length} ${planned.length === 1 ? "meal" : "meals"})`
                 : "No recipes planned this week"}
             </button>
           </section>
+          {chosenMeals.length > 0 && (
+            <div role="group" aria-label="Selected meals">
+              {chosenMeals.map(({ meal, recipe }) => (
+                <label className="recipe-checklist-row" key={meal.id}>
+                  <input
+                    type="checkbox"
+                    checked
+                    onChange={() => setSelectedMeals(selectedMeals.filter((id) => id !== meal.id))}
+                  />
+                  <span>
+                    <strong>{recipe.title}</strong>
+                    <span className="muted small">
+                      {meal.date} {meal.slot} · {recipe.servings * meal.scale} servings · {meal.scale}×
+                    </span>
+                  </span>
+                </label>
+              ))}
+            </div>
+          )}
           <label className="recipe-checklist-search">
             Search recipes
             <input type="search" value={search} onChange={(event) => setSearch(event.target.value)} />
@@ -182,8 +217,8 @@ export function RecipeChecklist({
               </p>
             )}
           </div>
-          <button className="primary" disabled={!selected.length}>
-            Show ingredients ({selected.length} {selected.length === 1 ? "recipe" : "recipes"})
+          <button className="primary" disabled={!selectionCount}>
+            Show ingredients ({selectionCount} {selectionCount === 1 ? "recipe" : "recipes"})
           </button>
         </form>
       )}

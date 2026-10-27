@@ -30,6 +30,7 @@ export type Route = {
   sort: RecipeSort;
   search: string;
   selected: string[];
+  selectedMeals: string[];
   checklist: boolean;
   scale?: number;
   view?: View;
@@ -72,6 +73,7 @@ export function readRoute(hash = location.hash): Route {
     sort: recipeSorts.find((candidate) => candidate === sort) ?? "az",
     search: params.get("search") || "",
     selected: params.getAll("selected"),
+    selectedMeals: params.getAll("selectedMeal"),
     checklist: params.get("checklist") === "1",
     scale: Number.isFinite(scale) && scale > 0 && scale <= 100 ? scale : undefined,
     view: views.find((candidate) => candidate === view),
@@ -105,6 +107,8 @@ export function routeHash(route: Route): string {
 
   if (route.page === "recipe-checklist") {
     for (const id of route.selected) params.append("selected", id);
+
+    for (const id of route.selectedMeals) params.append("selectedMeal", id);
 
     if (route.checklist) params.set("checklist", "1");
   }

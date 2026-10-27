@@ -15,7 +15,17 @@ const check = (expression: string, message: string) => {
   console.log(`PASS ${message}`);
 };
 const request = async (path: string, method = "GET", body?: typeof GroceryItemSchema.Encoded | typeof RecipeSchema.Encoded) => {
-  const response = await fetch(`${url}/api/${path}`, { method, headers: { "Content-Type": "application/json", Connection: "close" }, body: body ? JSON.stringify(body) : undefined });
+  // Fresh fixture writes must not alter the browser's captured concurrency guards.
+  let payload = body ? JSON.stringify(body) : undefined;
+  const resource = path.split("/")[0];
+  if ((method === "PUT" || method === "DELETE") && (resource === "recipes" || resource === "groceries")) {
+    const current = Schema.decodeUnknownSync(HouseholdSchema)(await (await fetch(`${url}/api/household`)).json());
+    const id = method === "DELETE" ? decodeURIComponent(path.slice(resource.length + 1)) : body?.id;
+    const saved = current[resource].find(item => item.id === id);
+    if (method === "DELETE" && !saved) return new Response(null, { status: 200 });
+    payload = JSON.stringify({ ...body, expectedRevision: saved?.revision ?? null });
+  }
+  const response = await fetch(`${url}/api/${path}`, { method, headers: { "Content-Type": "application/json", Connection: "close" }, body: payload });
   assert(response.ok, `${method} ${path}: ${response.status}`);
   return response;
 };
@@ -157,7 +167,7 @@ try {
   });
   browser("click", ".recipe-form .form-actions .primary");
   browser("wait", ".recipe-form [role=alert]");
-  check("document.querySelector('.recipe-form [role=alert]').textContent.includes('changed since you opened') && [...document.querySelectorAll('.recipe-form input')].some(el => el.value === '47')", "stale save keeps the editor and metadata draft open");
+  check("!!document.querySelector('dialog[open] .save-conflict') && [...document.querySelectorAll('.recipe-form input')].some(el => el.value === '47')", "stale save keeps the editor and metadata draft open");
   const protectedRecipe = (await household()).recipes[0];
   assert.equal(protectedRecipe.minutes, 20);
   assert.equal(protectedRecipe.ingredients[0].groceryItemId, products[0].id);
@@ -168,14 +178,20 @@ try {
   check("document.querySelector('.recipe-form').scrollWidth <= document.querySelector('.recipe-form').clientWidth", "conflict recovery fits a narrow viewport");
   browser("screenshot", resolve(".amp/in/artifacts/matching-editor-conflict-narrow.png"));
   browser("set", "viewport", "1280", "900", "2");
-  browser("find", "role", "button", "click", "--name", "Use latest ingredients and keep other edits", "--exact");
-  check("!document.querySelector('.recipe-form [role=alert]') && document.querySelector('.ingredient-match-status').textContent.includes('Linked: BelGioioso')", "recovery replaces stale ingredients and clears the conflict");
+  browser("find", "role", "button", "click", "--name", "Load latest", "--exact");
+  browser("find", "role", "button", "click", "--name", "Keep editing", "--exact");
+  check("[...document.querySelectorAll('.recipe-form input')].some(el => el.value === '47')", "canceling replacement retains the stale draft");
+  browser("find", "role", "button", "click", "--name", "Load latest", "--exact");
+  browser("find", "role", "button", "click", "--name", "Replace draft", "--exact");
+  browser("wait", "--fn", "!document.querySelector('dialog[open] .save-conflict')");
+  check("!document.querySelector('.recipe-form [role=alert]') && document.querySelector('.ingredient-match-status').textContent.includes('Linked: BelGioioso') && ![...document.querySelectorAll('.recipe-form input')].some(el => el.value === '47')", "confirmed recovery replaces the whole draft with the latest saved version");
+  browser("find", "label", "Time (minutes)", "fill", "47");
   browser("click", ".recipe-form .form-actions .primary");
   browser("wait", "--fn", "!document.querySelector('.recipe-form')");
   const recovered = (await household()).recipes[0];
   assert.equal(recovered.minutes, 47);
   assert.equal(recovered.ingredients[0].groceryItemId, products[0].id);
-  console.log("PASS refreshed retry keeps background matches and the user's other edits");
+  console.log("PASS whole-draft reload keeps background matches and permits explicitly reapplied edits");
 
   await request("recipes", "PUT", recipe);
   openRecipe();

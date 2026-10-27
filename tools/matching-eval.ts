@@ -150,7 +150,16 @@ if (mode === "models" || mode === "normalization" || mode === "history") {
 } else {
   const name = previewName(process.env.AMP_THREAD_ID ?? "");
   const send = async (path: string, method = "GET", body?: typeof GroceryItemSchema.Encoded | typeof RecipeSchema.Encoded | Record<string, never>) => {
-    const response = await previewFetch(name, path, method, body ? JSON.stringify(body) : undefined);
+    let payload = body ? JSON.stringify(body) : undefined;
+    const resource = path.split("/")[2];
+    if ((method === "PUT" || method === "DELETE") && (resource === "recipes" || resource === "groceries")) {
+      const current = Schema.decodeUnknownSync(HouseholdSchema)(await (await previewFetch(name, "/api/household")).json());
+      const id = method === "DELETE" ? decodeURIComponent(path.slice(`/api/${resource}/`.length)) : body?.id;
+      const saved = current[resource].find(item => item.id === id);
+      if (method === "DELETE" && !saved) return new Response(null, { status: 200 });
+      payload = JSON.stringify({ ...body, expectedRevision: saved?.revision ?? null });
+    }
+    const response = await previewFetch(name, path, method, payload);
     assert(response.ok, `${method} ${path}: ${response.status}; inspect Preview request logs.`);
     return response;
   };

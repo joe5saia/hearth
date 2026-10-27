@@ -97,6 +97,25 @@ Use durable domain vocabulary, not ticket names or migration planning language.
 For framework default configuration objects, document the exported composition/config
 and public callbacks where they define a runtime contract.
 
+## Shared mutable state
+
+Full-record saves and deletes must compare the caller's original revision atomically with
+the write. A null expectation means create-only; an update must never recreate a deleted
+record. Keep the revision with the editor's draft, not the latest background read. Both
+website and MCP transports use the owning storage operation's guard. Every persisted
+content change, including triggers and background matching, must rotate the revision.
+
+Prefer field-scoped commands for immediate actions such as checks, ratings, and notes.
+Do not spread a stale record into a quick-action write. Preserve unrelated fields and
+check existence inside the write; compare the original field when replacing drafted text.
+Conflicts preserve drafts and require explicit reconciliation, not an automatic retry
+using a freshly fetched revision. Refreshing on resume improves freshness but is not a
+substitute for write guards. Ignore read responses superseded by newer reads or writes.
+
+Schema migrations must preserve invariants while the previous Workers still serve
+requests. Test the old SQL writer against the new schema when introducing a new
+required relationship or derived value; a one-time backfill alone is insufficient.
+
 ## Validation and scope
 
 Preserve behavior while correcting standards violations: do not change routes,

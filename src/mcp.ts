@@ -39,9 +39,14 @@ import {
   addDemoData,
 } from "./household";
 import { matchGroceries, matchNewRecipes, type AiUnavailable } from "./matching-run";
-import { database, stored, ValidationError, type HouseholdError } from "./storage";
+import { database, stored, ValidationError, ExpectedRevisionSchema, type HouseholdError } from "./storage";
 
 const id = IdSchema;
+
+const expectedRevision = ExpectedRevisionSchema.annotate({
+  description:
+    "Required write guard: use the saved revision from the latest read to edit, or null only to create. Reload after a conflict; never substitute a newer token into a stale draft.",
+});
 
 const ingredient = IngredientSchema;
 
@@ -84,7 +89,7 @@ const grocery = GroceryItemSchema;
 const meal = MealSchema.mapFields((fields) => ({
   ...fields,
   recipeId: fields.recipeId.annotate({
-    description: "Recipe ID, or null for a note-only meal with a nonblank note.",
+    description: "Source recipe ID (provenance), or null for a note-only meal with a nonblank note.",
   }),
 }));
 
@@ -198,7 +203,7 @@ export function recipeMcp(
         {
           title: "List collections",
           description:
-            "List all available household recipe collections, including empty collections, ordered by name then ID. Returns {collections:[{id,name}]}. Use the exact name, not the ID, as category in create_recipes or update_recipes. Uncollected is not a collection; use category='' for it. Takes no arguments and never changes collections or recipes.",
+            "List all available household recipe collections, including empty collections, ordered by name then ID. Returns {collections:[{id,name,revision}]}. Use the exact name, not the ID, as category in create_recipes or update_recipes. Uncollected is not a collection; use category='' for it. Takes no arguments and never changes collections or recipes.",
           inputSchema: mcpSchema(empty),
           outputSchema: mcpSchema(Schema.Struct({ collections: Schema.Array(collection) })),
           annotations: readAnnotations,
@@ -210,7 +215,7 @@ export function recipeMcp(
         {
           title: "Search recipes",
           description:
-            "Search the household's recipes exactly like the app: case-insensitive literal substring across title and ingredient names (not instructions or description). Use query='' to browse all. Returns id, title, and ingredients only, ordered by title then id. Page size is 1–25 (default 25); larger limits are rejected. Always returns pagination, even with no matches. Continue with pagination.nextOffset until null, keeping query and limit unchanged. Fetch full details with get_recipes.",
+            "Search the household's recipes exactly like the app: case-insensitive literal substring across title and ingredient names (not instructions or description). Use query='' to browse all. Returns id, revision, title, and ingredients only, ordered by title then id. Page size is 1–25 (default 25); larger limits are rejected. Always returns pagination, even with no matches. Continue with pagination.nextOffset until null, keeping query and limit unchanged. Fetch full details with get_recipes.",
           inputSchema: mcpSchema(
             Schema.Struct({
               query: Schema.String.check(Schema.isMaxLength(2000)).pipe(
@@ -229,6 +234,7 @@ export function recipeMcp(
               recipes: Schema.Array(
                 Schema.Struct({
                   id,
+                  revision: Schema.NonEmptyString,
                   title: RecipeFields.fields.title,
                   ingredients: Schema.Array(ingredient),
                 }),
@@ -250,7 +256,7 @@ export function recipeMcp(
             context,
             Effect.gen(function* () {
               const rows = yield* database(() =>
-                db.prepare("SELECT id,title,ingredients FROM recipes ORDER BY title,id").all(),
+                db.prepare("SELECT id,revision,title,ingredients FROM recipes ORDER BY title,id").all(),
               );
 
               const matching = yield* stored(() =>
@@ -259,6 +265,7 @@ export function recipeMcp(
                     Schema.decodeUnknownSync(
                       Schema.Struct({
                         id: recipe.fields.id,
+                        revision: Schema.NonEmptyString,
                         title: RecipeFields.fields.title,
                         ingredients: Schema.fromJsonString(Schema.Array(ingredient)),
                       }),
@@ -338,10 +345,12 @@ export function recipeMcp(
         {
           title: "Update recipes",
           description:
-            "Update 1–25 existing recipes with {id, changes} entries. Send only fields to change; omitted fields are preserved. Use an exact collection name from list_collections for category, or an empty string for Uncollected. ingredients and instructions replace the ENTIRE array, so get_recipes first before editing an item. IDs cannot change. Unknown fields, empty changes, duplicate IDs, invalid recipes, or missing IDs reject the batch before writes. Returns full saved recipes. This tool never creates recipes.",
+            "Update 1–25 existing recipes with {id, expectedRevision, changes} entries. Keep each revision from the read used to prepare its changes; any stale or missing recipe rejects the entire batch. Send only fields to change; omitted fields are preserved. Use an exact collection name from list_collections for category, or an empty string for Uncollected. ingredients and instructions replace the ENTIRE array, so get_recipes first before editing an item. IDs cannot change. Unknown fields, empty changes, duplicate IDs, or invalid recipes reject the batch before writes. Returns full saved recipes with their persisted revisions. This tool never creates recipes.",
           inputSchema: mcpSchema(
             Schema.Struct({
-              updates: batch(Schema.Struct({ id: RecipeId, changes })).check(
+              updates: batch(
+                Schema.Struct({ id: RecipeId, expectedRevision: Schema.NonEmptyString, changes }),
+              ).check(
                 Schema.makeFilter(
                   (updates) => new Set(updates.map((update) => update.id)).size === updates.length,
                   { expected: "IDs must be unique" },
@@ -368,6 +377,7 @@ export function recipeMcp(
           inputSchema: mcpSchema(
             Schema.Struct({
               ...collection.fields,
+              expectedRevision,
               id: Schema.optionalKey(id),
               name: trimmed(collection.fields.name),
             }),
@@ -384,7 +394,7 @@ export function recipeMcp(
           result(
             "save_collection",
             context,
-            saveCollection(db, { ...input, id: input.id ?? crypto.randomUUID() }),
+            saveCollection(db, { ...input, id: input.id ?? crypto.randomUUID() }, input.expectedRevision),
           ),
       );
 
@@ -413,6 +423,7 @@ export function recipeMcp(
           inputSchema: mcpSchema(
             Schema.Struct({
               ...grocery.fields,
+              expectedRevision,
               id: Schema.optionalKey(grocery.fields.id),
               name: trimmed(grocery.fields.name),
               aisle: trimmed(grocery.fields.aisle),
@@ -432,7 +443,11 @@ export function recipeMcp(
           result(
             "save_grocery",
             context,
-            saveGrocery(db, { ...input, id: input.id ?? GroceryId.make(crypto.randomUUID()) }),
+            saveGrocery(
+              db,
+              { ...input, id: input.id ?? GroceryId.make(crypto.randomUUID()) },
+              input.expectedRevision,
+            ),
           ),
       );
 
@@ -457,7 +472,7 @@ export function recipeMcp(
         "list_meals",
         {
           description:
-            "Read meals in an inclusive date range, ordered by date, slot then ID. Dates are YYYY-MM-DD in the user's calendar. Returns {meals}; use get_recipes for the referenced recipes. scale is a recipe multiplier, not servings.",
+            "Read meals in an inclusive date range, ordered by date, slot then ID. Dates are YYYY-MM-DD in the user's calendar. Returns {meals}, each with its full independent editable recipe snapshot (null for note-only meals). recipeId and recipe.id retain source provenance; get_recipes reads the separate source, not the meal's recipe. scale is a recipe multiplier, not servings.",
           inputSchema: mcpSchema(range),
           outputSchema: mcpSchema(Schema.Struct({ meals: Schema.Array(meal) })),
           annotations: readAnnotations,
@@ -478,8 +493,10 @@ export function recipeMcp(
         "save_meal",
         {
           description:
-            "Add or fully replace a planned meal. Omit id to add; reuse an existing meal ID to move its date/slot or change its scale/note. All other fields required; read list_meals before editing. For a note-only meal (e.g. Pizza), set recipeId to null, note to nonblank text, and scale to 1; it adds no shopping ingredients. Otherwise scale = desired servings / recipe.servings. Multiple meals in the same slot are allowed. Returns {meal}. Read before retrying when id was omitted.",
-          inputSchema: mcpSchema(Schema.Struct({ ...meal.fields, id: Schema.optionalKey(id) })),
+            "Add or edit a planned meal. Omit id to add; reuse an existing meal ID to move its date/slot or change its scale/note. recipe is optional: omit to copy the source on creation or recipeId change, or preserve the saved snapshot otherwise. Supply the full recipe (under 1.9 MB, id matching recipeId) to edit only this meal, never the source or another meal. All scheduling fields are required; read list_meals before editing. For a note-only meal set recipeId to null, omit recipe or set it to null, use a nonblank note and scale 1. Otherwise scale = desired servings / meal.recipe.servings. Multiple meals in one slot are allowed. Returns {meal} with recipe always present, null for notes. Meals do not add shopping items. Read before retrying when id was omitted.",
+          inputSchema: mcpSchema(
+            Schema.Struct({ ...meal.fields, expectedRevision, id: Schema.optionalKey(id) }),
+          ),
           outputSchema: mcpSchema(Schema.Struct({ meal })),
           annotations: {
             readOnlyHint: false,
@@ -489,7 +506,11 @@ export function recipeMcp(
           },
         },
         (input, context) =>
-          result("save_meal", context, saveMeal(db, { ...input, id: input.id ?? crypto.randomUUID() })),
+          result(
+            "save_meal",
+            context,
+            saveMeal(db, { ...input, id: input.id ?? crypto.randomUUID() }, input.expectedRevision),
+          ),
       );
 
       server.registerTool(
@@ -559,7 +580,12 @@ export function recipeMcp(
           description:
             "Create or fully replace a manual shopping extra, shared across all date ranges. Omit id to create; use existing id from get_shopping_list to rename or check/uncheck. checked is 0 or 1. Returns {extra}. Read before retrying when id was omitted.",
           inputSchema: mcpSchema(
-            Schema.Struct({ ...extra.fields, id: Schema.optionalKey(id), name: trimmed(extra.fields.name) }),
+            Schema.Struct({
+              ...extra.fields,
+              expectedRevision,
+              id: Schema.optionalKey(id),
+              name: trimmed(extra.fields.name),
+            }),
           ),
           outputSchema: mcpSchema(Schema.Struct({ extra })),
           annotations: {
@@ -573,7 +599,7 @@ export function recipeMcp(
           result(
             "save_shopping_extra",
             context,
-            saveExtra(db, { ...input, id: input.id ?? crypto.randomUUID() }),
+            saveExtra(db, { ...input, id: input.id ?? crypto.randomUUID() }, input.expectedRevision),
           ),
       );
 
@@ -610,8 +636,8 @@ export function recipeMcp(
         {
           description:
             'Replace the saved shopping route. aisles are exact aisle strings; items are item.key strings from get_shopping_list (NOT checkKey), or JSON.stringify(["grocery", id]) using IDs from list_groceries to arrange any catalog products, even when off-list. Each array must contain unique values. Omitted entries follow the app\'s default order; empty arrays reset it. Both arrays replace the entire previous order and apply to List Builder and the selected shopping list.',
-          inputSchema: mcpSchema(order),
-          outputSchema: mcpSchema(ok),
+          inputSchema: mcpSchema(Schema.Struct({ ...order.fields, expectedRevision })),
+          outputSchema: mcpSchema(Schema.Struct({ ...ok.fields, revision: Schema.String })),
           annotations: {
             readOnlyHint: false,
             destructiveHint: true,
@@ -619,7 +645,8 @@ export function recipeMcp(
             openWorldHint: false,
           },
         },
-        (input, context) => result("set_shopping_order", context, setShoppingOrder(db, input)),
+        (input, context) =>
+          result("set_shopping_order", context, setShoppingOrder(db, input, input.expectedRevision)),
       );
 
       server.registerTool(
@@ -666,12 +693,12 @@ export function recipeMcp(
         [
           "delete_meal",
           "meals",
-          "Remove one planned meal by ID; preserves its recipe. Missing IDs succeed. Recompute the shopping list after removal.",
+          "Remove the observed planned meal version by ID and expectedRevision; preserves its recipe. Missing or changed meals conflict.",
         ],
         [
           "delete_shopping_extra",
           "extras",
-          "Remove one manual shopping extra by ID, across all date ranges. Missing IDs succeed.",
+          "Remove the observed manual shopping extra by ID and expectedRevision, across all date ranges. Missing or changed extras conflict.",
         ],
       ] as const) {
         server.registerTool(
@@ -679,7 +706,10 @@ export function recipeMcp(
           {
             description,
             inputSchema: mcpSchema(
-              Schema.Struct({ id: name === "delete_collection" ? Schema.NonEmptyString : id }),
+              Schema.Struct({
+                id: name === "delete_collection" ? Schema.NonEmptyString : id,
+                expectedRevision: Schema.NonEmptyString,
+              }),
             ),
             outputSchema: mcpSchema(ok),
             annotations: {
@@ -689,7 +719,7 @@ export function recipeMcp(
               openWorldHint: false,
             },
           },
-          ({ id }, context) =>
+          ({ id, expectedRevision }, context) =>
             result(
               name,
               context,
@@ -699,7 +729,7 @@ export function recipeMcp(
                     Effect.mapError(() => new ValidationError({ message: "Invalid recipe ID." })),
                   );
 
-                  return yield* deleteRecipe(db, recipeId);
+                  return yield* deleteRecipe(db, recipeId, expectedRevision);
                 }
 
                 if (path === "groceries") {
@@ -707,14 +737,14 @@ export function recipeMcp(
                     Effect.mapError(() => new ValidationError({ message: "Invalid grocery ID." })),
                   );
 
-                  return yield* deleteGrocery(db, groceryId);
+                  return yield* deleteGrocery(db, groceryId, expectedRevision);
                 }
 
-                if (path === "collections") return yield* deleteCollection(db, id);
+                if (path === "collections") return yield* deleteCollection(db, id, expectedRevision);
 
-                if (path === "meals") return yield* deleteMeal(db, id);
+                if (path === "meals") return yield* deleteMeal(db, id, expectedRevision);
 
-                return yield* deleteExtra(db, id);
+                return yield* deleteExtra(db, id, expectedRevision);
               }),
             ),
         );
