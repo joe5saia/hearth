@@ -273,7 +273,6 @@ it.each(["legacy inline uploads", "current shared assets"])(
 
       if (generation === "current shared assets")
         expect(copiedAssets).toContainEqual({ path: orphanPath, data: orphanPhoto });
-      await expect(db.prepare("DELETE FROM recipes WHERE id='dinner'").run()).rejects.toThrow();
       await db.prepare("DELETE FROM groceries WHERE id='oil'").run();
 
       const recipe = z
@@ -291,6 +290,19 @@ it.each(["legacy inline uploads", "current shared assets"])(
         .parse(await db.prepare("SELECT version FROM grocery_revision").first());
 
       expect(revision.version).toBe(74);
+      await db.prepare("DELETE FROM recipes WHERE id='dinner'").run();
+
+      const detached = Schema.decodeUnknownSync(HouseholdSchema)(
+        await (await worker.dispatchFetch("http://localhost/api/household")).json(),
+      );
+
+      expect(detached.recipes).toEqual([]);
+      expect(detached.meals).toEqual(
+        household.meals.map((meal) =>
+          meal.recipe ? { ...meal, recipeId: null, revision: expect.any(String) } : meal,
+        ),
+      );
+      expect((await db.prepare("PRAGMA foreign_key_check").all()).results).toEqual([]);
     } finally {
       source.close();
       await worker.dispose();

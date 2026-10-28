@@ -148,7 +148,9 @@ export const RecipeWriteSchema = RecipeSchema.check(
 export const MealSchema = Schema.Struct({
   id: IdSchema,
   revision: Schema.optional(Schema.String),
-  recipeId: Schema.NullOr(RecipeId),
+  recipeId: Schema.NullOr(RecipeId).annotate({
+    description: "Live source recipe link. Null for note-only meals and meals whose source was deleted.",
+  }),
   recipe: Schema.optional(Schema.NullOr(RecipeSchema)).annotate({
     description:
       "Independent meal recipe, with id retaining source provenance. Omit to capture the source on creation/source change or preserve the existing snapshot. Null only for note-only meals.",

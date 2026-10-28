@@ -557,11 +557,12 @@ export function App() {
       switch (next.view) {
         case "recipe": {
           const draft = mealDrafts.current.get(history.state?.hearth?.parent);
+          const draftRecipe = draft?.recipe ? Schema.decodeSync(RecipeSchema)(draft.recipe) : recipe;
 
-          if (recipe && draft)
+          if (draftRecipe && draft)
             return {
               kind: "recipe",
-              recipe: draft.recipe ? Schema.decodeSync(RecipeSchema)(draft.recipe) : recipe,
+              recipe: draftRecipe,
               meal: draft,
               returnToMeal: true,
             };
@@ -2686,7 +2687,7 @@ function MealForm({
     ? Schema.decodeSync(RecipeSchema)(draft.recipe)
     : recipes.find((entry) => entry.id === draft.recipeId);
 
-  const noteOnly = draft.recipeId === null;
+  const noteOnly = draft.recipeId === null && !draft.recipe;
   const searching = recipeSearch.trim() !== debouncedRecipeSearch;
 
   const recipeResults = useMemo(
@@ -2719,7 +2720,7 @@ function MealForm({
               setDraft({
                 ...draft,
                 recipeId: event.target.value === "note" ? null : (meal.recipeId ?? recipes[0]?.id ?? ""),
-                recipe: undefined,
+                recipe: event.target.value === "note" ? null : undefined,
               })
             }
           >
@@ -3932,9 +3933,7 @@ function RecipeForm({
             )}
             {confirmDelete && (
               <div className="delete-confirm">
-                <p>
-                  Delete this recipe permanently? Planned recipes must be removed from the calendar first.
-                </p>
+                <p>Delete this recipe permanently? Your meals will be kept.</p>
                 <button type="button" className="danger text-button" disabled={busy} onClick={remove}>
                   Yes, delete recipe
                 </button>

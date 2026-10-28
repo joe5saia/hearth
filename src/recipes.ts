@@ -365,25 +365,18 @@ export function rateRecipe(db: D1Database, id: RecipeId, rating: Rating) {
   });
 }
 
-/** Deletes only unplanned recipes; missing and planned recipes both produce a conflict. */
+/** Deletes the observed recipe version; the database detaches meals without changing their snapshots. */
 export function deleteRecipe(db: D1Database, id: RecipeId, expectedRevision?: string | null) {
   return Effect.gen(function* () {
     const revision = yield* requireRevision(expectedRevision);
 
-    // The conditional delete and FK restriction both protect planned recipes.
     const result = yield* database(() =>
-      db
-        .prepare(
-          "DELETE FROM recipes WHERE id=? AND revision=? AND NOT EXISTS (SELECT 1 FROM meals WHERE recipeId=?)",
-        )
-        .bind(id, revision, id)
-        .run(),
+      db.prepare("DELETE FROM recipes WHERE id=? AND revision=?").bind(id, revision).run(),
     );
 
     if (!result.meta.changes)
       return yield* new Conflict({
-        message:
-          "This recipe changed, no longer exists, or is still planned. Reload and remove planned meals before deleting it.",
+        message: "This recipe changed or no longer exists. Reload before deleting it.",
       });
 
     return { ok: true as const };

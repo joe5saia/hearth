@@ -472,7 +472,7 @@ export function recipeMcp(
         "list_meals",
         {
           description:
-            "Read meals in an inclusive date range, ordered by date, slot then ID. Dates are YYYY-MM-DD in the user's calendar. Returns {meals}, each with its full independent editable recipe snapshot (null for note-only meals). recipeId and recipe.id retain source provenance; get_recipes reads the separate source, not the meal's recipe. scale is a recipe multiplier, not servings.",
+            "Read meals in an inclusive date range, ordered by date, slot then ID. Dates are YYYY-MM-DD in the user's calendar. Returns {meals}, each with its full independent editable recipe snapshot (null for note-only meals). recipeId links the live source and becomes null when that source is deleted; recipe.id retains provenance. get_recipes reads the separate source, not the meal's recipe. scale is a recipe multiplier, not servings.",
           inputSchema: mcpSchema(range),
           outputSchema: mcpSchema(Schema.Struct({ meals: Schema.Array(meal) })),
           annotations: readAnnotations,
@@ -493,7 +493,7 @@ export function recipeMcp(
         "save_meal",
         {
           description:
-            "Add or edit a planned meal. Omit id to add; reuse an existing meal ID to move its date/slot or change its scale/note. recipe is optional: omit to copy the source on creation or recipeId change, or preserve the saved snapshot otherwise. Supply the full recipe (under 1.9 MB, id matching recipeId) to edit only this meal, never the source or another meal. All scheduling fields are required; read list_meals before editing. For a note-only meal set recipeId to null, omit recipe or set it to null, use a nonblank note and scale 1. Otherwise scale = desired servings / meal.recipe.servings. Multiple meals in one slot are allowed. Returns {meal} with recipe always present, null for notes. Meals do not add shopping items. Read before retrying when id was omitted.",
+            "Add or edit a planned meal. Omit id to add; reuse an existing meal ID to move its date/slot or change its scale/note. recipe is optional: omit to copy the source on creation or recipeId change, or preserve the saved snapshot otherwise. Supply the full recipe (under 1.9 MB, id matching recipeId when nonnull) to edit only this meal, never the source or another meal. After source deletion, keep recipeId null; omit recipe to preserve the snapshot or supply it to edit. All scheduling fields are required; read list_meals before editing. To create a note-only meal set recipeId to null, omit recipe or set it to null, use a nonblank note and scale 1. To convert an existing meal to a note, explicitly set recipeId and recipe to null. Otherwise scale = desired servings / meal.recipe.servings. Multiple meals in one slot are allowed. Returns {meal} with recipe always present, null for notes. Meals do not add shopping items. Read before retrying when id was omitted.",
           inputSchema: mcpSchema(
             Schema.Struct({ ...meal.fields, expectedRevision, id: Schema.optionalKey(id) }),
           ),
@@ -678,7 +678,7 @@ export function recipeMcp(
         [
           "delete_recipe",
           "recipes",
-          "Permanently delete one recipe. Fails if any meal references it; remove those meals first. Missing IDs also fail. Does not delete collections or groceries.",
+          "Permanently delete the observed recipe version. Preserves its meals and their snapshots, clearing only their recipeId source link. Missing or changed recipes conflict. Does not delete collections, groceries or photos.",
         ],
         [
           "delete_collection",

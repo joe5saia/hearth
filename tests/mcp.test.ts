@@ -518,6 +518,7 @@ beforeAll(async () => {
     "0011_meal_recipes.sql",
     "0012_entity_revisions.sql",
     "0013_photos.sql",
+    "0014_detached_meals.sql",
   ]) {
     const sql = await readFile(`migrations/${file}`, "utf8");
     await db.batch(
@@ -1374,7 +1375,7 @@ it("manages a collection, matched products, inclusive meal plan and shopping lif
     ["save_grocery", { ...rice, surprise: true }],
     ["set_shopping_order", { aisles: ["Dry", "Dry"], items: [] }],
     ["save_shopping_extra", { name: "No mutation", checked: 0, unknown: 1 }],
-    ["delete_recipe", { id: a.id }],
+    ["delete_recipe", { id: a.id, expectedRevision: "stale" }],
     ["delete_grocery", { id: "missing-grocery" }],
   ] as const) {
     expect((await call(name, args)).isError, name).toBe(true);
@@ -1493,10 +1494,35 @@ it("shares small immutable photo references through MCP creation, updates, snaps
     (await db.prepare("SELECT path,data FROM photos WHERE data=?").bind(replacement).all()).results,
   ).toEqual([{ path: updated.photo, data: replacement }]);
 
-  for (const entry of (await success("list_meals", range)).meals)
-    await success("delete_meal", { id: entry.id });
+  const beforeDeletion = (await success("list_meals", range)).meals;
 
   for (const recipe of [source, other]) await success("delete_recipe", { id: recipe.id });
+  const detached = (await success("list_meals", range)).meals;
+  expect(detached).toEqual(
+    beforeDeletion.map((entry) => ({ ...entry, recipeId: null, revision: expect.any(String) })),
+  );
+
+  for (const entry of detached)
+    expect(entry.revision).not.toBe(beforeDeletion.find((before) => before.id === entry.id)?.revision);
+  const editable = detached[0];
+
+  if (!editable.recipe) throw new Error("Missing detached snapshot");
+
+  const edited = (
+    await success("save_meal", {
+      ...editable,
+      recipe: { ...editable.recipe, title: "Meal after source deletion" },
+    })
+  ).meal;
+
+  expect(edited.recipe?.title).toBe("Meal after source deletion");
+  expect(edited.recipeId).toBeNull();
+  const { recipe: _snapshot, ...schedule } = edited;
+  const rescheduled = (await success("save_meal", { ...schedule, scale: 0.5, note: "" })).meal;
+  expect(rescheduled.recipe).toEqual(edited.recipe);
+  expect(rescheduled.scale).toBe(0.5);
+
+  for (const entry of detached) await success("delete_meal", { id: entry.id });
   expect(
     (
       await db
@@ -1616,7 +1642,7 @@ it("returns and edits independent meal recipes through MCP while preserving omit
     { recipe: { ...source, id: otherSource.id } },
     { recipe: { ...source, ingredients: [] } },
     { recipe: { ...source, photo: `data:image/png;base64,${"a".repeat(1_900_000)}` } },
-    { recipeId: null, recipe: source },
+    { recipeId: null, recipe: { ...source, ingredients: [] } },
   ])
     expect((await call("save_meal", { ...moved, ...patch })).isError).toBe(true);
   expect((await success("list_meals", range)).meals).toEqual([second, movedMeal]);

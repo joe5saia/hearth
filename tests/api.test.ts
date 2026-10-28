@@ -481,6 +481,14 @@ beforeAll(async () => {
       recipe: entry.recipeId === null ? null : historicalRecipe,
     });
   await expect(db.prepare("DELETE FROM recipes WHERE id=?").bind(meal.recipeId).run()).rejects.toThrow();
+  await db.batch(
+    (await readFile("migrations/0014_detached_meals.sql", "utf8"))
+      .replace(/^--.*$/gm, "")
+      .split(/;\s*\n(?=CREATE|INSERT|DROP|ALTER|UPDATE)|;\s*$/)
+      .filter((s) => s.trim())
+      .map((s) => db.prepare(s)),
+  );
+  expect(await (await worker.dispatchFetch("http://localhost/api/household")).json()).toEqual(migrated);
 }, 30000);
 
 beforeEach(async () => {
@@ -2086,6 +2094,7 @@ describe("real Worker with disposable SQLite D1", () => {
         "0011_meal_recipes.sql",
         "0012_entity_revisions.sql",
         "0013_photos.sql",
+        "0014_detached_meals.sql",
       ]) {
         const migration = await readFile(`migrations/${file}`, "utf8");
         await db.batch(
@@ -2496,10 +2505,9 @@ describe("real Worker with disposable SQLite D1", () => {
       date: "2026-09-21",
     });
   });
-  it("updates rather than duplicates and protects planned recipes from deletion", async () => {
+  it("updates rather than duplicates and detaches meals when deleting their source recipe", async () => {
     expect((await send("recipes", "PUT", JSON.stringify(sampleRecipes[0]))).status).toBe(200);
     expect((await send("meals", "PUT", JSON.stringify(meal))).status).toBe(200);
-    expect((await send(`recipes/${sampleRecipes[0].id}`, "DELETE", "{}")).status).toBe(409);
     expect(
       (await send("recipes", "PUT", JSON.stringify({ ...sampleRecipes[0], title: "Updated chicken" })))
         .status,
@@ -2509,9 +2517,140 @@ describe("real Worker with disposable SQLite D1", () => {
       count: 1,
       title: "Updated chicken",
     });
-    expect((await send("meals/test-meal", "DELETE", "{}")).status).toBe(200);
     expect((await send(`recipes/${sampleRecipes[0].id}`, "DELETE", "{}")).status).toBe(200);
     expect(await db.prepare("SELECT count(*) AS count FROM recipes").first()).toEqual({ count: 0 });
+
+    const state = Schema.decodeUnknownSync(HouseholdSchema)(
+      await (await worker.dispatchFetch("http://localhost/api/household")).json(),
+    );
+
+    expect(state.meals).toEqual([
+      { ...meal, recipeId: null, recipe: sampleRecipes[0], revision: expect.any(String) },
+    ]);
+    expect((await send("meals/test-meal", "DELETE", "{}")).status).toBe(200);
+  });
+
+  it("preserves detached snapshots and photos, rejects stale and old-Worker saves, and keeps meals editable", async () => {
+    const read = async () =>
+      Schema.decodeUnknownSync(HouseholdSchema)(
+        await (await worker.dispatchFetch("http://localhost/api/household")).json(),
+      );
+
+    const put = (entry: MealDraft) => send("meals", "PUT", JSON.stringify(entry));
+    const source = { ...sampleRecipes[0], photo: uploadedPng };
+    expect((await send("recipes", "PUT", JSON.stringify(source))).status).toBe(200);
+    const first = { ...meal, date: "2020-01-02", note: "", scale: 2.25 };
+    const second = { ...meal, id: "future-meal", date: "2037-04-05" };
+    const note = { ...meal, id: "note", recipeId: null, note: "Takeout" };
+    expect((await put(first)).status).toBe(200);
+    expect(
+      (await put({ ...second, recipe: { ...source, title: "Customized dinner", photo: uploadedWebp } }))
+        .status,
+    ).toBe(200);
+    expect((await put(note)).status).toBe(200);
+    const before = await read();
+    const original = before.meals.find((entry) => entry.id === first.id);
+
+    if (!original?.recipe) throw new Error("Missing original meal");
+    const endpoint = `recipes/${encodeURIComponent(source.id)}`;
+    expect((await send(endpoint, "DELETE", JSON.stringify({ expectedRevision: "stale" }))).status).toBe(409);
+    expect(await read()).toEqual(before);
+    expect((await send(endpoint, "DELETE", "{}")).status).toBe(200);
+    const detached = await read();
+    expect(detached).toEqual({
+      ...before,
+      recipes: [],
+      recipesAdded: [],
+      meals: before.meals.map((entry) =>
+        entry.recipe ? { ...entry, recipeId: null, revision: expect.any(String) } : entry,
+      ),
+    });
+
+    for (const entry of detached.meals.filter((entry) => entry.recipe)) {
+      expect(entry.revision).not.toBe(before.meals.find((old) => old.id === entry.id)?.revision);
+      const response = await worker.dispatchFetch(`http://localhost${entry.recipe?.photo}`);
+      expect(response.status).toBe(200);
+      expect(Buffer.from(await response.arrayBuffer()).toString("base64")).toBe(
+        (entry.id === first.id ? uploadedPng : uploadedWebp).split(",")[1],
+      );
+    }
+
+    expect(
+      (await send("meals", "PUT", JSON.stringify({ ...original, expectedRevision: original.revision })))
+        .status,
+    ).toBe(409);
+    expect(
+      (await send(`meals/${first.id}`, "DELETE", JSON.stringify({ expectedRevision: original.revision })))
+        .status,
+    ).toBe(409);
+    expect(await read()).toEqual(detached);
+
+    const db = await worker.getD1Database("DB");
+    // The previous Worker clears snapshots for every null source, even on scheduling-only saves.
+    const saved = detached.meals.find((entry) => entry.id === second.id);
+
+    if (!saved?.revision) throw new Error("Missing detached meal revision");
+    await expect(
+      db
+        .prepare(`INSERT INTO meals (id,recipeId,date,slot,scale,note,recipe)
+      SELECT ?1,?2,?3,?4,?5,?6,COALESCE(?7,(
+        SELECT json_object('id',id,'title',title,'description',description,'servings',servings,
+          'minutes',minutes,'category',category,'photo',photo,'source',source,'rating',rating,
+          'ingredients',json(ingredients),'instructions',json(instructions)) FROM recipes WHERE id=?2
+      )) WHERE (?2 IS NULL OR EXISTS (SELECT 1 FROM recipes WHERE id=?2))
+        AND (?8 IS NULL OR EXISTS (SELECT 1 FROM meals WHERE id=?1 AND revision=?8))
+      ON CONFLICT(id) DO UPDATE SET recipeId=excluded.recipeId,date=excluded.date,slot=excluded.slot,
+        scale=excluded.scale,note=excluded.note,
+        recipe=CASE WHEN excluded.recipeId IS NULL THEN NULL
+          WHEN ?7 IS NULL AND meals.recipeId=excluded.recipeId THEN meals.recipe
+          ELSE excluded.recipe END
+      WHERE meals.revision=?8`)
+        .bind(saved.id, null, saved.date, saved.slot, 3, saved.note, null, saved.revision)
+        .run(),
+    ).rejects.toThrow();
+    expect(await read()).toEqual(detached);
+
+    // Reusing the deleted recipe ID must not relink or rewrite historical meals.
+    expect((await send("recipes", "PUT", JSON.stringify({ ...source, title: "New source" }))).status).toBe(
+      200,
+    );
+    expect((await read()).meals).toEqual(detached.meals);
+    expect((await send(endpoint, "DELETE", "{}")).status).toBe(200);
+    expect((await read()).meals).toEqual(detached.meals);
+    expect((await put({ ...first, recipeId: null, date: "2028-03-04", scale: 0.5 })).status).toBe(200);
+    let current = (await read()).meals.find((entry) => entry.id === first.id);
+    expect(current).toEqual({
+      ...original,
+      recipeId: null,
+      date: "2028-03-04",
+      scale: 0.5,
+      revision: expect.any(String),
+    });
+
+    if (!current?.recipe) throw new Error("Missing editable snapshot");
+
+    const edited = {
+      ...current.recipe,
+      title: "After deletion",
+      instructions: ["New meal step"],
+      photo: uploadedWebp,
+    };
+
+    expect((await put({ ...current, recipe: edited, note: "Cauliflower" })).status).toBe(200);
+    expect(
+      (await send(`meals/${first.id}`, "PATCH", JSON.stringify({ note: "", expectedNote: "Cauliflower" })))
+        .status,
+    ).toBe(200);
+    current = (await read()).meals.find((entry) => entry.id === first.id);
+    expect(current?.recipe).toEqual({ ...edited, photo: saved.recipe?.photo });
+    expect(current?.note).toBe("");
+    expect((await read()).meals.find((entry) => entry.id === second.id)).toEqual(saved);
+
+    if (!current) throw new Error("Missing meal");
+    // Explicit conversion remains available; omission alone never discards the snapshot.
+    expect((await put({ ...current, recipe: null, note: "Pizza instead" })).status).toBe(200);
+    expect((await read()).meals.find((entry) => entry.id === first.id)?.recipe).toBeNull();
+    expect((await db.prepare("PRAGMA foreign_key_check").all()).results).toEqual([]);
   });
 
   it("keeps complete meal snapshots independent from their source and each other across old-style and concurrent saves", async () => {
@@ -2737,7 +2876,7 @@ describe("real Worker with disposable SQLite D1", () => {
       { recipe: { ...source, ingredients: [{ name: "Salt", quantity: 0, unit: "g" }] } },
       { recipe: { ...source, instructions: [""] } },
       { recipe: { ...source, photo: `data:image/png;base64,${"a".repeat(1_900_000)}` } },
-      { recipeId: null, recipe: source, note: "Note-only" },
+      { recipeId: null, recipe: { ...source, ingredients: [] }, note: "Detached invalid recipe" },
       { recipeId: "missing", recipe: { ...source, id: "missing" } },
     ]) {
       expect((await send("meals", "PUT", JSON.stringify({ ...meal, ...patch }))).status).toBe(400);

@@ -55,17 +55,18 @@ function mealStatement(db: D1Database, meal: Meal, expectedRevision: string | nu
   // Capture the source and preserve omitted snapshots inside the write, not a read/write race.
   return db
     .prepare(`INSERT INTO meals (id,recipeId,date,slot,scale,note,recipe)
-    SELECT ?1,?2,?3,?4,?5,?6,COALESCE(?7,(
+    SELECT ?1,?2,?3,?4,?5,?6,CASE WHEN ?9 THEN ?7
+      WHEN EXISTS (SELECT 1 FROM meals WHERE id=?1 AND recipeId IS ?2)
+        THEN (SELECT recipe FROM meals WHERE id=?1)
+      ELSE (
       SELECT json_object('id',id,'title',title,'description',description,'servings',servings,
         'minutes',minutes,'category',category,'photo',photo,'source',source,'rating',rating,
         'ingredients',json(ingredients),'instructions',json(instructions)) FROM recipes WHERE id=?2
-    )) WHERE (?2 IS NULL OR EXISTS (SELECT 1 FROM recipes WHERE id=?2))
+    ) END WHERE (?2 IS NULL OR EXISTS (SELECT 1 FROM recipes WHERE id=?2))
       AND (?8 IS NULL OR EXISTS (SELECT 1 FROM meals WHERE id=?1 AND revision=?8))
     ON CONFLICT(id) DO UPDATE SET recipeId=excluded.recipeId,date=excluded.date,slot=excluded.slot,
-      scale=excluded.scale,note=excluded.note,
-      recipe=CASE WHEN excluded.recipeId IS NULL THEN NULL
-        WHEN ?7 IS NULL AND meals.recipeId=excluded.recipeId THEN meals.recipe
-        ELSE excluded.recipe END
+      scale=excluded.scale,note=excluded.note,recipe=excluded.recipe,
+      revision=lower(hex(randomblob(16)))
     WHERE meals.revision=?8`)
     .bind(
       meal.id,
@@ -76,6 +77,7 @@ function mealStatement(db: D1Database, meal: Meal, expectedRevision: string | nu
       meal.note,
       meal.recipe == null ? null : JSON.stringify(meal.recipe),
       expectedRevision,
+      meal.recipe !== undefined ? 1 : 0,
     );
 }
 
@@ -189,16 +191,27 @@ export const saveMeal = (db: D1Database, input: Meal, expectedRevision?: string 
       "Choose a valid date and a recipe scale between 0 and 100.",
     );
 
-    if (meal.recipeId === null) {
-      if (!meal.note.trim()) return yield* new ValidationError({ message: "Write a note for this meal." });
+    if (meal.recipeId === null && meal.recipe == null && !meal.note.trim()) {
+      const retained =
+        meal.recipe === undefined &&
+        (yield* database(() =>
+          db
+            .prepare("SELECT id FROM meals WHERE id=? AND recipeId IS NULL AND recipe IS NOT NULL")
+            .bind(meal.id)
+            .first(),
+        ));
 
-      if (meal.recipe != null)
-        return yield* new ValidationError({ message: "A note-only meal cannot include a recipe." });
-    } else if (meal.recipe !== undefined) {
+      if (!retained) return yield* new ValidationError({ message: "Write a note for this meal." });
+    }
+
+    if (meal.recipeId !== null && meal.recipe !== undefined) {
       if (meal.recipe === null || meal.recipe.id !== meal.recipeId)
         return yield* new ValidationError({
           message: "Include the meal's recipe with its source recipe ID, or omit it to use the source.",
         });
+    }
+
+    if (meal.recipe != null) {
       yield* validate(
         RecipeWriteSchema,
         meal.recipe,
@@ -263,7 +276,7 @@ export const patchMealNote = (db: D1Database, id: string, input: { note: string;
     const result = yield* database(() =>
       db
         .prepare(
-          "UPDATE meals SET note=? WHERE id=? AND note=? AND (recipeId IS NOT NULL OR length(trim(?))>0)",
+          "UPDATE meals SET note=? WHERE id=? AND note=? AND (recipe IS NOT NULL OR length(trim(?))>0)",
         )
         .bind(input.note, id, input.expectedNote, input.note)
         .run(),
