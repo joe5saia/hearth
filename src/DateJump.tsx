@@ -1,27 +1,15 @@
-import { useEffect, useRef, useState } from "react";
+import { useRef, useState } from "react";
 import { CalendarDays, ChevronLeft, ChevronRight } from "lucide-react";
 import { addDays, dateKey, type CalendarDate } from "./domain";
 
 /** The Monday-first month picker selects a local date immediately, without a submit step. */
 export function DateJump({ date, onSelect }: { date: string; onSelect: (date: CalendarDate) => void }) {
   const disclosure = useRef<HTMLDetailsElement>(null);
-  const trigger = useRef<HTMLElement>(null);
   const [month, setMonth] = useState(`${date.slice(0, 7)}-01`);
   const first = new Date(`${month}T12:00:00`);
   const start = addDays(month, -((first.getDay() + 6) % 7));
   const today = dateKey(new Date());
   const title = first.toLocaleDateString("en-US", { month: "long", year: "numeric" });
-
-  useEffect(() => {
-    const dismiss = (event: PointerEvent) => {
-      if (event.target instanceof Node && !disclosure.current?.contains(event.target))
-        disclosure.current?.removeAttribute("open");
-    };
-
-    document.addEventListener("pointerdown", dismiss);
-
-    return () => document.removeEventListener("pointerdown", dismiss);
-  }, []);
 
   const select = (day: CalendarDate) => {
     disclosure.current?.removeAttribute("open");
@@ -38,18 +26,12 @@ export function DateJump({ date, onSelect }: { date: string; onSelect: (date: Ca
     <details
       ref={disclosure}
       className="date-disclosure date-picker"
+      data-dismiss
       onToggle={(event) => {
         if (event.currentTarget.open) setMonth(`${date.slice(0, 7)}-01`);
       }}
-      onKeyDown={(event) => {
-        if (event.key === "Escape") {
-          event.currentTarget.removeAttribute("open");
-          trigger.current?.focus();
-          event.stopPropagation();
-        }
-      }}
     >
-      <summary ref={trigger}>
+      <summary>
         <CalendarDays size={18} /> Jump to date
       </summary>
       <div className="date-picker-panel" aria-label="Choose a date">

@@ -116,6 +116,19 @@ Schema migrations must preserve invariants while the previous Workers still serv
 requests. Test the old SQL writer against the new schema when introducing a new
 required relationship or derived value; a one-time backfill alone is insufficient.
 
+## Interface conventions
+
+Floating menus, dropdowns, pickers, and suggestion lists close when the user presses or
+taps anywhere outside them, presses Escape, or moves focus elsewhere — outside presses
+behave like Escape. A `<details>` menu opts in with `data-dismiss`; `src/dismiss.ts` owns
+the behavior app-wide, so do not add per-component outside-click or Escape handlers to
+those menus. Escape returns focus to the menu's summary; an outside press leaves focus
+where the user put it. State-driven popups that are not `<details>`, such as ingredient
+grocery matches, follow the same rule with a document `pointerdown` listener active only
+while open. Inline disclosures that push content down (recipe details, Groceries
+sections, timer creation) and side panels used alongside other work (kitchen timers) are
+not menus and stay open until the user collapses them.
+
 ## Validation and scope
 
 Preserve behavior while correcting standards violations: do not change routes,

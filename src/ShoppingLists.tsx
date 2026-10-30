@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useRef, useState } from "react";
 import { Schema } from "effect";
 import { ArrowRight, CalendarDays, Check, ChevronDown, Pencil, Plus, Trash2 } from "lucide-react";
 import {
@@ -113,21 +113,6 @@ export function ListSwitcher({
   manage: () => void;
 }) {
   const menu = useRef<HTMLDetailsElement>(null);
-  const [open, setOpen] = useState(false);
-
-  // A press anywhere outside the open menu closes it, like Escape, without moving focus.
-  useEffect(() => {
-    if (!open) return;
-
-    const outside = (event: PointerEvent) => {
-      if (event.target instanceof Node && !menu.current?.contains(event.target))
-        menu.current?.removeAttribute("open");
-    };
-
-    document.addEventListener("pointerdown", outside);
-
-    return () => document.removeEventListener("pointerdown", outside);
-  }, [open]);
   const today = dateKey(new Date());
   const [date, setDate] = useState<string>(today);
   const sorted = [...lists].sort((a, b) => a.date.localeCompare(b.date) || a.id.localeCompare(b.id));
@@ -147,21 +132,7 @@ export function ListSwitcher({
   const shown = nearby.some((list) => list.id === current.id) ? nearby : [current, ...nearby.slice(0, 5)];
 
   return (
-    <details
-      ref={menu}
-      className="list-switcher"
-      onToggle={(event) => setOpen(event.currentTarget.open)}
-      onKeyDown={(event) => {
-        if (event.key === "Escape") {
-          close();
-          event.stopPropagation();
-        }
-      }}
-      onBlur={(event) => {
-        if (event.relatedTarget && !event.currentTarget.contains(event.relatedTarget))
-          event.currentTarget.removeAttribute("open");
-      }}
-    >
+    <details ref={menu} className="list-switcher" data-dismiss>
       <summary aria-label={`Shopping list: ${listName(current)}. Switch or create a list`}>
         <strong>{listName(current)}</strong>
         <span className="muted small">

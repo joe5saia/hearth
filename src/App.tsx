@@ -1570,20 +1570,7 @@ export function App() {
               <Plus size={17} /> <span>Add item</span>
             </button>
           ) : null}
-          <details
-            className="page-options"
-            onKeyDown={(event) => {
-              if (event.key === "Escape") {
-                event.currentTarget.removeAttribute("open");
-                pageOptions.current?.focus();
-                event.stopPropagation();
-              }
-            }}
-            onBlur={(event) => {
-              if (event.relatedTarget && !event.currentTarget.contains(event.relatedTarget))
-                event.currentTarget.removeAttribute("open");
-            }}
-          >
+          <details className="page-options" data-dismiss>
             <summary ref={pageOptions} aria-label="Page options">
               <MoreHorizontal size={20} />
             </summary>
@@ -2002,7 +1989,7 @@ export function App() {
                         </div>
                       </button>
                       <div className="recipe-row-actions">
-                        <details className="recipe-rating-picker">
+                        <details className="recipe-rating-picker" data-dismiss>
                           <summary aria-label={`Rate ${recipe.title}`}>
                             {recipe.rating === "up" ? (
                               <ThumbsUp size={16} />
@@ -3639,6 +3626,20 @@ function IngredientMatch({
 }) {
   const [query, setQuery] = useState("");
   const [open, setOpen] = useState(false);
+  const matcher = useRef<HTMLDivElement>(null);
+
+  // Same rule as data-dismiss menus (src/dismiss.ts): a press outside closes the results.
+  useEffect(() => {
+    if (!open) return;
+
+    const outside = (event: PointerEvent) => {
+      if (event.target instanceof Node && !matcher.current?.contains(event.target)) setOpen(false);
+    };
+
+    document.addEventListener("pointerdown", outside);
+
+    return () => document.removeEventListener("pointerdown", outside);
+  }, [open]);
   const automatic = item.groceryItemId === undefined ? matchGrocery(item.name, groceries) : undefined;
   const linked = groceries.find((grocery) => grocery.id === (item.groceryItemId ?? automatic?.id));
 
@@ -3668,7 +3669,7 @@ function IngredientMatch({
   };
 
   return (
-    <div className="ingredient-match">
+    <div ref={matcher} className="ingredient-match">
       {(item.groceryItemId !== undefined || automatic) && (
         <p className="ingredient-match-status">
           {item.groceryItemId === undefined && automatic
