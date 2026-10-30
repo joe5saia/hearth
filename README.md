@@ -2,6 +2,12 @@
 
 A meal planner for one household: saved recipes, a weekly calendar, and a manually built grocery shopping list. React + TypeScript, Effect 4 RC, Cloudflare Workers + D1 (SQLite), and Alchemy 2. Earth colors, restrained transitions, and responsive layouts.
 
+## Core user flows
+
+Read [Core user flows](docs/user-flows.md) before designing or reviewing changes: making dinner,
+meal planning (including recipe discovery and import), and building and using the shopping list.
+The guide records the household's goals, representative validation scenarios, and current gaps.
+
 ## Run everything locally
 
 Use Node 26.10 or newer (version in `.node-version`). Normal development starts from a private copy of current production D1 and requires the existing Cloudflare account/token environment variables. No Docker is required. Offline empty-fixture development remains available with `npx task dev:empty`.

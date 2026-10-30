@@ -6,6 +6,11 @@ Read [docs/errors.md](docs/errors.md) before changing errors, rendered failure m
 error contracts, HTTP statuses, retry guidance, or failure telemetry. Preserve existing behavior
 and verify changes through the real application boundaries.
 
+Read [docs/user-flows.md](docs/user-flows.md) when designing, implementing, or reviewing changes.
+Review the impact on all three core journeys (making dinner, meal planning, and shopping),
+validate the affected paths end to end, and report coverage and gaps. The guide distinguishes
+desired experiences from current capabilities; it does not authorize unrelated feature work.
+
 # Development commands
 
 Use `npx task` to discover repository tasks and `npx task <name> -- <args>` to run them.
