@@ -1998,6 +1998,9 @@ export function App() {
                         const checked = pending?.kind === "check" ? pending.checked : isChecked(key) ? 1 : 0;
                         void saveShoppingEdit({ kind: "check", key, checked: checked ? 0 : 1 });
                       }}
+                      saveAmount={(item, packages) =>
+                        saveShoppingEdit({ kind: "check", key: checkKey(item), checked: 0, packages })
+                      }
                       saveOrder={(order) => saveShoppingEdit({ kind: "order", order })}
                       renameAisle={async (from, to) => {
                         setBusy(true);

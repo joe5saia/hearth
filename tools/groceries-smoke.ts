@@ -119,6 +119,38 @@ try {
   await request("checks", "PUT", { key: JSON.stringify(["shopping-list", products[1].id]), checked: 0 });
   shopping();
   browser("set", "viewport", "1280", "900", "2");
+  browser("find", "role", "button", "click", "--name", "Edit amount for Olive oil", "--exact");
+  check("document.activeElement === document.querySelector('.purchase-amount-editor input')", "amount editor focuses the package count without checking the item");
+  for (const value of ["", "0", "-1", "1.5", "1000001"]) {
+    if (value) formFill("Packages to buy for Olive oil", value);
+    else {
+      browser("press", "Control+a");
+      browser("press", "Backspace");
+    }
+    check("document.querySelector('.purchase-amount-editor .primary').disabled", `invalid package count ${JSON.stringify(value)} cannot save`);
+  }
+  formFill("Packages to buy for Olive oil", "3");
+  browser("click", ".purchase-amount-editor .primary");
+  browser("wait", "--fn", "!document.querySelector('.purchase-amount-editor')");
+  const oilKey = JSON.stringify(["shopping-list", products[1].id]);
+  assert((await household()).checks.some(entry => entry.key === oilKey && entry.packages === 3 && entry.checked === 0), "Saving an amount preserves list membership.");
+  assert.equal((await household()).groceries.find(item => item.id === products[1].id)?.quantity, 500, "Buying three packages must not change the catalog package size.");
+  shopping();
+  check("document.querySelector('.purchase-amount').textContent.includes('3 × 500 ml')", "edited amount survives a full reload");
+  browser("find", "role", "button", "click", "--name", "Shopping mode", "--exact");
+  browser("set", "viewport", "390", "844", "2");
+  browser("find", "role", "button", "click", "--name", "Edit amount for Olive oil", "--exact");
+  formFill("Packages to buy for Olive oil", "7");
+  browser("click", ".purchase-amount-editor .secondary");
+  check("!document.querySelector('.purchase-amount-editor') && document.activeElement.getAttribute('aria-label') === 'Edit amount for Olive oil'", "Cancel closes the amount editor and restores keyboard focus in narrow Shop Mode");
+  assert((await household()).checks.some(entry => entry.key === oilKey && entry.packages === 3), "Cancel does not write the draft amount.");
+  browser("find", "role", "button", "click", "--name", "Edit amount for Olive oil", "--exact");
+  formFill("Packages to buy for Olive oil", "1");
+  browser("press", "Enter");
+  browser("wait", "--fn", "!document.querySelector('.purchase-amount-editor')");
+  assert((await household()).checks.some(entry => entry.key === oilKey && entry.packages === 1), "Keyboard save in Shop Mode restores one package.");
+  browser("find", "role", "button", "click", "--name", "Exit shopping mode", "--exact");
+  browser("set", "viewport", "1280", "900", "2");
   browser("find", "role", "button", "click", "--name", "Add from recipes", "--exact");
   check("document.querySelector('.shopping-recipe-form .primary').disabled && document.querySelectorAll('.shopping-recipe-option').length === 4", "recipe picker starts unselected with add disabled");
   check("[...document.querySelectorAll('.shopping-recipe-option strong')].map(el => el.textContent).join('|') === 'Lime rice bowls|Rice for lunch|Earlier lunch|Unplanned recipe'", "planned recipes appear once by latest date, including future and past meals, followed by unplanned recipes");

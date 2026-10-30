@@ -1,8 +1,10 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { Schema } from "effect";
 import { ArrowDown, ArrowUp, Check, ChevronDown, ExternalLink, GripVertical, Pencil } from "lucide-react";
 import {
   compareAisles,
   displayAmount,
+  PackageCountSchema,
   savedOrder,
   type GroceryItem,
   type ShoppingItem,
@@ -58,6 +60,7 @@ export function ShoppingItems({
   arranging,
   checked,
   toggle,
+  saveAmount,
   saveOrder,
   renameAisle,
   edit,
@@ -71,11 +74,23 @@ export function ShoppingItems({
   arranging: boolean;
   checked: (item: ShoppingItem) => boolean;
   toggle: (item: ShoppingItem) => void;
+  saveAmount: (item: ShoppingItem, packages: number) => Promise<boolean>;
   saveOrder: (order: ShoppingOrder) => Promise<boolean>;
   renameAisle: (from: string, to: string) => Promise<boolean>;
   edit: (item: GroceryItem) => void;
 }) {
   const [editingAisle, setEditingAisle] = useState<{ aisle: string; name: string } | null>(null);
+  const [editingAmount, setEditingAmount] = useState<{ key: string; value: string } | null>(null);
+  const [savingAmount, setSavingAmount] = useState(false);
+  const amountTrigger = useRef<HTMLButtonElement | null>(null);
+
+  const closeAmount = () => {
+    setEditingAmount(null);
+  };
+
+  useEffect(() => {
+    if (editingAmount === null) amountTrigger.current?.focus();
+  }, [editingAmount]);
 
   const [dragging, setDragging] = useState<{
     id: string;
@@ -217,6 +232,7 @@ export function ShoppingItems({
 
   useEffect(() => {
     setEditingAisle(null);
+    setEditingAmount(null);
   }, [shoppingMode, arranging]);
 
   useLayoutEffect(() => {
@@ -303,7 +319,7 @@ export function ShoppingItems({
         aria-label={
           aisle === null ? `Drag ${aisleName(id)}` : `Drag ${product?.name} within ${aisleName(aisle)}`
         }
-        disabled={busy || editingAisle !== null}
+        disabled={busy || editingAisle !== null || editingAmount !== null}
         onPointerDown={(event) => {
           if (!event.isPrimary || event.button !== 0) return;
           const handle = event.currentTarget;
@@ -572,27 +588,103 @@ export function ShoppingItems({
                           aisleItems.map((entry) => entry.id),
                           position,
                         )}
-                      <label className="shopping-item">
+                      <div className="shopping-item">
                         <input
+                          id={`shopping-check-${item.grocery.id}`}
                           type="checkbox"
                           checked={checked(item)}
-                          disabled={busy}
+                          disabled={busy || editingAmount !== null}
                           aria-label={listBuilder ? `Off list ${item.name}` : `Picked up ${item.name}`}
                           onChange={() => toggle(item)}
                         />
-                        <span className="custom-check">
+                        <label className="custom-check" htmlFor={`shopping-check-${item.grocery.id}`}>
                           <Check size={15} />
-                        </span>
+                        </label>
                         <span className="item-info">
                           <span className="item-heading">
-                            <strong>{item.name}</strong>
-                            <span className="purchase-amount">
+                            <label htmlFor={`shopping-check-${item.grocery.id}`}>
+                              <strong>{item.name}</strong>
+                            </label>
+                            <button
+                              className="purchase-amount"
+                              aria-label={`Edit amount for ${item.name}`}
+                              aria-expanded={editingAmount?.key === item.key}
+                              disabled={busy || checked(item) || editingAmount !== null}
+                              onClick={(event) => {
+                                amountTrigger.current = event.currentTarget;
+                                setEditingAmount({ key: item.key, value: String(item.packages ?? 1) });
+                              }}
+                            >
                               {item.packages && item.packages > 1 ? `${item.packages} × ` : ""}
                               {displayAmount(item.grocery)}
-                            </span>
+                              {!checked(item) && <Pencil size={13} />}
+                            </button>
                           </span>
                         </span>
-                      </label>
+                      </div>
+                      {editingAmount?.key === item.key && (
+                        <form
+                          className="purchase-amount-editor"
+                          onSubmit={async (event) => {
+                            event.preventDefault();
+                            const packages = Number(editingAmount.value);
+
+                            if (busy || savingAmount || !Schema.is(PackageCountSchema)(packages)) return;
+                            setSavingAmount(true);
+
+                            try {
+                              if (await saveAmount(item, packages)) closeAmount();
+                            } finally {
+                              setSavingAmount(false);
+                            }
+                          }}
+                          onKeyDown={(event) => {
+                            if (event.key === "Escape" && !busy && !savingAmount) {
+                              event.preventDefault();
+                              closeAmount();
+                            }
+                          }}
+                        >
+                          <label>
+                            Packages to buy
+                            <input
+                              type="number"
+                              min="1"
+                              max="1000000"
+                              step="1"
+                              required
+                              autoFocus
+                              aria-label={`Packages to buy for ${item.name}`}
+                              value={editingAmount.value}
+                              disabled={busy || savingAmount}
+                              onChange={(event) =>
+                                setEditingAmount({ key: item.key, value: event.target.value })
+                              }
+                            />
+                          </label>
+                          <span className="field-hint">{displayAmount(item.grocery)} per package</span>
+                          <div>
+                            <button
+                              className="primary"
+                              disabled={
+                                busy ||
+                                savingAmount ||
+                                !Schema.is(PackageCountSchema)(Number(editingAmount.value))
+                              }
+                            >
+                              {savingAmount ? "Saving…" : "Save"}
+                            </button>
+                            <button
+                              type="button"
+                              className="secondary"
+                              disabled={busy || savingAmount}
+                              onClick={closeAmount}
+                            >
+                              Cancel
+                            </button>
+                          </div>
+                        </form>
+                      )}
                       <details className="purchase-details">
                         <summary aria-label={`Details for ${item.name}`}>
                           <ChevronDown size={18} />
@@ -603,7 +695,11 @@ export function ShoppingItems({
                               Store product <ExternalLink size={13} />
                             </a>
                           )}
-                          <button className="text-button" onClick={() => edit(item.grocery)}>
+                          <button
+                            className="text-button"
+                            disabled={editingAmount !== null}
+                            onClick={() => edit(item.grocery)}
+                          >
                             <Pencil size={13} /> Edit product
                           </button>
                         </div>
