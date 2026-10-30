@@ -562,7 +562,8 @@ try {
   const afterRoute = (await household()).shoppingOrder;
   browser("reload");
   browser("wait", ".shopping-summary");
-  browser("click", '[aria-label="List Builder"]');
+  // The route keeps mode=builder, so the reloaded page may already be in List Builder.
+  if (browser("eval", "!document.querySelector('[aria-label=\"Exit List Builder\"]')") === "true") browser("click", '[aria-label="List Builder"]');
   browser("wait", ".purchase-row");
   await selectGroup(`[aria-label="${groupLabel}"]`);
   assert.deepEqual(await names(), afterKeyboard.filter(name => before.includes(name)));
