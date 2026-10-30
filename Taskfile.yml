@@ -139,7 +139,7 @@ tasks:
     desc: Grocery browser E2E (requires agent-browser and an empty disposable local household; optional -- local URL)
     cmds: ["node tools/groceries-smoke.ts {{.CLI_ARGS}}"]
   groceries:deletion:smoke:
-    desc: Grocery deletion browser E2E (local dev; optional -- local URL and extras|catalog|busy|refresh|rejection)
+    desc: Grocery deletion browser E2E (local dev; optional -- local URL and lists|catalog|busy|refresh|rejection)
     cmds: ["node tools/grocery-deletion-smoke.ts {{.CLI_ARGS}}"]
   checklist:smoke:
     desc: Recipe checklist browser E2E (requires local dev, agent-browser and an empty disposable local household; optional -- local URL)

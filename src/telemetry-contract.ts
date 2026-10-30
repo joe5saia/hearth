@@ -12,6 +12,8 @@ const operations = [
   "recipes.import",
   "recipes.rating",
   "meals",
+  "shopping-lists",
+  // Retained so telemetry from browsers still running the previous release stays valid.
   "extras",
   "checks",
   "demo",

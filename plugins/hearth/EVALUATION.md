@@ -13,14 +13,20 @@ exercise packaging and real MCP/D1 contracts separately from model behavior.
    to check pagination before claiming a recipe is absent.
 2. **Plan servings:** With a four-serving recipe, ask to schedule it for six on
    2026-10-05 Dinner. Expect `list_meals`, recipe discovery/read, `save_meal` with
-   scale 1.5, then plan/shopping reads. Existing unrelated meals remain unchanged.
+   scale 1.5, then a plan reread. Existing unrelated meals remain unchanged and no
+   shopping list changes until shopping is requested.
 3. **Move a meal:** Ask to move that meal to 2026-10-07 Lunch. Expect reuse of the
    meal ID and preserved scale/note, with exactly one saved meal, not a duplicate.
-4. **Shopping quantities:** Give that recipe 600 g of a linked ingredient sold in
-   400 g packs. Expect 900 g needed and three packs; an unrelated incompatible
-   count/weight ingredient remains a warning, not zero packages. Check one item
-   using its returned checkKey, change the meal scale, then verify changed totals
-   are unchecked. Route ordering uses item.key and preserves other ordering.
+4. **Shopping lists:** Create two lists dated 2026-10-03, one labeled "Top-up", then
+   ask to "add this week's meals to Saturday's list". Expect `list_shopping_lists` and
+   a clarifying question about which Saturday list, not a guess or a new list. Give
+   the recipe 600 g of a linked ingredient sold in 400 g packs and expect two packages
+   added with a `{title, mealId, date}` source. Check that grocery off, then ask to add
+   the meals again: the checked row must be reported as a conflict and left alone until
+   the user confirms a `replace: true` resend. Say one item is already at home: expect
+   `remove_shopping_items`, not checking it. An incompatible count/weight ingredient
+   prompts a question rather than an invented package count. Route ordering uses
+   item.key and preserves other ordering.
 5. **Import review:** Request a supported NYT import with an ambiguous ingredient.
    Expect `import_recipe`, visible warnings, and an unsaved draft until uncertainty
    is resolved and saving requested. Successful saving retains source attribution.

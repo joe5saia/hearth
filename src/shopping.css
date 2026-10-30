@@ -658,3 +658,280 @@
     flex-basis: 100%;
   }
 }
+/* Dated list pager: previous / date and label / next, with All lists beside it. */
+.list-switcher {
+  position: relative;
+  margin-bottom: 10px;
+}
+.list-switcher > summary {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 8px;
+  max-width: 100%;
+  min-height: 44px;
+  padding: 8px 4px;
+  cursor: pointer;
+  list-style: none;
+  border-radius: 6px;
+  color: inherit;
+}
+.list-switcher > summary::-webkit-details-marker {
+  display: none;
+}
+.list-switcher > summary strong {
+  font-family: var(--serif);
+  font-size: 20px;
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.list-switcher > summary svg {
+  flex-shrink: 0;
+  align-self: center;
+  color: var(--olive);
+  transition: transform 0.15s;
+}
+.list-switcher[open] > summary svg {
+  transform: rotate(180deg);
+}
+.list-switcher > summary:hover,
+.list-switcher[open] > summary {
+  background: #eef0e6;
+}
+.list-switcher-menu {
+  position: absolute;
+  left: 0;
+  top: calc(100% + 4px);
+  z-index: 12;
+  width: min(340px, calc(100vw - 24px));
+  padding: 6px;
+  background: #fffefa;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  box-shadow: 0 6px 20px #252e231a;
+}
+.list-switcher-menu ul {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.list-switcher-menu li button,
+.list-switcher-manage {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 44px;
+  padding: 8px;
+  border-radius: 4px;
+  text-align: left;
+  color: inherit;
+  font-size: 0.9375rem;
+}
+.list-switcher-menu li button > span:first-child {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.list-switcher-menu li button[aria-current] {
+  font-weight: 600;
+  color: var(--olive);
+}
+.list-switcher-menu li button:hover,
+.list-switcher-manage:hover {
+  background: #eef0e6;
+}
+.list-switcher-new {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 6px;
+  margin: 6px 0;
+  padding: 8px 0;
+  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+}
+.list-switcher-new input {
+  width: 100%;
+  min-height: 40px;
+}
+.list-switcher-manage {
+  color: var(--olive);
+}
+/* Plan and List Builder rows use an explicit add/remove control instead of a checkbox. */
+.purchase-row .shopping-item:has(> .membership-button) {
+  grid-template-columns: auto minmax(0, 1fr);
+  padding-left: 8px;
+}
+.membership-button {
+  width: 32px;
+  height: 32px;
+  display: grid;
+  place-items: center;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: transparent;
+  color: #8b9483;
+  padding: 0;
+}
+.purchase-row.off-list .membership-button {
+  border-color: var(--line);
+  color: var(--olive);
+}
+.membership-button:hover:not(:disabled) {
+  border-color: #b75c35;
+  color: #b75c35;
+}
+.membership-button.on-list {
+  background: var(--olive);
+  border-color: var(--olive);
+  color: #fff;
+}
+.membership-button.on-list:hover:not(:disabled) {
+  background: #b75c35;
+  border-color: #b75c35;
+  color: #fff;
+}
+.purchase-row.off-list .item-info strong {
+  color: var(--muted);
+  font-weight: 500;
+}
+.purchase-row.checked:not(:has(.custom-check)) .item-info strong {
+  text-decoration: line-through;
+  color: #8b9483;
+}
+.purchase-sources {
+  color: var(--muted);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+.purchase-group.in-cart .aisle-heading {
+  background: #e2e7d6;
+}
+.toast-undo {
+  border: 0;
+  background: transparent;
+  color: #cfe0b8;
+  font-weight: 700;
+  padding: 4px 6px;
+  margin: -4px -8px -4px 4px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+/* All lists dialog. */
+.shopping-lists h3 {
+  margin: 0 0 8px;
+  font-family: var(--serif);
+  font-weight: 500;
+  font-size: 18px;
+}
+.shopping-lists > section + section {
+  margin-top: 18px;
+}
+.shopping-list-form {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.4fr);
+  gap: 10px;
+  align-items: end;
+}
+.shopping-list-form label {
+  display: grid;
+  gap: 4px;
+}
+.shopping-list-form-actions {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.shopping-list-form-actions .danger {
+  margin-left: auto;
+}
+.shopping-list-cards {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 8px;
+}
+.shopping-list-card {
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: #fffefa;
+  overflow: hidden;
+}
+.shopping-list-card.current {
+  border-color: var(--olive);
+  box-shadow: 0 0 0 2px #e2e7d6;
+}
+.shopping-list-card.editing {
+  padding: 12px;
+}
+.shopping-list-open {
+  width: 100%;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 72px auto;
+  align-items: center;
+  gap: 12px;
+  border: 0;
+  background: transparent;
+  text-align: left;
+  padding: 12px 14px 6px;
+  color: inherit;
+}
+.shopping-list-open > span:first-child {
+  display: grid;
+  gap: 2px;
+}
+.shopping-list-progress {
+  height: 5px;
+  border-radius: 9px;
+  background: var(--line);
+  overflow: hidden;
+}
+.shopping-list-progress i {
+  display: block;
+  height: 100%;
+  background: #55704a;
+}
+.shopping-list-card-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+  padding: 0 14px 10px;
+}
+.shopping-list-delete {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+.shopping-list-delete p {
+  flex-basis: 100%;
+  margin: 0 0 4px;
+}
+/* Meal-plan import: the list it adds to, and conflicts. */
+.shopping-target {
+  margin: 0;
+}
+.shopping-review-heading {
+  margin: 4px 0 2px;
+  font-size: 12px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.shopping-review-item.conflict {
+  background: #f8efdc;
+  border-radius: 10px;
+}
+.shopping-review-conflict {
+  color: #8a5a20;
+}
+@media (max-width: 600px) {
+  .shopping-list-form {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}

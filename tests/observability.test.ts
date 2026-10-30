@@ -220,13 +220,13 @@ it("keeps D1 persistence working when ingestion fails and when credentials are a
   ingestionStatus = 503;
   await worker.setOptions(options());
 
-  const response = await worker.dispatchFetch("https://hearth.test/api/extras", {
+  const response = await worker.dispatchFetch("https://hearth.test/api/shopping-lists", {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
-      id: "outage-extra",
-      name: "Private outage item",
-      checked: 0,
+      id: "outage-list",
+      date: "2026-11-01",
+      label: "Private outage list",
       expectedRevision: null,
     }),
   });
@@ -236,9 +236,9 @@ it("keeps D1 persistence working when ingestion fails and when credentials are a
     await (
       await worker.getD1Database("DB")
     )
-      .prepare("SELECT name FROM extras WHERE id='outage-extra'")
-      .first("name"),
-  ).toBe("Private outage item");
+      .prepare("SELECT label FROM shopping_lists WHERE id='outage-list'")
+      .first("label"),
+  ).toBe("Private outage list");
   await expect
     .poll(() =>
       events.some(
@@ -368,12 +368,17 @@ it("records D1 failure duration without SQL or stored private data", async () =>
   await expect
     .poll(() => events.some((item) => item.requestId === id && item.reason === "StoredDataError"))
     .toBe(true);
-  await db.prepare("DROP TABLE extras").run();
+  await db.prepare("DROP TABLE shopping_lists").run();
 
-  const failed = await worker.dispatchFetch("https://hearth.test/api/extras", {
+  const failed = await worker.dispatchFetch("https://hearth.test/api/shopping-lists", {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ id: "failure", name: "Private content", checked: 0, expectedRevision: null }),
+    body: JSON.stringify({
+      id: "failure",
+      date: "2026-11-01",
+      label: "Private content",
+      expectedRevision: null,
+    }),
   });
 
   expect(failed.status).toBe(500);

@@ -3,6 +3,7 @@ import { mkdir } from "node:fs/promises";
 import { resolve } from "node:path";
 import { Schema } from "effect";
 import { HouseholdSchema, RecipeId } from "../src/domain.ts";
+import { shoppingContent } from "./shopping-fixtures.ts";
 
 // Supplied by ui:setup alongside the browser runtime below.
 // @ts-ignore Browser declarations exist only after task ui:setup, outside the checkout.
@@ -28,7 +29,7 @@ const withoutRevision = <T extends { readonly revision?: string }>({ revision: _
 const householdContent = (state: typeof HouseholdSchema.Encoded) => ({ ...state,
   recipes: state.recipes.map(withoutRevision), meals: state.meals.map(withoutRevision),
   groceries: state.groceries.map(withoutRevision), collections: state.collections.map(withoutRevision),
-  extras: state.extras.map(withoutRevision), shoppingOrder: withoutRevision(state.shoppingOrder),
+  ...shoppingContent(state), shoppingOrder: withoutRevision(state.shoppingOrder),
 });
 const original = Schema.decodeUnknownSync(HouseholdSchema)(await (await fetch(`${root}/api/household`)).json());
 const id = () => crypto.randomUUID();
@@ -36,6 +37,9 @@ const collection = { id: id(), name: "Navigation smoke collection" };
 const grocery = { id: id(), name: "Navigation smoke lentils", unit: "g", quantity: 500, url: "", aisle: "Pantry", aliases: ["Navigation lentils", "Brown lentils"] };
 const recipe = { id: RecipeId.make(id()), title: "Navigation smoke lentil soup", description: "Disposable browser fixture", servings: 3, minutes: 20, category: collection.name, photo: "", source: "", rating: "neutral", ingredients: [{ name: grocery.name, quantity: 250, unit: "g", groceryItemId: grocery.id }], instructions: ["Simmer until tender."] };
 const meal = { id: id(), recipeId: recipe.id, date: "2026-11-02", slot: "Dinner", scale: 1.5, note: "Soak the lentils before cooking and keep a portion mild for the kids.\nPack the leftovers for tomorrow's lunch. This final sentence must remain visible, not truncated." };
+// Shopping scenarios add to their own list so the household's real lists are never written.
+const list = { id: id(), date: "2026-11-01", label: "Navigation smoke" };
+const listItems = (state: typeof HouseholdSchema.Type) => state.shoppingItems.filter(entry => entry.listId === list.id);
 const noteMeal = { ...meal, id: id(), recipeId: null, note: "Navigation smoke note-only control" };
 const edgeMeals = [
   { ...noteMeal, id: id(), date: "2026-10-31", note: "Navigation first-column meal" },
@@ -46,10 +50,10 @@ const edgeMeals = [
 async function api(path: string, method: string, body?: unknown) {
   // These are intentional fixture writes, not the browser's stale-write requests.
   const resource = path.split("/")[0];
-  if ((method === "PUT" || method === "DELETE") && (resource === "recipes" || resource === "meals" || resource === "groceries" || resource === "collections" || resource === "extras")) {
+  if ((method === "PUT" || method === "DELETE") && (resource === "recipes" || resource === "meals" || resource === "groceries" || resource === "collections" || resource === "shopping-lists") && path.split("/").length <= 2) {
     const current = Schema.decodeUnknownSync(HouseholdSchema)(await (await fetch(`${root}/api/household`)).json());
     const id = method === "DELETE" ? decodeURIComponent(path.slice(resource.length + 1)) : Schema.decodeUnknownSync(Schema.Struct({ id: Schema.String }))(body).id;
-    const saved = current[resource].find(item => item.id === id);
+    const saved = current[resource === "shopping-lists" ? "shoppingLists" : resource].find(item => item.id === id);
     if (method === "DELETE" && !saved) return;
     body = { ...(typeof body === "object" && body !== null ? body : {}), expectedRevision: saved?.revision ?? null };
   }
@@ -60,6 +64,7 @@ const errors: string[] = [];
 let count = 0;
 try {
   await api("collections", "PUT", collection);
+  await api("shopping-lists", "PUT", list);
   await api("groceries", "PUT", grocery);
   await api("recipes", "PUT", { ...recipe, expectedIngredients: null });
   await api("meals", "PUT", meal);
@@ -243,8 +248,7 @@ try {
           await editor.getByRole("button", { name: "Add Alternative", exact: true }).click();
           await editor.getByLabel("Alternative 2", { exact: true }).fill("Puy lentils");
           await editor.getByLabel("Alternative 2", { exact: true }).press("Enter");
-          await editor.getByLabel("Package quantity", { exact: true }).selectOption("custom");
-          await editor.getByLabel("Custom package quantity", { exact: true }).fill("3.75");
+          await editor.getByLabel("Package quantity", { exact: true }).fill("3.75");
           await editor.getByLabel("Package unit", { exact: true }).selectOption("cup");
           await shot("grocery-packaging-alternatives");
           await editor.getByRole("button", { name: "Save grocery item", exact: true }).click();
@@ -347,8 +351,8 @@ try {
         try {
           for (const product of products) await api("groceries", "PUT", product);
           for (const entry of reviewRecipes) await api("recipes", "PUT", entry);
-          await api("checks", "PUT", { key: JSON.stringify(["shopping-list", products[7].id]), checked: 0, packages: 5 });
-          await open("#shopping?view=shopping-recipes");
+          await api(`shopping-lists/${list.id}/items`, "POST", { items: [{ groceryId: products[7].id, packages: 5 }] });
+          await open(`#shopping?list=${list.id}&view=shopping-recipes`);
           await page.reload();
           for (const entry of reviewRecipes) await dialog().getByRole("checkbox", { name: new RegExp(entry.title) }).check();
           await dialog().getByRole("button", { name: "Review items", exact: true }).click();
@@ -360,7 +364,9 @@ try {
           await expect(row(3)).toContainText("Recipes need 10 g + 4.93 ml");
           for (const [index, expected] of [[0, "3"], [1, "2"], [2, "2"], [3, ""], [4, "1"], [5, "2"], [6, "3"]] as const)
             await expect(count(index)).toHaveValue(expected);
-          await expect(count(7)).toHaveCount(0);
+          // A grocery already on the list with another count needs an explicit decision before it changes.
+          await expect(dialog().getByRole("group", { name: "Already on this list", exact: true })).toContainText(products[7].name);
+          await expect(count(7)).toBeDisabled();
           await expect(dialog().locator(".primary")).toBeDisabled();
           await count(3).fill("4");
           await count(0).fill("1.5");
@@ -376,8 +382,7 @@ try {
           await shot("recipe-package-review");
           assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
           // A second client adds products during review, including the last queued addition.
-          for (const index of [1, 3])
-            await api("checks", "PUT", { key: JSON.stringify(["shopping-list", products[index].id]), checked: 0, packages: 5 });
+          await api(`shopping-lists/${list.id}/items`, "POST", { items: [1, 3].map(index => ({ groceryId: products[index].id, packages: 5 })) });
           await dialog().getByRole("button", { name: "Add 6 items", exact: true }).click();
           await expect(dialog()).toHaveCount(0);
           await expect(page.locator(".purchase-row").filter({ hasText: products[1].name })).toContainText("5 × 250 ml");
@@ -386,8 +391,8 @@ try {
           await expect(page.locator(".purchase-row").filter({ hasText: products[0].name })).toContainText("2 × 500 g");
           const state = Schema.decodeUnknownSync(HouseholdSchema)(await (await fetch(`${root}/api/household`)).json());
           for (const [index, packages] of [[0, 2], [1, 5], [2, 2], [3, 5], [4, 1], [5, 2], [7, 5]] as const)
-            assert.equal(state.checks.find(entry => entry.key === JSON.stringify(["shopping-list", products[index].id]))?.packages, packages);
-          assert(!state.checks.some(entry => entry.key === JSON.stringify(["shopping-list", products[6].id])));
+            assert.equal(listItems(state).find(entry => entry.groceryId === products[index].id)?.packages, packages);
+          assert(!listItems(state).some(entry => entry.groceryId === products[6].id));
           for (const product of products) {
             const saved = state.groceries.find(entry => entry.id === product.id);
             assert(saved?.revision, "Saved grocery has a revision");
@@ -593,7 +598,8 @@ try {
           [`#recipes?view=editor&id=${recipe.id}`, "Edit recipe"],
           ["#recipes?view=collections", "Manage collections"],
           ["#recipes?view=import", "Import a recipe"],
-          ["#shopping?view=shopping-recipes", "Add from recipes"],
+          ["#shopping?view=shopping-recipes", "Add from meals"],
+          ["#shopping?view=shopping-lists", "Shopping lists"],
           ["#plan?view=chatgpt", "Use Hearth in ChatGPT"],
           ["#recipes?view=editor", "Add a recipe"],
           ["#groceries?view=grocery", "Grocery item"],
@@ -806,7 +812,7 @@ try {
           await expect(dialog().getByLabel("Meal note", { exact: true })).toHaveValue(firstNote);
           await shot("independent-meal-editor");
 
-          await open("#shopping?view=shopping-recipes");
+          await open(`#shopping?list=${list.id}&view=shopping-recipes`);
           await dialog().getByRole("checkbox", { name: new RegExp(edited.recipe.title) }).check();
           await dialog().getByRole("button", { name: "Review items", exact: true }).click();
           await expect(dialog().locator(".shopping-review-item")).toHaveCount(1);
@@ -823,8 +829,8 @@ try {
           await expect(dialog()).toHaveCount(0);
           await page.reload();
           const shopped = Schema.decodeUnknownSync(HouseholdSchema)(await (await fetch(`${root}/api/household`)).json());
-          assert.equal(shopped.checks.find(entry => entry.key === JSON.stringify(["shopping-list", substitute.id]))?.packages, 2);
-          assert.equal(shopped.checks.find(entry => entry.key === JSON.stringify(["shopping-list", grocery.id]))?.packages, 1);
+          assert.equal(listItems(shopped).find(entry => entry.groceryId === substitute.id)?.packages, 2);
+          assert.equal(listItems(shopped).find(entry => entry.groceryId === grocery.id)?.packages, 1);
           assert.deepEqual(shopped.recipes, bothNoted.recipes);
           assert.deepEqual(shopped.meals, bothNoted.meals);
 
@@ -843,7 +849,7 @@ try {
           try { await api("meals", "PUT", first); }
           finally {
             await api(`meals/${second.id}`, "DELETE");
-            await api("checks", "PUT", { key: JSON.stringify(["shopping-list", grocery.id]), checked: 1 });
+            await api(`shopping-lists/${list.id}/items`, "DELETE", { groceryIds: [grocery.id] });
             await api(`groceries/${substitute.id}`, "DELETE");
           }
           const restored = Schema.decodeUnknownSync(HouseholdSchema)(await (await fetch(`${root}/api/household`)).json());
@@ -1032,6 +1038,7 @@ try {
   await api(`recipes/${recipe.id}`, "DELETE");
   await api(`groceries/${grocery.id}`, "DELETE");
   await api(`collections/${collection.id}`, "DELETE");
+  await api(`shopping-lists/${list.id}`, "DELETE");
 }
 const after = Schema.decodeUnknownSync(HouseholdSchema)(await (await fetch(`${root}/api/household`)).json());
 assert.deepEqual(householdContent(after), householdContent(original), "Fixture cleanup must preserve original household");

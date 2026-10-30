@@ -17,10 +17,10 @@ await mkdir(artifacts, { recursive: true });
 const household = async () => Schema.decodeUnknownSync(HouseholdSchema)(await (await fetch(`${root}/api/household`)).json());
 const original = await household();
 const content = (data: Household) => JSON.parse(JSON.stringify(data, (key, value) => key === "revision" ? undefined : value));
-const ids = { recipe: crypto.randomUUID(), meal: crypto.randomUUID(), grocery: crypto.randomUUID(), collection: crypto.randomUUID(), extra: crypto.randomUUID() };
+const ids = { recipe: crypto.randomUUID(), meal: crypto.randomUUID(), grocery: crypto.randomUUID(), collection: crypto.randomUUID(), list: crypto.randomUUID() };
 const owned = [
-  ["meals", ids.meal], ["recipes", ids.recipe], ["groceries", ids.grocery],
-  ["collections", ids.collection], ["extras", ids.extra],
+  ["meals", "meals", ids.meal], ["recipes", "recipes", ids.recipe], ["shopping-lists", "shoppingLists", ids.list],
+  ["groceries", "groceries", ids.grocery], ["collections", "collections", ids.collection],
 ] as const;
 
 async function write(path: string, method: string, body: object, status = 200) {
@@ -31,9 +31,9 @@ async function write(path: string, method: string, body: object, status = 200) {
 }
 
 async function clean() {
-  for (const [table, id] of owned) {
-    const entry = (await household())[table].find(entry => entry.id === id);
-    if (entry) await write(`${table}/${id}`, "DELETE", { expectedRevision: entry.revision });
+  for (const [path, key, id] of owned) {
+    const entry = (await household())[key].find(entry => entry.id === id);
+    if (entry) await write(`${path}/${id}`, "DELETE", { expectedRevision: entry.revision });
   }
 }
 
@@ -42,7 +42,8 @@ async function seed() {
   await write("groceries", "PUT", { id: ids.grocery, name: "State smoke lentils", quantity: 500, unit: "g", aisle: "State smoke", url: "", aliases: [], expectedRevision: null });
   await write("recipes", "PUT", { id: ids.recipe, title: "State smoke soup", description: "Disposable two-device fixture", servings: 3, minutes: 20, category: "State smoke collection", photo: "", source: "", rating: "neutral", ingredients: [{ name: "Lentils", quantity: 100, unit: "g", groceryItemId: ids.grocery }], instructions: ["Simmer for twenty minutes."], expectedRevision: null });
   await write("meals", "PUT", { id: ids.meal, recipeId: ids.recipe, date: "2026-11-02", slot: "Dinner", scale: 1.5, note: "Add cauliflower", expectedRevision: null });
-  await write("extras", "PUT", { id: ids.extra, name: "State smoke extra", checked: 0, expectedRevision: null });
+  await write("shopping-lists", "PUT", { id: ids.list, date: "2026-11-01", label: "State smoke", expectedRevision: null });
+  await write(`shopping-lists/${ids.list}/items`, "POST", { items: [{ groceryId: ids.grocery }] });
 }
 
 let count = 0;
@@ -209,17 +210,23 @@ try {
         await expect(b.getByLabel("Meal name", { exact: true })).toHaveValue("A draft for a deleted dinner");
         assert(!(await household()).meals.some(entry => entry.id === ids.meal));
       });
-      await check("extra checkbox preserves a concurrent rename", async () => {
-        await open(b, "#shopping");
-        const extra = (await household()).extras.find(entry => entry.id === ids.extra);
-        assert(extra);
-        await write("extras", "PUT", { ...extra, name: "Renamed extra", expectedRevision: extra.revision });
-        const response = b.waitForResponse(response => response.url().endsWith(`/api/extras/${ids.extra}`) && response.request().method() === "PATCH");
-        await b.getByLabel("State smoke extra", { exact: true }).click();
+      await check("Shop Mode check preserves a concurrent count and list edit", async () => {
+        // The editor scenario above renamed the grocery on purpose.
+        const picked = `Picked up ${(await household()).groceries.find(entry => entry.id === ids.grocery)?.name}`;
+        await open(b, `#shopping?list=${ids.list}&mode=focus`);
+        await expect(b.getByLabel(picked, { exact: true })).not.toBeChecked();
+        const list = (await household()).shoppingLists.find(entry => entry.id === ids.list);
+        assert(list);
+        await write("shopping-lists", "PUT", { ...list, label: "Renamed list", expectedRevision: list.revision });
+        await write(`shopping-lists/${ids.list}/items/${ids.grocery}`, "PATCH", { packages: 3 });
+        const response = b.waitForResponse(response => response.url().endsWith(`/api/shopping-lists/${ids.list}/items/${ids.grocery}`) && response.request().method() === "PATCH");
+        await b.getByLabel(picked, { exact: true }).click();
         assert.equal((await response).status(), 200);
-        await expect(b.getByLabel("Renamed extra", { exact: true })).toBeChecked();
-        const saved = (await household()).extras.find(entry => entry.id === ids.extra);
-        assert.equal(saved?.name, "Renamed extra"); assert.equal(saved?.checked, 1);
+        await expect(b.getByLabel(picked, { exact: true })).toBeChecked();
+        const saved = await household();
+        assert.equal(saved.shoppingLists.find(entry => entry.id === ids.list)?.label, "Renamed list");
+        const item = saved.shoppingItems.find(entry => entry.listId === ids.list && entry.groceryId === ids.grocery);
+        assert.equal(item?.checked, 1); assert.equal(item?.packages, 3);
       });
       assert.deepEqual(errors, [], "No uncaught browser errors");
     } catch (error) {

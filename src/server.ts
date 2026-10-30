@@ -7,8 +7,9 @@ import { apiOperation, BrowserBatchSchema } from "./telemetry-contract";
 import {
   MealSchema,
   RecipeSchema,
-  ExtraSchema,
-  CheckWriteSchema,
+  ShoppingListSchema,
+  ShoppingAdditionsSchema,
+  ShoppingItemPatchSchema,
   CollectionSchema,
   GroceryItemSchema,
   RenameAisleSchema,
@@ -27,10 +28,11 @@ import {
   saveMeal,
   deleteMeal,
   patchMealNote,
-  saveExtra,
-  deleteExtra,
-  patchExtraChecked,
-  setShoppingChecked,
+  saveShoppingList,
+  deleteShoppingList,
+  addShoppingItems,
+  setShoppingItem,
+  removeShoppingItems,
   setShoppingOrder,
   addDemoData,
 } from "./household";
@@ -82,10 +84,11 @@ function api(request: Request, db: D1Database, ai?: Ai, ctx?: ExecutionContext) 
           "/api/groceries",
           "/api/shopping-items",
           "/api/collections",
-          "/api/extras",
+          "/api/shopping-lists",
           "/api/shopping-order",
         ].includes(path)) ||
-      (method === "DELETE" && /^\/api\/(recipes|meals|groceries|collections|extras)\//.test(path));
+      (method === "DELETE" && /^\/api\/(recipes|meals|groceries|collections)\//.test(path)) ||
+      (method === "DELETE" && /^\/api\/shopping-lists\/[^/]+$/.test(path));
 
     let expectedRevision: string | null | undefined;
 
@@ -123,11 +126,13 @@ function api(request: Request, db: D1Database, ai?: Ai, ctx?: ExecutionContext) 
     } else if (method === "DELETE" && path.startsWith("/api/groceries/")) {
       yield* deleteGrocery(db, yield* brandedId(path, "/api/groceries/", GroceryId), expectedRevision);
     } else if (method === "PUT" && path === "/api/shopping-items") {
-      yield* saveGroceryToList(
-        db,
-        yield* readJson(request, GroceryItemSchema, "Invalid grocery item."),
-        expectedRevision,
+      const { listId, ...grocery } = yield* readJson(
+        request,
+        Schema.Struct({ ...GroceryItemSchema.fields, listId: ShoppingListSchema.fields.id }),
+        "Invalid grocery item.",
       );
+
+      yield* saveGroceryToList(db, grocery, listId, expectedRevision);
     } else if (method === "PUT" && path === "/api/shopping-aisles") {
       yield* renameAisle(db, yield* readJson(request, RenameAisleSchema, "Enter a valid aisle name."));
     } else if (method === "PUT" && path === "/api/shopping-order") {
@@ -194,24 +199,57 @@ function api(request: Request, db: D1Database, ai?: Ai, ctx?: ExecutionContext) 
       );
     } else if (method === "DELETE" && path.startsWith("/api/meals/")) {
       yield* deleteMeal(db, yield* decodeId(path, "/api/meals/"), expectedRevision);
-    } else if (method === "PUT" && path === "/api/extras") {
-      yield* saveExtra(
+    } else if (method === "PUT" && path === "/api/shopping-lists") {
+      yield* saveShoppingList(
         db,
-        yield* readJson(request, ExtraSchema, "The item is missing required fields."),
+        yield* readJson(
+          request,
+          ShoppingListSchema,
+          "Choose a list date and a label of 100 characters or less.",
+        ),
         expectedRevision,
       );
-    } else if (method === "PATCH" && path.startsWith("/api/extras/")) {
-      const input = yield* readJson(
-        request,
-        Schema.Struct({ checked: ExtraSchema.fields.checked }),
-        "Choose checked or unchecked.",
-      );
+    } else if (path.startsWith("/api/shopping-lists/")) {
+      // /api/shopping-lists/{listId}[/items[/{groceryId}]]
+      const [listPart, items, groceryPart, ...extra] = path.slice("/api/shopping-lists/".length).split("/");
 
-      yield* patchExtraChecked(db, yield* decodeId(path, "/api/extras/"), input.checked);
-    } else if (method === "DELETE" && path.startsWith("/api/extras/")) {
-      yield* deleteExtra(db, yield* decodeId(path, "/api/extras/"), expectedRevision);
-    } else if (method === "PUT" && path === "/api/checks") {
-      yield* setShoppingChecked(db, yield* readJson(request, CheckWriteSchema, "Invalid shopping item."));
+      const listId = yield* Effect.try({
+        try: () => decodeURIComponent(listPart),
+        catch: () => invalid("Invalid item ID."),
+      });
+
+      if (extra.length || (items !== undefined && items !== "items"))
+        return yield* new NotFound({ message: "That page couldn’t be found." });
+
+      if (method === "DELETE" && items === undefined) yield* deleteShoppingList(db, listId, expectedRevision);
+      else if (method === "POST" && items === "items" && groceryPart === undefined) {
+        const { items: additions } = yield* readJson(
+          request,
+          Schema.Struct({ items: ShoppingAdditionsSchema }),
+          "Add between 1 and 500 groceries, each once, with whole package counts.",
+        );
+
+        return Response.json(yield* addShoppingItems(db, listId, additions));
+      } else if (method === "DELETE" && items === "items" && groceryPart === undefined) {
+        const { groceryIds } = yield* readJson(
+          request,
+          Schema.Struct({ groceryIds: Schema.Array(GroceryId).check(Schema.isLengthBetween(1, 500)) }),
+          "Choose between 1 and 500 groceries to remove.",
+        );
+
+        return Response.json(yield* removeShoppingItems(db, listId, groceryIds));
+      } else if (method === "PATCH" && items === "items" && groceryPart !== undefined) {
+        yield* setShoppingItem(
+          db,
+          listId,
+          yield* brandedId(groceryPart, "", GroceryId),
+          yield* readJson(
+            request,
+            ShoppingItemPatchSchema,
+            "Choose checked or unchecked and a whole package count.",
+          ),
+        );
+      } else return yield* new NotFound({ message: "That page couldn’t be found." });
     } else if (method === "POST" && path === "/api/demo") {
       const today = yield* Schema.decodeUnknownEffect(DateSchema)(url.searchParams.get("today") ?? "").pipe(
         Effect.mapError(() => invalid("Choose a valid sample week.")),

@@ -114,25 +114,51 @@ export function saveGrocery(db: D1Database, item: GroceryItem, expectedRevision?
   });
 }
 
-/** Upserts a catalog item and puts it on the shopping list atomically, keeping any saved package count. */
-export function saveGroceryToList(db: D1Database, item: GroceryItem, expectedRevision?: string | null) {
+/** Upserts a catalog item and puts it on one list atomically, unchecking it and keeping any saved package count. */
+export function saveGroceryToList(
+  db: D1Database,
+  item: GroceryItem,
+  listId: string,
+  expectedRevision?: string | null,
+) {
   return Effect.gen(function* () {
     const revision = yield* requireRevision(expectedRevision);
     const grocery = yield* validGrocery(item);
 
-    const [write, , rows] = yield* database(() =>
+    const list = yield* database(() =>
+      db.prepare("SELECT 1 FROM shopping_lists WHERE id=?").bind(listId).first(),
+    );
+
+    if (!list)
+      return yield* new MissingReference({
+        message: "That shopping list no longer exists. Refresh to see the current lists; nothing was saved.",
+      });
+
+    const [write, , rows, entry] = yield* database(() =>
       db.batch([
         groceryStatement(db, grocery, revision),
         db
           .prepare(
-            "INSERT INTO checks(key,checked,packages) SELECT ?,0,1 WHERE changes()>0 ON CONFLICT(key) DO UPDATE SET checked=0",
+            `INSERT INTO shopping_list_items(list_id,grocery_id) SELECT ?1,?2
+            WHERE changes()>0 AND EXISTS (SELECT 1 FROM shopping_lists WHERE id=?1)
+            ON CONFLICT(list_id,grocery_id) DO UPDATE SET checked=0,checked_at=NULL`,
           )
-          .bind(JSON.stringify(["shopping-list", grocery.id])),
+          .bind(listId, grocery.id),
         db.prepare("SELECT * FROM groceries WHERE id=?").bind(grocery.id),
+        db
+          .prepare("SELECT 1 FROM shopping_list_items WHERE list_id=? AND grocery_id=?")
+          .bind(listId, grocery.id),
       ]),
     );
 
     if (!write.meta.changes) return yield* staleWrite();
+
+    // The list can be deleted between the check above and this batch; the grocery is still saved.
+    if (!entry.results.length)
+      return yield* new MissingReference({
+        message:
+          "The grocery was saved, but that shopping list no longer exists. Refresh to see the current lists.",
+      });
 
     return { grocery: yield* stored(() => parseGrocery(rows.results[0])) };
   });
@@ -200,21 +226,14 @@ export function renameAisle(db: D1Database, input: typeof RenameAisleSchema.Type
   });
 }
 
-/** Atomically deletes a grocery, unlinks recipe ingredients, and removes list membership. */
+/** Atomically deletes a grocery, unlinks recipe ingredients, and removes it from every shopping list. */
 export function deleteGrocery(db: D1Database, id: GroceryId, expectedRevision?: string | null) {
   return Effect.gen(function* () {
     const revision = yield* requireRevision(expectedRevision);
 
-    const [result] = yield* database(() =>
-      db.batch([
-        // The database trigger unlinks ingredients in the same atomic deletion.
-        db.prepare("DELETE FROM groceries WHERE id=? AND revision=?").bind(id, revision),
-        db
-          .prepare(
-            "DELETE FROM checks WHERE key=? AND changes()>0 AND NOT EXISTS (SELECT 1 FROM groceries WHERE id=?)",
-          )
-          .bind(JSON.stringify(["shopping-list", id]), id),
-      ]),
+    // Database triggers unlink ingredients; the list-item foreign key removes its list rows.
+    const result = yield* database(() =>
+      db.prepare("DELETE FROM groceries WHERE id=? AND revision=?").bind(id, revision).run(),
     );
 
     if (!result.meta.changes) return yield* staleWrite();

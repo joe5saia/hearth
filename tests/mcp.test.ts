@@ -10,9 +10,10 @@ import {
   CollectionSchema,
   GroceryItemSchema,
   MealSchema,
-  ExtraSchema,
+  GroceryId,
+  ShoppingListSchema,
+  ShoppingListItemSchema,
   ShoppingOrderSchema,
-  ShoppingNeedSchema,
   MatchReportSchema,
   type GroceryItem,
 } from "../src/domain";
@@ -197,34 +198,52 @@ const outputs = {
   save_grocery: Schema.Struct({ grocery: GroceryItemSchema }),
   list_meals: Schema.Struct({ meals: Schema.Array(MealSchema) }),
   save_meal: Schema.Struct({ meal: MealSchema }),
+  list_shopping_lists: Schema.Struct({
+    lists: Schema.Array(
+      Schema.Struct({
+        ...ShoppingListSchema.fields,
+        revision: Schema.String,
+        items: Schema.Number,
+        checked: Schema.Number,
+      }),
+    ),
+  }),
+  create_shopping_list: Schema.Struct({ list: ShoppingListSchema }),
+  update_shopping_list: Schema.Struct({ list: ShoppingListSchema }),
   get_shopping_list: Schema.Struct({
-    start: MealSchema.fields.date,
-    end: MealSchema.fields.date,
+    list: ShoppingListSchema,
     items: Schema.Array(
       Schema.Struct({
         key: Schema.String,
-        checkKey: Schema.String,
-        checked: Schema.Boolean,
+        groceryId: GroceryId,
         name: Schema.String,
-        grocery: Schema.optional(GroceryItemSchema),
-        needs: Schema.Array(ShoppingNeedSchema),
-        packages: Schema.NullOr(Schema.Number),
-        warnings: Schema.Array(Schema.String),
-        recipes: Schema.Array(Schema.String),
+        grocery: GroceryItemSchema,
+        checked: Schema.Boolean,
+        packages: ShoppingListItemSchema.fields.packages,
+        sources: ShoppingListItemSchema.fields.sources,
+        addedAt: Schema.String,
+        checkedAt: Schema.NullOr(Schema.String),
       }),
     ),
-    extras: Schema.Array(ExtraSchema),
     shoppingOrder: ShoppingOrderSchema,
   }),
-  save_shopping_extra: Schema.Struct({ extra: ExtraSchema }),
+  add_shopping_items: Schema.Struct({
+    added: Schema.Array(GroceryId),
+    updated: Schema.Array(GroceryId),
+    unchanged: Schema.Array(GroceryId),
+    conflicts: Schema.Array(
+      Schema.Struct({ groceryId: GroceryId, checked: Schema.Boolean, packages: Schema.Number }),
+    ),
+  }),
+  set_shopping_item: okOutput,
+  remove_shopping_items: Schema.Struct({ removed: Schema.Number }),
   import_recipe: Schema.Struct({ recipe: RecipeFields, warnings: Schema.Array(Schema.String) }),
   match_groceries: Schema.Struct({ ok: Schema.Literal(true), report: MatchReportSchema }),
   delete_recipe: okOutput,
   delete_collection: okOutput,
   delete_grocery: okOutput,
   delete_meal: okOutput,
-  delete_shopping_extra: okOutput,
-  set_shopping_checked: okOutput,
+  delete_shopping_list: okOutput,
   set_shopping_order: Schema.Struct({ ...okOutput.fields, revision: Schema.String }),
   add_demo_data: okOutput,
 };
@@ -246,8 +265,7 @@ const call = async <Name extends keyof typeof outputs>(name: Name, args: Json, b
     delete_grocery: "groceries",
     save_meal: "meals",
     delete_meal: "meals",
-    save_shopping_extra: "extras",
-    delete_shopping_extra: "extras",
+    delete_shopping_list: "shopping_lists",
     delete_recipe: "recipes",
     set_shopping_order: "shopping_order",
   };
@@ -519,6 +537,7 @@ beforeAll(async () => {
     "0012_entity_revisions.sql",
     "0013_photos.sql",
     "0014_detached_meals.sql",
+    "0015_shopping_lists.sql",
   ]) {
     const sql = await readFile(`migrations/${file}`, "utf8");
     await db.batch(
@@ -545,7 +564,7 @@ it("allows OAuth grants for only the configured preview service and rejects unre
       .sign(signingKey);
 
   const preview = await login(scopes, false, await sign({ sub: "", common_name: "preview-test.access" }));
-  expect(await listTools(preview)).toHaveLength(22);
+  expect(await listTools(preview)).toHaveLength(26);
 
   for (const claims of [
     { sub: "", common_name: "other.access" },
@@ -584,31 +603,35 @@ it("advertises CIMD and resource discovery; denies anonymous and forged tokens",
   await login(scopes, true);
 });
 
-it("publishes all 22 code-mode-friendly schemas with the single recipes scope", async () => {
+it("publishes all 26 code-mode-friendly schemas with the single recipes scope", async () => {
   const tools = await listTools();
   expect(tools.map((t) => t.name).sort()).toEqual([
     "add_demo_data",
+    "add_shopping_items",
     "create_recipes",
+    "create_shopping_list",
     "delete_collection",
     "delete_grocery",
     "delete_meal",
     "delete_recipe",
-    "delete_shopping_extra",
+    "delete_shopping_list",
     "get_recipes",
     "get_shopping_list",
     "import_recipe",
     "list_collections",
     "list_groceries",
     "list_meals",
+    "list_shopping_lists",
     "match_groceries",
+    "remove_shopping_items",
     "save_collection",
     "save_grocery",
     "save_meal",
-    "save_shopping_extra",
     "search_recipes",
-    "set_shopping_checked",
+    "set_shopping_item",
     "set_shopping_order",
     "update_recipes",
+    "update_shopping_list",
   ]);
 
   // The distributed skill instructions must name tools actually exposed over OAuth/MCP.
@@ -636,6 +659,38 @@ it("publishes all 22 code-mode-friendly schemas with the single recipes scope", 
   expect(listMeals?.outputSchema).toHaveProperty("properties.meals.items.properties.recipe");
   expect(saveMeal?.description).toContain("never the source or another meal");
   expect(listMeals?.description).toContain("independent editable recipe snapshot");
+
+  const tool = (name: string) => {
+    const found = tools.find((entry) => entry.name === name);
+
+    if (!found) throw new Error(`${name} tool missing`);
+
+    return found;
+  };
+
+  expect(tool("list_shopping_lists").annotations?.readOnlyHint).toBe(true);
+  expect(tool("get_shopping_list").annotations?.readOnlyHint).toBe(true);
+  expect(tool("get_shopping_list").inputSchema.required).toEqual(["listId"]);
+  expect(tool("get_shopping_list").outputSchema).toHaveProperty(
+    "properties.items.items.properties.sources.items.properties.mealId",
+  );
+  expect(tool("list_shopping_lists").outputSchema).toHaveProperty(
+    "properties.lists.items.properties.checked",
+  );
+  expect(tool("create_shopping_list").inputSchema.required).toEqual(["date"]);
+  expect(tool("create_shopping_list").annotations?.idempotentHint).toBe(false);
+  expect(tool("add_shopping_items").inputSchema).toHaveProperty(
+    "properties.items.items.properties.checked.type",
+    "boolean",
+  );
+  expect(tool("add_shopping_items").outputSchema).toHaveProperty(
+    "properties.conflicts.items.properties.packages",
+  );
+  expect(tool("add_shopping_items").description).toContain("replace:true");
+  expect(tool("add_shopping_items").description).toContain("conflicts");
+  expect(tool("remove_shopping_items").description).toContain("already have it");
+  expect(tool("set_shopping_item").inputSchema.required).toEqual(["listId", "groceryId"]);
+  expect(tool("set_shopping_order").description).toContain("item.key strings from get_shopping_list");
 
   const create = tools.find((tool) => tool.name === "create_recipes");
 
@@ -899,13 +954,13 @@ it("rejects stale and deleted recipe batches atomically through RPC and advertis
     "save_collection",
     "save_grocery",
     "save_meal",
-    "save_shopping_extra",
+    "update_shopping_list",
     "set_shopping_order",
     "delete_recipe",
     "delete_grocery",
     "delete_collection",
     "delete_meal",
-    "delete_shopping_extra",
+    "delete_shopping_list",
   ])
     expect(tools.find((tool) => tool.name === name)?.inputSchema.required).toContain("expectedRevision");
 });
@@ -1150,7 +1205,8 @@ it("arranges unused catalog products before planning them through the documented
 
   const range = { start: "2034-01-02", end: "2034-01-02" };
   expect((await success("list_meals", range)).meals).toEqual([]);
-  expect((await success("get_shopping_list", range)).items).toEqual([]);
+  const { list } = await success("create_shopping_list", { date: range.start });
+  expect((await success("get_shopping_list", { listId: list.id })).items).toEqual([]);
 
   const catalog = (await success("list_groceries", {})).groceries.filter((item) =>
     products.some((product) => product.id === item.id),
@@ -1160,7 +1216,7 @@ it("arranges unused catalog products before planning them through the documented
   // Reverse alphabetical order within one aisle; use only discovered IDs, not planned-item keys.
   const keys = [...catalog].reverse().map((item) => JSON.stringify(["grocery", item.id]));
   await success("set_shopping_order", { aisles: ["4"], items: keys });
-  expect((await success("get_shopping_list", range)).shoppingOrder).toEqual({
+  expect((await success("get_shopping_list", { listId: list.id })).shoppingOrder).toEqual({
     aisles: ["4"],
     items: keys,
     revision: expect.any(String),
@@ -1190,16 +1246,23 @@ it("arranges unused catalog products before planning them through the documented
     note: "",
   });
 
-  expect((await success("get_shopping_list", range)).items).toEqual([]);
-  const ordered = await success("get_shopping_list", { ...range, all: true });
+  // Planning a meal never adds items; the agent adds them to the chosen list explicitly.
+  expect((await success("get_shopping_list", { listId: list.id })).items).toEqual([]);
+  await success("add_shopping_items", {
+    listId: list.id,
+    items: catalog.map((item) => ({ groceryId: item.id })),
+  });
+  const ordered = await success("get_shopping_list", { listId: list.id });
   expect(ordered.items.map((item) => item.name)).toEqual(["Z unused product", "A unused product"]);
   expect(ordered.items.map((item) => item.key)).toEqual(keys);
-  expect(ordered.items.every((item) => item.checkKey !== item.key)).toBe(true);
+  expect(ordered.items.every((item) => item.groceryId !== item.key)).toBe(true);
 
   await success("set_shopping_order", { aisles: [], items: [] });
-  expect(
-    (await success("get_shopping_list", { ...range, all: true })).items.map((item) => item.name),
-  ).toEqual(["A unused product", "Z unused product"]);
+  expect((await success("get_shopping_list", { listId: list.id })).items.map((item) => item.name)).toEqual([
+    "A unused product",
+    "Z unused product",
+  ]);
+  await success("delete_shopping_list", { id: list.id });
   await success("delete_meal", { id: meal.id });
   await success("delete_recipe", { id: recipe.id });
 
@@ -1299,71 +1362,71 @@ it("manages a collection, matched products, inclusive meal plan and shopping lif
   }
 
   expect((await success("list_meals", { start, end })).meals).toEqual(meals.slice(0, 2));
-  const shopping = () => success("get_shopping_list", { start, end, all: true });
-  expect((await success("get_shopping_list", { start, end })).items).toEqual([]);
-  let list = await shopping();
-  const riceItem = list.items.find((i) => i.grocery?.id === rice.id);
-  const milkItem = list.items.find((i) => i.grocery?.id === milk.id);
-  expect(list.items.filter((i) => i.grocery && [rice.id, milk.id].includes(i.grocery.id))).toHaveLength(2);
+  const { list } = await success("create_shopping_list", { date: start, label: "Workflow" });
+  const shopping = () => success("get_shopping_list", { listId: list.id });
+  expect((await shopping()).items).toEqual([]);
+  const riceKey = JSON.stringify(["grocery", rice.id]);
+  const milkKey = JSON.stringify(["grocery", milk.id]);
 
-  if (!riceItem || !milkItem) throw new Error("Workflow shopping products missing");
-  expect(riceItem).toMatchObject({
-    needs: [],
-    packages: 1,
-    checked: true,
-    warnings: [],
-  });
-  expect(milkItem).toMatchObject({
-    needs: [],
-    packages: 1,
-  });
-  expect(list.items.every((i) => i.grocery)).toBe(true);
-  expect(riceItem.key).not.toBe(riceItem.checkKey);
-  await success("set_shopping_checked", { key: riceItem.checkKey, checked: true });
-  expect((await shopping()).items.find((i) => i.key === riceItem.key)?.checked).toBe(true);
-  await success("set_shopping_checked", { key: riceItem.checkKey, checked: false, packages: 3 });
-  await success("set_shopping_checked", { key: riceItem.checkKey, checked: false });
-  expect((await shopping()).items.find((i) => i.key === riceItem.key)).toMatchObject({
-    checked: false,
-    packages: 3,
-  });
-  expect((await success("get_shopping_list", { start, end })).items.map((i) => i.key)).toEqual([
-    riceItem.key,
-  ]);
-  await success("save_meal", { ...meals[0], scale: 2 });
-  list = await shopping();
-  expect(list.items.find((i) => i.key === riceItem.key)).toMatchObject({
-    checked: false,
-    packages: 3,
-    needs: [],
-  });
-  expect(list.items.find((i) => i.key === riceItem.key)?.checkKey).toBe(riceItem.checkKey);
+  const riceSources = [
+    { title: "Workflow A", mealId: meals[0].id, date: meals[0].date },
+    { title: "Workflow B", mealId: meals[1].id, date: meals[1].date },
+  ];
+
   expect(
-    (await success("get_shopping_list", { start: "2031-01-01", end: "2031-01-01" })).items.map((i) => i.key),
-  ).toEqual([riceItem.key]);
-  await success("set_shopping_checked", { key: riceItem.checkKey, checked: true });
-  expect((await success("get_shopping_list", { start, end })).items).toEqual([]);
-  const route = { aisles: ["Pantry", "Cold"], items: [riceItem.key, milkItem.key] };
+    await success("add_shopping_items", {
+      listId: list.id,
+      items: [
+        { groceryId: rice.id, sources: riceSources },
+        { groceryId: milk.id, sources: [riceSources[0]] },
+      ],
+    }),
+  ).toEqual({ added: [rice.id, milk.id], updated: [], unchanged: [], conflicts: [] });
+  let current = await shopping();
+  // Default route: named aisles alphabetically (Cold before Pantry).
+  expect(current.items.map((i) => i.key)).toEqual([milkKey, riceKey]);
+  expect(current.items[1]).toEqual({
+    key: riceKey,
+    groceryId: rice.id,
+    name: "Rice pack",
+    grocery: { ...rice, url: "https://example.com/rice", aisle: "Pantry", revision: expect.any(String) },
+    checked: false,
+    packages: 1,
+    sources: riceSources,
+    addedAt: expect.any(String),
+    checkedAt: null,
+  });
+  await success("set_shopping_item", { listId: list.id, groceryId: rice.id, packages: 3 });
+  await success("set_shopping_item", { listId: list.id, groceryId: rice.id, checked: true });
+  await success("save_meal", { ...meals[0], scale: 2 });
+  // Meal edits never rewrite list rows.
+  current = await shopping();
+  expect(current.items.find((i) => i.key === riceKey)).toMatchObject({
+    checked: true,
+    packages: 3,
+    checkedAt: expect.any(String),
+    sources: riceSources,
+  });
+  const route = { aisles: ["Pantry", "Cold"], items: [riceKey, milkKey] };
   await success("set_shopping_order", route);
   expect((await shopping()).shoppingOrder).toEqual({ ...route, revision: expect.any(String) });
-  expect((await shopping()).items.slice(0, 2).map((i) => i.key)).toEqual(route.items);
+  expect((await shopping()).items.map((i) => i.key)).toEqual(route.items);
   await success("set_shopping_order", { aisles: [], items: [] });
   expect((await shopping()).shoppingOrder).toEqual({ aisles: [], items: [], revision: expect.any(String) });
-  const { extra } = await success("save_shopping_extra", { name: "Paper towels", checked: 0 });
-  await success("save_shopping_extra", { ...extra, name: "Kitchen towels", checked: 1 });
-  expect(
-    (await success("get_shopping_list", { start: "2031-01-01", end: "2031-01-01" })).extras,
-  ).toContainEqual({ ...extra, name: "Kitchen towels", checked: 1, revision: expect.any(String) });
-  await success("delete_shopping_extra", { id: extra.id });
-  expect((await shopping()).extras.some((e) => e.id === extra.id)).toBe(false);
 
   const db = await worker.getD1Database("DB");
 
   const snapshot = async () =>
     Promise.all(
-      ["recipes", "collections", "groceries", "meals", "extras", "checks", "shopping_order"].map(
-        async (table) => (await db.prepare(`SELECT * FROM ${table} ORDER BY 1`).all()).results,
-      ),
+      [
+        "recipes",
+        "collections",
+        "groceries",
+        "meals",
+        "shopping_lists",
+        "shopping_list_items",
+        "shopping_order",
+      ].map(async (table) => (await db.prepare(`SELECT * FROM ${table} ORDER BY 1`).all()).results),
     );
 
   const before = await snapshot();
@@ -1371,10 +1434,11 @@ it("manages a collection, matched products, inclusive meal plan and shopping lif
   for (const [name, args] of [
     ["save_meal", { ...meals[0], date: "2030-02-30" }],
     ["list_meals", { start: end, end: start }],
-    ["get_shopping_list", { start: "2030-02-30", end }],
+    ["get_shopping_list", { listId: list.id, all: true }],
+    ["create_shopping_list", { date: "2030-02-30" }],
     ["save_grocery", { ...rice, surprise: true }],
     ["set_shopping_order", { aisles: ["Dry", "Dry"], items: [] }],
-    ["save_shopping_extra", { name: "No mutation", checked: 0, unknown: 1 }],
+    ["add_shopping_items", { listId: list.id, items: [{ groceryId: milk.id, packages: 2, unknown: 1 }] }],
     ["delete_recipe", { id: a.id, expectedRevision: "stale" }],
     ["delete_grocery", { id: "missing-grocery" }],
   ] as const) {
@@ -1401,20 +1465,314 @@ it("manages a collection, matched products, inclusive meal plan and shopping lif
     })),
   );
 
-  const lateCheck = await call("set_shopping_checked", { key: riceItem.checkKey, checked: false });
+  // Deleting a catalog grocery removes it from every list.
+  expect((await shopping()).items).toEqual([]);
+  const lateCheck = await call("set_shopping_item", { listId: list.id, groceryId: rice.id, checked: false });
   expect(lateCheck.isError).toBe(true);
-  expect(lateCheck.content).toEqual([{ type: "text", text: "That grocery item no longer exists." }]);
-  await success("set_shopping_checked", { key: riceItem.checkKey, checked: true });
-  expect(await db.prepare("SELECT * FROM checks WHERE key=?").bind(riceItem.checkKey).first()).toBeNull();
+  expect(lateCheck.content).toEqual([
+    { type: "text", text: "That grocery is no longer on this list. Refresh the list before changing it." },
+  ]);
+  const lateAdd = await call("add_shopping_items", { listId: list.id, items: [{ groceryId: rice.id }] });
+  expect(lateAdd.isError).toBe(true);
+  expect(lateAdd.content[0].text).toBe(
+    "Some of those groceries no longer exist. Refresh the groceries before adding them; no items were added.",
+  );
   await success("save_grocery", rice);
-  expect((await shopping()).items.find((i) => i.key === riceItem.key)?.checked).toBe(true);
-  await success("set_shopping_checked", { key: riceItem.checkKey, checked: false });
-  expect((await shopping()).items.find((i) => i.key === riceItem.key)?.checked).toBe(false);
+  // Recreating a product does not restore old list membership.
+  expect((await shopping()).items).toEqual([]);
+  await success("add_shopping_items", { listId: list.id, items: [{ groceryId: rice.id }] });
+  expect((await shopping()).items.map((i) => i.groceryId)).toEqual([rice.id]);
   await success("delete_grocery", { id: rice.id });
 
   for (const recipe of linked) await success("delete_recipe", { id: recipe.id });
   expect((await success("get_recipes", { ids: [a.id, b.id] })).missingIds).toEqual([a.id, b.id]);
   expect((await shopping()).items).toEqual([]);
+  await success("delete_shopping_list", { id: list.id });
+});
+
+it("manages dated shopping lists by ID: sources, conflicts, replace, checks, removal and guards", async () => {
+  const db = await worker.getD1Database("DB");
+
+  const product = async (name: string, aisle: string) =>
+    (await success("save_grocery", { name, url: "", aisle, quantity: 1, unit: "each", aliases: [] })).grocery;
+
+  const oats = await product("Lifecycle oats", "Dry");
+  const milk = await product("Lifecycle milk", "Cold");
+  const eggs = await product("Lifecycle eggs", "Cold");
+  const date = "2036-03-01";
+  const { list: weekly } = await success("create_shopping_list", { date });
+  const { list: topUp } = await success("create_shopping_list", { date, label: "  Top-up  " });
+  expect(weekly).toEqual({ id: expect.any(String), date, label: "", revision: expect.any(String) });
+  expect(topUp).toEqual({ id: expect.any(String), date, label: "Top-up", revision: expect.any(String) });
+  expect(weekly.id).not.toBe(topUp.id);
+
+  const summary = async () =>
+    (await success("list_shopping_lists", {})).lists.filter((list) =>
+      [weekly.id, topUp.id].includes(list.id),
+    );
+
+  // Same-date lists are ordered by ID.
+  expect(await summary()).toEqual(
+    [weekly, topUp]
+      .sort((a, b) => a.id.localeCompare(b.id))
+      .map((list) => ({ ...list, revision: list.revision, items: 0, checked: 0 })),
+  );
+
+  const porridge = { title: "Lifecycle porridge", mealId: "lifecycle-meal", date };
+  expect(
+    await success("add_shopping_items", {
+      listId: weekly.id,
+      items: [
+        { groceryId: oats.id, packages: 2, sources: [porridge] },
+        { groceryId: milk.id },
+        { groceryId: eggs.id, checked: true },
+      ],
+    }),
+  ).toEqual({ added: [oats.id, milk.id, eggs.id], updated: [], unchanged: [], conflicts: [] });
+  expect(
+    await success("add_shopping_items", { listId: topUp.id, items: [{ groceryId: milk.id, packages: 3 }] }),
+  ).toEqual({ added: [milk.id], updated: [], unchanged: [], conflicts: [] });
+
+  const read = async (listId: string) => {
+    const result = await success("get_shopping_list", { listId });
+
+    return { ...result, byId: new Map(result.items.map((item) => [item.groceryId, item])) };
+  };
+
+  let current = await read(weekly.id);
+  expect(current.list).toEqual(weekly);
+  // Default route: Cold before Dry, then name.
+  expect(current.items.map((item) => item.groceryId)).toEqual([eggs.id, milk.id, oats.id]);
+  expect(current.byId.get(oats.id)).toEqual({
+    key: JSON.stringify(["grocery", oats.id]),
+    groceryId: oats.id,
+    name: oats.name,
+    grocery: oats,
+    checked: false,
+    packages: 2,
+    sources: [porridge],
+    addedAt: expect.any(String),
+    checkedAt: null,
+  });
+  expect(current.byId.get(milk.id)).toMatchObject({ checked: false, packages: 1, sources: [] });
+  expect(current.byId.get(eggs.id)).toMatchObject({
+    checked: true,
+    packages: 1,
+    checkedAt: expect.any(String),
+  });
+  expect((await read(topUp.id)).items.map((item) => [item.groceryId, item.packages])).toEqual([[milk.id, 3]]);
+  expect((await summary()).find((list) => list.id === weekly.id)).toMatchObject({ items: 3, checked: 1 });
+
+  // Matching unchecked rows merge sources; checked or differently counted rows are reported, not changed.
+  const granola = { title: "Lifecycle granola" };
+  expect(
+    await success("add_shopping_items", {
+      listId: weekly.id,
+      items: [
+        { groceryId: oats.id, sources: [granola, porridge] },
+        { groceryId: milk.id, packages: 4, sources: [granola] },
+        { groceryId: eggs.id },
+      ],
+    }),
+  ).toEqual({
+    added: [],
+    updated: [],
+    unchanged: [oats.id],
+    conflicts: [
+      { groceryId: milk.id, checked: false, packages: 1 },
+      { groceryId: eggs.id, checked: true, packages: 1 },
+    ],
+  });
+  current = await read(weekly.id);
+  expect(current.byId.get(oats.id)?.sources).toHaveLength(2);
+  expect(current.byId.get(oats.id)?.sources).toEqual(expect.arrayContaining([porridge, granola]));
+  expect(current.byId.get(oats.id)?.packages).toBe(2);
+  expect(current.byId.get(milk.id)).toMatchObject({ packages: 1, sources: [] });
+  expect(current.byId.get(eggs.id)).toMatchObject({ checked: true });
+
+  // The user confirmed the conflicts: replace applies them and merges sources.
+  expect(
+    await success("add_shopping_items", {
+      listId: weekly.id,
+      items: [
+        { groceryId: milk.id, packages: 4, sources: [granola], replace: true },
+        { groceryId: eggs.id, checked: false, replace: true },
+      ],
+    }),
+  ).toEqual({ added: [], updated: [milk.id, eggs.id], unchanged: [], conflicts: [] });
+  current = await read(weekly.id);
+  expect(current.byId.get(milk.id)).toMatchObject({ checked: false, packages: 4, sources: [granola] });
+  expect(current.byId.get(eggs.id)).toMatchObject({ checked: false, packages: 1, checkedAt: null });
+  expect((await read(topUp.id)).byId.get(milk.id)?.packages).toBe(3);
+
+  // Field-scoped item changes.
+  await success("set_shopping_item", { listId: weekly.id, groceryId: oats.id, checked: true });
+  expect((await read(weekly.id)).byId.get(oats.id)).toMatchObject({
+    checked: true,
+    packages: 2,
+    checkedAt: expect.any(String),
+  });
+  await success("set_shopping_item", { listId: weekly.id, groceryId: oats.id, packages: 5 });
+  expect((await read(weekly.id)).byId.get(oats.id)).toMatchObject({ checked: true, packages: 5 });
+  await success("set_shopping_item", { listId: weekly.id, groceryId: oats.id, checked: false });
+  expect((await read(weekly.id)).byId.get(oats.id)).toMatchObject({
+    checked: false,
+    packages: 5,
+    checkedAt: null,
+  });
+  await success("set_shopping_item", { listId: weekly.id, groceryId: eggs.id, checked: true });
+  expect((await summary()).find((list) => list.id === weekly.id)).toMatchObject({ items: 3, checked: 1 });
+
+  const notOnList = await call("set_shopping_item", { listId: topUp.id, groceryId: oats.id, checked: true });
+  expect(notOnList.isError).toBe(true);
+  expect(notOnList.content[0].text).toBe(
+    "That grocery is no longer on this list. Refresh the list before changing it.",
+  );
+  expect((await read(topUp.id)).items.map((item) => item.groceryId)).toEqual([milk.id]);
+
+  // Already at home: removal deletes the row from this list only.
+  expect(
+    await success("remove_shopping_items", { listId: weekly.id, groceryIds: [milk.id, "lifecycle-absent"] }),
+  ).toEqual({ removed: 1 });
+  expect((await read(weekly.id)).items.map((item) => item.groceryId)).toEqual([eggs.id, oats.id]);
+  expect((await read(topUp.id)).items.map((item) => item.groceryId)).toEqual([milk.id]);
+  expect(await success("remove_shopping_items", { listId: weekly.id, groceryIds: [milk.id] })).toEqual({
+    removed: 0,
+  });
+
+  const snapshot = async () =>
+    Promise.all(
+      ["shopping_lists", "shopping_list_items"].map(
+        async (table) => (await db.prepare(`SELECT * FROM ${table} ORDER BY 1,2`).all()).results,
+      ),
+    );
+
+  const before = await snapshot();
+
+  for (const [name, args, message] of [
+    [
+      "add_shopping_items",
+      { listId: weekly.id, items: [{ groceryId: milk.id }, { groceryId: "lifecycle-missing" }] },
+      "Some of those groceries no longer exist. Refresh the groceries before adding them; no items were added.",
+    ],
+    [
+      "add_shopping_items",
+      { listId: "lifecycle-missing-list", items: [{ groceryId: milk.id }] },
+      "That shopping list no longer exists. Refresh to see the current lists.",
+    ],
+    [
+      "get_shopping_list",
+      { listId: "lifecycle-missing-list" },
+      "That shopping list no longer exists. Refresh to see the current lists.",
+    ],
+    [
+      "update_shopping_list",
+      { id: topUp.id, date, label: "Stale", expectedRevision: "stale" },
+      "This item changed or no longer exists. Reload the latest household before saving or deleting; your changes were not applied.",
+    ],
+    [
+      "update_shopping_list",
+      { id: "lifecycle-never-created", date, label: "", expectedRevision: "invented" },
+      "This item changed or no longer exists. Reload the latest household before saving or deleting; your changes were not applied.",
+    ],
+    [
+      "delete_shopping_list",
+      { id: weekly.id, expectedRevision: "stale" },
+      "This item changed or no longer exists. Reload the latest household before saving or deleting; your changes were not applied.",
+    ],
+  ] as const) {
+    const failed = await call(name, args);
+    expect(failed.isError, name).toBe(true);
+    expect(failed.content[0].text, name).toBe(message);
+    expect(await snapshot(), name).toEqual(before);
+  }
+
+  for (const [name, args] of [
+    ["add_shopping_items", { listId: weekly.id, items: [] }],
+    ["add_shopping_items", { listId: weekly.id, items: [{ groceryId: milk.id }, { groceryId: milk.id }] }],
+    ["add_shopping_items", { listId: weekly.id, items: [{ groceryId: milk.id, packages: 0 }] }],
+    ["add_shopping_items", { listId: weekly.id, items: [{ groceryId: milk.id, packages: 1.5 }] }],
+    ["add_shopping_items", { listId: weekly.id, items: [{ groceryId: milk.id, checked: 1 }] }],
+    ["add_shopping_items", { listId: weekly.id, items: [{ groceryId: milk.id, sources: [{ title: " " }] }] }],
+    ["add_shopping_items", { listId: weekly.id, items: [{ groceryId: milk.id }], extra: true }],
+    ["set_shopping_item", { listId: weekly.id, groceryId: oats.id }],
+    ["set_shopping_item", { listId: weekly.id, groceryId: oats.id, packages: 0 }],
+    ["remove_shopping_items", { listId: weekly.id, groceryIds: [] }],
+    ["remove_shopping_items", { listId: weekly.id, groceryIds: [oats.id, oats.id] }],
+    ["create_shopping_list", { date: "2036-02-30" }],
+    ["create_shopping_list", { date, label: "x".repeat(101) }],
+    ["create_shopping_list", { date, id: "chosen-id" }],
+    ["update_shopping_list", { id: topUp.id, date, label: "No guard" }],
+    [
+      "update_shopping_list",
+      { id: topUp.id, date: "2036-13-01", label: "", expectedRevision: topUp.revision },
+    ],
+  ] as const) {
+    expect((await call(name, args)).isError, `${name} ${JSON.stringify(args)}`).toBe(true);
+    expect(await snapshot(), name).toEqual(before);
+  }
+
+  // Bypass the test helper's revision convenience: an unguarded delete must be rejected.
+  const unguarded = await rpc("tools/call", { name: "delete_shopping_list", arguments: { id: weekly.id } });
+
+  if ("result" in unguarded) expect(CallToolResultSchema.parse(unguarded.result).isError).toBe(true);
+  else expect(unguarded.error).toBeDefined();
+  expect(await snapshot()).toEqual(before);
+
+  // A failed update with an invented revision never creates the list.
+  expect(
+    (await success("list_shopping_lists", {})).lists.some((list) => list.id === "lifecycle-never-created"),
+  ).toBe(false);
+
+  const { list: moved } = await success("update_shopping_list", {
+    id: topUp.id,
+    date: "2036-03-02",
+    label: " Saturday top-up ",
+    expectedRevision: topUp.revision,
+  });
+
+  expect(moved).toEqual({
+    id: topUp.id,
+    date: "2036-03-02",
+    label: "Saturday top-up",
+    revision: expect.any(String),
+  });
+  expect(moved.revision).not.toBe(topUp.revision);
+
+  const replay = await call("update_shopping_list", {
+    id: topUp.id,
+    date,
+    label: "Stale replay",
+    expectedRevision: topUp.revision,
+  });
+
+  expect(replay.isError).toBe(true);
+  const movedRead = await read(topUp.id);
+  expect(movedRead.list).toEqual(moved);
+  expect(movedRead.items.map((item) => [item.groceryId, item.packages])).toEqual([[milk.id, 3]]);
+  expect((await summary()).map((list) => list.id)).toEqual([weekly.id, topUp.id]);
+
+  // Deleting a list removes all of its items and nothing else.
+  await success("delete_shopping_list", { id: weekly.id, expectedRevision: weekly.revision });
+  expect(
+    await db
+      .prepare("SELECT COUNT(*) AS n FROM shopping_list_items WHERE list_id=?")
+      .bind(weekly.id)
+      .first("n"),
+  ).toBe(0);
+  expect((await call("get_shopping_list", { listId: weekly.id })).isError).toBe(true);
+  expect(
+    (await call("delete_shopping_list", { id: weekly.id, expectedRevision: weekly.revision })).isError,
+  ).toBe(true);
+  expect((await read(topUp.id)).items.map((item) => item.groceryId)).toEqual([milk.id]);
+  expect((await success("list_groceries", {})).groceries.map((grocery) => grocery.id)).toEqual(
+    expect.arrayContaining([oats.id, milk.id, eggs.id]),
+  );
+
+  await success("delete_shopping_list", { id: topUp.id, expectedRevision: moved.revision });
+  expect(await summary()).toEqual([]);
+
+  for (const grocery of [oats, milk, eggs]) await success("delete_grocery", { id: grocery.id });
 });
 
 it("shares small immutable photo references through MCP creation, updates, snapshot saves and reads", async () => {
@@ -1676,7 +2034,7 @@ it("saves, lists, edits and deletes note-only meals through RPC without shopping
 
   expect(meal.recipe).toBeNull();
   expect((await success("list_meals", range)).meals).toEqual([meal]);
-  expect((await success("get_shopping_list", range)).items).toEqual([]);
+  expect((await success("list_shopping_lists", {})).lists).toEqual([]);
   expect((await call("save_meal", { ...meal, note: " \n\t" })).isError).toBe(true);
   const edited = { ...meal, note: "Dinner out", slot: "Lunch" };
   await success("save_meal", edited);
@@ -1735,7 +2093,7 @@ it("does not derive shopping needs from scaled meals and seeds only an empty hou
     note: "",
   });
 
-  expect((await success("get_shopping_list", { start: meal.date, end: meal.date })).items).toEqual([]);
+  expect((await success("list_shopping_lists", {})).lists).toEqual([]);
   await success("delete_meal", { id: meal.id });
   await success("delete_recipe", { id: large.id });
 
@@ -1752,7 +2110,8 @@ it("does not derive shopping needs from scaled meals and seeds only an empty hou
   await success("add_demo_data", { today: "2033-04-04" });
   const recipes = await success("search_recipes", {});
   const meals = await success("list_meals", { start: "2033-04-02", end: "2033-04-08" });
-  const shopping = await success("get_shopping_list", { start: "2033-04-02", end: "2033-04-08" });
+  const lists = await success("list_shopping_lists", {});
+  const shopping = await success("get_shopping_list", { listId: "sample-list" });
   expect(recipes.pagination.total).toBeGreaterThan(0);
   expect(meals.meals.map((meal) => meal.date)).toEqual([
     "2033-04-02",
@@ -1761,16 +2120,22 @@ it("does not derive shopping needs from scaled meals and seeds only an empty hou
     "2033-04-05",
     "2033-04-07",
   ]);
-  expect(shopping.extras).toContainEqual({
-    id: "sample-extra",
-    name: "Greek yogurt",
-    checked: 0,
+  expect(lists.lists).toEqual([
+    { id: "sample-list", date: "2033-04-02", label: "", revision: expect.any(String), items: 2, checked: 0 },
+  ]);
+  expect(shopping.list).toEqual({
+    id: "sample-list",
+    date: "2033-04-02",
+    label: "",
     revision: expect.any(String),
   });
+  expect(shopping.items.map((item) => item.groceryId).sort()).toEqual(["sample-beans", "sample-spinach"]);
+  expect(shopping.items.every((item) => !item.checked && item.packages === 1)).toBe(true);
   expect((await call("add_demo_data", { today: "2033-04-04" })).isError).toBe(true);
   expect(await success("search_recipes", {})).toEqual(recipes);
   expect(await success("list_meals", { start: "2033-04-02", end: "2033-04-08" })).toEqual(meals);
-  expect(await success("get_shopping_list", { start: "2033-04-02", end: "2033-04-08" })).toEqual(shopping);
+  expect(await success("list_shopping_lists", {})).toEqual(lists);
+  expect(await success("get_shopping_list", { listId: "sample-list" })).toEqual(shopping);
 });
 
 it("exports MCP tool failures even under HTTP 200 and never exports OAuth credentials or search text", async () => {

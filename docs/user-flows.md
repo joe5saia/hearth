@@ -146,13 +146,15 @@ These notes distinguish the desired journeys from current implementation; they a
 complete feature audit or permission to implement extra features in an unrelated change.
 
 - Planned meals currently have independent recipe snapshots and serving scales. Shopping
-  currently uses a manually maintained list, with recipe/meal ingredient selection and
-  quantity review, List Builder, and Shop Mode. Date ranges do not define list membership.
+  uses dated lists (any date; several may share one) whose membership is chosen explicitly,
+  selected once at the root of the Shopping tab; meal/recipe ingredient selection and
+  quantity review, List Builder, and Shop Mode all act on that selected list. Meal dates do not define list membership.
 - Prep-ahead continuity and cooking multiple dishes are design requirements to evaluate.
   This guide does not promise a dedicated prep schedule, persistent cooking progress, or a
   simultaneous multi-recipe workspace.
-- Reviewing past shops is a desired part of shopping; the current manual list is not a
-  saved history of individual shopping trips.
+- Earlier dated lists are the record of past shops: they show what was added, picked up, and
+  left unchecked, and they stay editable. Removing an item deletes it from that list rather
+  than recording it, so a list does not remember items that were removed.
 - Ambitious Kitchen and NYT describe real discovery sources, not a guarantee that every URL
   can be imported. Import is best-effort for supported public recipe data, with no paywall or
   access bypass. Review warnings and actual publisher availability separately from fixture tests.

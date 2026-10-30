@@ -7,7 +7,7 @@ import { promisify } from "node:util";
 import { Miniflare, convertV4MiniflareOptions } from "miniflare";
 import { rolldown } from "rolldown";
 import { Schema } from "effect";
-import { checkKey, CheckSchema, dateKey, HouseholdSchema, IdSchema, shoppingList } from "../src/domain.ts";
+import { dateKey, HouseholdSchema, IdSchema } from "../src/domain.ts";
 import { BrowserEventSchema } from "../src/telemetry-contract.ts";
 
 // A real built SPA, Worker, D1 and ingestion protocol; faults occur at the HTTP boundary.
@@ -48,10 +48,11 @@ const acceptedSpans: { traceId: string; spanId: string; name: string; parentSpan
 const deliveries: { signal: string; status: number; accepted: number; rejected: number }[] = [];
 const session = `telemetry-${process.pid}`;
 const browser = async (...args: string[]) => (await run("agent-browser", ["--session", session, ...args], { timeout: 90000 })).stdout.trim();
-const shoppingCheckbox = `(() => {
-  const checkbox = document.querySelector('.purchase-row input[type=checkbox]');
-  if (!(checkbox instanceof HTMLInputElement)) throw new Error('Expected shopping checkbox');
-  return checkbox;
+// The first List Builder row's add/remove control; its aria-pressed is the row's list membership.
+const shoppingMembership = `(() => {
+  const button = document.querySelector('.purchase-row .membership-button');
+  if (!(button instanceof HTMLButtonElement)) throw new Error('Expected list membership button');
+  return button;
 })()`;
 const events: (typeof ExportEventSchema.Type)[] = [];
 const payloads: string[] = [];
@@ -137,7 +138,7 @@ const server = createServer(async (request, response) => {
         request.socket.destroy();
         return;
       }
-      if ((path === failWrite && request.method === "PUT") || (failRefresh && path === "/api/household")) {
+      if ((path === failWrite && request.method !== "GET") || (failRefresh && path === "/api/household")) {
         failWrite = undefined; failRefresh = false;
         response.writeHead(503, { "Content-Type": "application/json", "X-Hearth-Telemetry": "1" });
         response.end(JSON.stringify({ error: "Temporary smoke fault" }));
@@ -180,7 +181,7 @@ try {
   const db = await worker.getD1Database("DB");
   // Quick add saves a catalog item and its list membership in one write.
   const savedExtra = async (name: string) => Schema.decodeUnknownSync(Schema.NullOr(IdSchema))(
-    await db.prepare("SELECT id FROM groceries WHERE name=? AND EXISTS (SELECT 1 FROM checks WHERE key=json_array('shopping-list',groceries.id) AND checked=0)").bind(name).first("id"),
+    await db.prepare("SELECT id FROM groceries WHERE name=? AND EXISTS (SELECT 1 FROM shopping_list_items WHERE list_id='sample-list' AND grocery_id=groceries.id AND checked=0)").bind(name).first("id"),
   );
   for (const file of (await readdir("migrations")).filter(file => file.endsWith(".sql")).sort()) {
     const sql = await readFile(`migrations/${file}`, "utf8");
@@ -191,19 +192,11 @@ try {
   assert(address && typeof address !== "string");
   const url = `http://127.0.0.1:${address.port}`;
   await worker.dispatchFetch(`${url}/api/demo?today=${dateKey(new Date())}`, { method: "POST", headers: { "Content-Type": "application/json" } });
-  // Demo meals do not select manual groceries. Keep a second selection so the
-  // persistence assertion still observes a stored check after completing the first.
+  // The demo's sample list holds two groceries, so a stored row remains after toggling the first catalog row.
   const fixture = Schema.decodeUnknownSync(HouseholdSchema)(await (await worker.dispatchFetch(`${url}/api/household`)).json());
   assert(fixture.groceries.length >= 2, "Demo must seed fixture groceries");
-  assert.equal(fixture.checks.length, 0, "Demo starts without manual grocery selections");
-  for (const item of shoppingList(fixture.groceries, fixture.shoppingOrder).slice(0, 2)) {
-    const check = Schema.decodeUnknownSync(CheckSchema)({ key: checkKey(item), checked: 0 });
-    const selected = await worker.dispatchFetch(`${url}/api/checks`, {
-      method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(check),
-    });
-    assert.equal(selected.status, 200, "Fixture grocery must be selected before browser interaction");
-  }
-  await browser("open", `${url}/#shopping`);
+  assert(fixture.shoppingItems.filter(item => item.listId === "sample-list").length >= 2, "Demo seeds a sample list with groceries");
+  await browser("open", `${url}/#shopping?list=sample-list`);
   await browser("set", "viewport", "1280", "900", "2");
   await browser("wait", ".purchase-row");
   // Builder retains completed groceries for the rejection/rollback/retry assertions.
@@ -244,17 +237,22 @@ try {
   await submitExtra("Private saved decode failure");
   await waitFor(() => events.some(event => event.event === "browser_household" && event.reason === "decode_error"), "invalid household response is reported separately from HTTP failure");
   assert(await savedExtra("Private saved decode failure"));
-  await browser("eval", `${shoppingCheckbox}.click(); true`);
-  await waitFor(() => events.some(event => event.event === "browser_shopping_save" && event.outcome === "success" && event.queueDepth === 1 && event.acknowledged === true), "optimistic shopping write/queue/refresh exported");
-  assert(Schema.decodeUnknownSync(Schema.Int)(await db.prepare("SELECT COUNT(*) FROM checks").first("COUNT(*)")) > 0);
-  failWrite = "/api/checks";
-  await browser("eval", `${shoppingCheckbox}.click(); true`);
-  await waitFor(() => events.some(event => event.event === "browser_shopping_save" && event.outcome === "error" && event.acknowledged === false), "shopping write rejection recorded and optimistic checkbox rolled back");
-  assert.equal(await browser("eval", `${shoppingCheckbox}.checked`), "true");
+  const membership = async () => JSON.parse(await browser("eval", `${shoppingMembership}.getAttribute('aria-pressed')`));
+  const initial = await membership();
+  const toggled = initial === "true" ? "false" : "true";
+  await browser("eval", `${shoppingMembership}.click(); true`);
+  await waitFor(() => events.some(event => event.event === "browser_shopping_save" && event.operation === "shopping-lists" && event.outcome === "success" && event.queueDepth === 1 && event.acknowledged === true), "optimistic shopping write/queue/refresh exported");
+  assert.equal(await membership(), toggled);
+  assert(Schema.decodeUnknownSync(Schema.Int)(await db.prepare("SELECT COUNT(*) FROM shopping_list_items").first("COUNT(*)")) > 0);
+  failWrite = "/api/shopping-lists/sample-list/items";
+  await browser("eval", `${shoppingMembership}.click(); true`);
+  await waitFor(() => events.some(event => event.event === "browser_shopping_save" && event.outcome === "error" && event.acknowledged === false), "shopping write rejection recorded and optimistic membership rolled back");
+  await browser("wait", "--fn", "!document.querySelector('.shopping-save-status')");
+  assert.equal(await membership(), toggled);
   failRefresh = true;
-  await browser("eval", `${shoppingCheckbox}.click(); true`);
+  await browser("eval", `${shoppingMembership}.click(); true`);
   await waitFor(() => events.some(event => event.event === "browser_shopping_save" && event.outcome === "saved_refresh_failed" && event.acknowledged === true), "shopping refresh failure preserves acknowledged state");
-  assert.equal(await browser("eval", `${shoppingCheckbox}.checked`), "false");
+  assert.equal(await membership(), initial);
   await browser("click", '[aria-label="Exit List Builder"]');
   await browser("eval", "window.dispatchEvent(new ErrorEvent('error', {message:'PRIVATE-ERROR-NEVER-EXPORT', filename:'https://private.example/path'})); window.dispatchEvent(new PromiseRejectionEvent('unhandledrejection', {promise:Promise.resolve(),reason:new Error('PRIVATE-REJECTION-NEVER-EXPORT')})); const start=performance.now();while(performance.now()-start<100){}; true");
   await browser("click", 'aside nav a[href="#recipes"]');

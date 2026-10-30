@@ -13,7 +13,8 @@ export type View =
   | "collections"
   | "import"
   | "chatgpt"
-  | "shopping-recipes";
+  | "shopping-recipes"
+  | "shopping-lists";
 
 /** Recipe list orders, in menu order; "az" is the default and is omitted from URLs. */
 export const recipeSorts = ["az", "za", "newest", "oldest"] as const;
@@ -32,6 +33,8 @@ export type Route = {
   selected: string[];
   selectedMeals: string[];
   checklist: boolean;
+  /** Selected shopping list ID; omitted means the default list for today. */
+  list?: string;
   scale?: number;
   view?: View;
   id?: string;
@@ -52,6 +55,7 @@ const views: readonly View[] = [
   "import",
   "chatgpt",
   "shopping-recipes",
+  "shopping-lists",
 ];
 
 /** Parses the hash allowlist, defaulting invalid fields and normalizing the plan week. */
@@ -75,6 +79,7 @@ export function readRoute(hash = location.hash): Route {
     selected: params.getAll("selected"),
     selectedMeals: params.getAll("selectedMeal"),
     checklist: params.get("checklist") === "1",
+    list: params.get("list") || undefined,
     scale: Number.isFinite(scale) && scale > 0 && scale <= 100 ? scale : undefined,
     view: views.find((candidate) => candidate === view),
     id: params.get("id") || undefined,
@@ -91,6 +96,8 @@ export function routeHash(route: Route): string {
   if (route.page === "plan") params.set("week", route.week);
 
   if (route.page === "shopping") {
+    if (route.list) params.set("list", route.list);
+
     if (route.mode !== "list") params.set("mode", route.mode);
   }
 

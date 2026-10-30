@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { Schema } from "effect";
 import { HouseholdSchema, IdSchema } from "../src/domain.ts";
+import { restoreShoppingLists, shoppingContent } from "./shopping-fixtures.ts";
 
 const root = new URL(process.argv[2] ?? "http://localhost:5173").origin;
 assert(["localhost", "127.0.0.1"].includes(new URL(root).hostname), "Use disposable local data only");
@@ -19,7 +20,7 @@ const withoutRevision = <T extends { readonly revision?: string }>({ revision: _
 const householdContent = (state: typeof HouseholdSchema.Encoded) => ({ ...state,
   recipes: state.recipes.map(withoutRevision), meals: state.meals.map(withoutRevision),
   groceries: state.groceries.map(withoutRevision), collections: state.collections.map(withoutRevision),
-  extras: state.extras.map(withoutRevision), shoppingOrder: withoutRevision(state.shoppingOrder),
+  ...shoppingContent(state), shoppingOrder: withoutRevision(state.shoppingOrder),
 });
 const original = await household();
 const failures: string[] = [];
@@ -53,7 +54,7 @@ try {
             page.on('request', request => {
               const segment = new URL(request.url()).pathname.split('/')[2];
               const kind = segment === 'shopping-items' ? 'groceries' : segment;
-              if (!['PUT', 'POST'].includes(request.method()) || !['extras', 'meals', 'recipes', 'groceries', 'collections'].includes(kind)) return;
+              if (!['PUT', 'POST'].includes(request.method()) || !['shopping-lists', 'meals', 'recipes', 'groceries', 'collections'].includes(kind)) return;
               const body = request.postDataJSON();
               if (body !== null && typeof body === 'object' && typeof body.id === 'string') {
                 console.log('OWNED ' + JSON.stringify({ kind, id: body.id }));
@@ -107,7 +108,7 @@ try {
       .split("\n")
       .filter((line) => line.startsWith("OWNED "))
       .map((line) => Schema.decodeUnknownSync(Schema.Struct({
-        kind: Schema.Literals(["extras", "meals", "recipes", "groceries", "collections"]),
+        kind: Schema.Literals(["shopping-lists", "meals", "recipes", "groceries", "collections"]),
         id: IdSchema,
       }))(JSON.parse(line.slice(6))));
     const current = await household();
@@ -136,7 +137,7 @@ try {
       // A failing implementation must not leave the reproduction fixtures behind.
       const api = async (path: string, method: string, body?: unknown) => {
         const resource = path.split("/")[0];
-        if (method === "DELETE" && (resource === "extras" || resource === "meals" || resource === "recipes" || resource === "groceries" || resource === "collections")) {
+        if (method === "DELETE" && (resource === "meals" || resource === "recipes" || resource === "groceries" || resource === "collections")) {
           const saved = (await household())[resource].find(item => item.id === decodeURIComponent(path.slice(resource.length + 1)));
           if (!saved) return;
           body = { expectedRevision: saved.revision };
@@ -150,7 +151,7 @@ try {
         });
         assert(response.ok, `Fallback cleanup ${path}: ${response.status}`);
       };
-      for (const kind of ["extras", "meals", "recipes", "groceries", "collections"] as const) {
+      for (const kind of ["meals", "recipes", "groceries", "collections"] as const) {
         for (const item of current[kind]) {
           if (
             owned.some((entry) => entry.kind === kind && entry.id === item.id) &&
@@ -162,13 +163,8 @@ try {
       }
       if (JSON.stringify(current.shoppingOrder) !== JSON.stringify(original.shoppingOrder))
         await api("shopping-order", "PUT", original.shoppingOrder);
-      for (const key of new Set([...current.checks, ...original.checks].map((entry) => entry.key))) {
-        const fallback = key.startsWith('["shopping-list",') ? 1 : 0;
-        const wanted = original.checks.find((entry) => entry.key === key);
-        const now = current.checks.find((entry) => entry.key === key);
-        if ((wanted?.checked ?? fallback) !== (now?.checked ?? fallback) || (wanted?.packages ?? 1) !== (now?.packages ?? 1))
-          await api("checks", "PUT", { key, checked: wanted?.checked ?? fallback, packages: wanted?.packages ?? 1 });
-      }
+      // Deletes lists the demo created (owned or not) and restores rows of pre-existing lists.
+      await restoreShoppingLists(root, original);
       assert.deepEqual(householdContent(await household()), householdContent(original), "Reproduction fallback cleanup failed");
     }
   }

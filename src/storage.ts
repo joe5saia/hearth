@@ -61,7 +61,7 @@ export const checkRevision = (
 /** Deletes exactly the observed version; never treats a missing target as success. */
 export const deleteVersion = (
   db: D1Database,
-  table: "meals" | "extras" | "collections",
+  table: "meals" | "shopping_lists" | "collections",
   id: string,
   expectedRevision?: string | null,
 ) =>

@@ -12,7 +12,6 @@ import {
   MealSchema,
   GroceryItemSchema,
   shoppingList,
-  checkKey,
   type MealDraft,
   type Ingredient,
   type IngredientDraft,
@@ -468,6 +467,15 @@ beforeAll(async () => {
       .map((s) => db.prepare(s)),
   );
 
+  // The household snapshot reads dated lists, so apply them before the first API read.
+  await db.batch(
+    (await readFile("migrations/0015_shopping_lists.sql", "utf8"))
+      .replace(/^--.*$/gm, "")
+      .split(/;\s*\n(?=CREATE|INSERT|DROP|ALTER|UPDATE)|;\s*$/)
+      .filter((s) => s.trim())
+      .map((s) => db.prepare(s)),
+  );
+
   const migrated = Schema.decodeUnknownSync(HouseholdSchema)(
     await (await worker.dispatchFetch("http://localhost/api/household")).json(),
   );
@@ -504,6 +512,9 @@ beforeEach(async () => {
     db.prepare("DELETE FROM groceries"),
     db.prepare("DELETE FROM shopping_order"),
     db.prepare("INSERT INTO shopping_order(id,aisles,items) VALUES(1,'[]','[]')"),
+    db.prepare("DELETE FROM shopping_list_items"),
+    db.prepare("DELETE FROM shopping_lists"),
+    // Legacy single-list tables stay in the schema for Workers still running the previous release.
     db.prepare("DELETE FROM extras"),
     db.prepare("DELETE FROM checks"),
     db.prepare("DELETE FROM collections"),
@@ -529,10 +540,17 @@ const send = async (path: string, method: string, body: string) => {
   const resource = path.split("/")[0];
 
   if (
-    ((method === "PUT" && !path.includes("/")) || method === "DELETE") &&
-    ["recipes", "meals", "groceries", "shopping-items", "collections", "extras", "shopping-order"].includes(
-      resource,
-    )
+    ((method === "PUT" && !path.includes("/")) ||
+      (method === "DELETE" && (resource !== "shopping-lists" || path.split("/").length === 2))) &&
+    [
+      "recipes",
+      "meals",
+      "groceries",
+      "shopping-items",
+      "collections",
+      "shopping-lists",
+      "shopping-order",
+    ].includes(resource)
   ) {
     let input: Record<string, typeof Schema.Json.Type>;
 
@@ -548,8 +566,8 @@ const send = async (path: string, method: string, body: string) => {
       const table =
         resource === "shopping-items"
           ? "groceries"
-          : resource === "shopping-order"
-            ? "shopping_order"
+          : resource === "shopping-order" || resource === "shopping-lists"
+            ? resource.replace("-", "_")
             : resource;
 
       let id: typeof Schema.Json.Type | undefined;
@@ -654,6 +672,7 @@ describe("real Worker with disposable SQLite D1", () => {
         .run();
 
       await migrate("0013_photos.sql");
+      await migrate("0015_shopping_lists.sql");
 
       const read = async () =>
         Schema.decodeUnknownSync(HouseholdSchema)(
@@ -841,6 +860,7 @@ describe("real Worker with disposable SQLite D1", () => {
       ]);
       await migrate("0012_entity_revisions.sql");
       await migrate("0013_photos.sql");
+      await migrate("0015_shopping_lists.sql");
 
       const read = async () =>
         Schema.decodeUnknownSync(HouseholdSchema)(
@@ -897,27 +917,48 @@ describe("real Worker with disposable SQLite D1", () => {
       ],
       [
         "shopping-items",
-        { id: "guard-shopping", name: "Rice", url: "", aisle: "2", quantity: 1, unit: "kg", aliases: [] },
+        {
+          id: "guard-shopping",
+          name: "Rice",
+          url: "",
+          aisle: "2",
+          quantity: 1,
+          unit: "kg",
+          aliases: [],
+          listId: "guard-quick-list",
+        },
       ],
       ["collections", { id: "guard-collection", name: "Guard collection" }],
-      ["extras", { id: "guard-extra", name: "Soap", checked: 0 }],
+      ["shopping-lists", { id: "guard-list", date: "2026-09-26", label: "Top-up" }],
     ] as const;
+
+    expect(
+      (
+        await raw("shopping-lists", "PUT", {
+          id: "guard-quick-list",
+          date: "2026-09-26",
+          label: "",
+          expectedRevision: null,
+        })
+      ).status,
+    ).toBe(200);
 
     for (const [path, fixture] of fixtures) {
       const resource = path === "shopping-items" ? "groceries" : path;
+      const key = resource === "shopping-lists" ? "shoppingLists" : resource;
       const oldClient = await raw(path, "PUT", fixture);
       expect(oldClient.status).toBe(409);
       expect(await oldClient.json()).toEqual({
         error: "Reload the app to get the latest version before saving or deleting; no changes were applied.",
       });
       expect((await raw(path, "PUT", { ...fixture, expectedRevision: null })).status).toBe(200);
-      const first = (await read())[resource].find((row) => row.id === fixture.id);
+      const first = (await read())[key].find((row) => row.id === fixture.id);
 
       if (!first?.revision) throw new Error("Persisted revision missing");
       expect(first.revision).toMatch(/^[a-f0-9]{32}$/);
       expect((await raw(path, "PUT", { ...fixture, expectedRevision: null })).status).toBe(409);
       expect((await raw(path, "PUT", { ...fixture, expectedRevision: first.revision })).status).toBe(200);
-      const second = (await read())[resource].find((row) => row.id === fixture.id);
+      const second = (await read())[key].find((row) => row.id === fixture.id);
 
       if (!second?.revision) throw new Error("Updated revision missing");
       expect(second.revision).not.toBe(first.revision);
@@ -958,7 +999,7 @@ describe("real Worker with disposable SQLite D1", () => {
         (await raw(`${resource}/${fixture.id}`, "DELETE", { expectedRevision: second.revision })).status,
       ).toBe(409);
       expect((await raw(path, "PUT", { ...fixture, expectedRevision: null })).status).toBe(200);
-      const recreated = (await read())[resource].find((row) => row.id === fixture.id);
+      const recreated = (await read())[key].find((row) => row.id === fixture.id);
       expect(recreated?.revision).not.toBe(second.revision);
       expect(
         (await raw(`${resource}/${fixture.id}`, "DELETE", { expectedRevision: second.revision })).status,
@@ -982,7 +1023,7 @@ describe("real Worker with disposable SQLite D1", () => {
     expect((await read()).shoppingOrder.aisles).toEqual(["2"]);
   });
 
-  it("merges note-only intent with newer meal structure and never resurrects deleted meals or extras", async () => {
+  it("merges note-only intent with newer meal structure and never resurrects deleted meals or shopping lists", async () => {
     const raw = (path: string, method: string, input: typeof Schema.Json.Type) =>
       worker.dispatchFetch(`http://localhost/api/${path}`, {
         method,
@@ -1030,12 +1071,50 @@ describe("real Worker with disposable SQLite D1", () => {
     expect(
       (await raw(`meals/${stale.id}`, "PATCH", { note: "Recreate", expectedNote: "New note" })).status,
     ).toBe(409);
-    await send("extras", "PUT", JSON.stringify({ id: "patch-extra", name: "Original", checked: 0 }));
-    await send("extras", "PUT", JSON.stringify({ id: "patch-extra", name: "Renamed", checked: 0 }));
-    expect((await raw("extras/patch-extra", "PATCH", { checked: 1 })).status).toBe(200);
-    expect((await read()).extras[0]).toMatchObject({ name: "Renamed", checked: 1 });
-    await send("extras/patch-extra", "DELETE", "{}");
-    expect((await raw("extras/patch-extra", "PATCH", { checked: 0 })).status).toBe(409);
+    await send(
+      "groceries",
+      "PUT",
+      JSON.stringify({
+        id: "soap",
+        name: "Soap",
+        url: "",
+        aisle: "",
+        quantity: 1,
+        unit: "each",
+        aliases: [],
+      }),
+    );
+    await send(
+      "shopping-lists",
+      "PUT",
+      JSON.stringify({ id: "patch-list", date: "2026-09-26", label: "Original" }),
+    );
+    expect(
+      (await raw("shopping-lists/patch-list/items", "POST", { items: [{ groceryId: "soap" }] })).status,
+    ).toBe(200);
+    await send(
+      "shopping-lists",
+      "PUT",
+      JSON.stringify({ id: "patch-list", date: "2026-09-26", label: "Renamed" }),
+    );
+    // A field-scoped check applies to the renamed list without needing its new revision.
+    expect((await raw("shopping-lists/patch-list/items/soap", "PATCH", { checked: 1 })).status).toBe(200);
+    expect((await read()).shoppingLists[0]).toMatchObject({ label: "Renamed" });
+    expect((await read()).shoppingItems[0]).toMatchObject({
+      listId: "patch-list",
+      groceryId: "soap",
+      checked: 1,
+    });
+    await send("shopping-lists/patch-list", "DELETE", "{}");
+    expect((await raw("shopping-lists/patch-list/items/soap", "PATCH", { checked: 0 })).status).toBe(400);
+    expect(
+      (await raw("shopping-lists/patch-list/items", "POST", { items: [{ groceryId: "soap" }] })).status,
+    ).toBe(400);
+    const db = await worker.getD1Database("DB");
+    expect(await db.prepare("SELECT count(*) AS count FROM shopping_list_items").first()).toEqual({
+      count: 0,
+    });
+    expect((await read()).shoppingLists).toEqual([]);
   });
 
   it("captures snapshots and rotates tokens for overlapping old SQL writers and indirect cleanup", async () => {
@@ -1106,16 +1185,22 @@ describe("real Worker with disposable SQLite D1", () => {
     const unlinked = (await read()).recipes.find((row) => row.id === sampleRecipes[0].id);
     expect(unlinked?.revision).not.toBe(linked?.revision);
     expect(unlinked?.ingredients[0].groceryItemId).toBeNull();
+    await send(
+      "shopping-lists",
+      "PUT",
+      JSON.stringify({ id: "indirect-list", date: "2026-09-26", label: "" }),
+    );
     expect(
       (
         await send(
-          "checks",
-          "PUT",
-          JSON.stringify({ key: '["shopping-list","indirect"]', checked: 0, packages: 5 }),
+          "shopping-lists/indirect-list/items",
+          "POST",
+          JSON.stringify({ items: [{ groceryId: "indirect", packages: 5 }] }),
         )
       ).status,
     ).toBe(400);
     expect((await read()).groceries).toEqual([]);
+    expect((await read()).shoppingItems).toEqual([]);
   });
 
   it("authenticates feedback, signs its preserved context and deduplicates safe retries without household writes", async () => {
@@ -1257,7 +1342,13 @@ describe("real Worker with disposable SQLite D1", () => {
       ).status,
     ).toBe(409);
     const household = await worker.dispatchFetch("http://localhost/api/household", { headers });
-    expect(await household.json()).toMatchObject({ recipes: [], meals: [], groceries: [], extras: [] });
+    expect(await household.json()).toMatchObject({
+      recipes: [],
+      meals: [],
+      groceries: [],
+      shoppingLists: [],
+      shoppingItems: [],
+    });
     await worker.setOptions(options("false", "test-hearth", "smoke-test.access", "preview-test.access"));
 
     const preview = await worker.dispatchFetch("http://localhost/api/feedback", {
@@ -1343,17 +1434,24 @@ describe("real Worker with disposable SQLite D1", () => {
       ["recipes", "PUT", "The recipe is missing required fields."],
       ["recipes/rating/missing", "PUT", "Choose a valid recipe rating."],
       ["meals", "PUT", "The meal is missing required fields."],
-      ["extras", "PUT", "The item is missing required fields."],
-      ["checks", "PUT", "Invalid shopping item."],
+      ["shopping-lists", "PUT", "Choose a list date and a label of 100 characters or less."],
+      [
+        "shopping-lists/missing/items",
+        "POST",
+        "Add between 1 and 500 groceries, each once, with whole package counts.",
+      ],
+      [
+        "shopping-lists/missing/items/missing",
+        "PATCH",
+        "Choose checked or unchecked and a whole package count.",
+      ],
+      ["shopping-lists/missing/items", "DELETE", "Choose between 1 and 500 groceries to remove."],
     ];
 
     for (const [path, method, message] of routes) {
       for (const [body, error] of [
         ["{", "Please send valid JSON."],
-        [
-          "null",
-          method === "PUT" && !path.includes("/") && path !== "checks" ? "Reload before saving." : message,
-        ],
+        ["null", method === "PUT" && !path.includes("/") ? "Reload before saving." : message],
       ]) {
         const response = await send(path, method, body);
         expect(response.status).toBe(400);
@@ -1366,6 +1464,24 @@ describe("real Worker with disposable SQLite D1", () => {
     expect(missing.status).toBe(404);
     expect(missing.headers.get("Cache-Control")).toBe("no-store");
     expect(await missing.json()).toEqual({ error: "That page couldn’t be found." });
+
+    // The single global list's routes are gone rather than silently accepted.
+    for (const [path, method] of [
+      ["extras", "PUT"],
+      ["extras/legacy", "PATCH"],
+      ["extras/legacy", "DELETE"],
+      ["checks", "PUT"],
+      ["shopping-lists/missing/other", "POST"],
+    ]) {
+      const response = await worker.dispatchFetch(`http://localhost/api/${path}`, {
+        method,
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: "legacy", name: "Soap", checked: 0, key: '["shopping-list","x"]' }),
+      });
+
+      expect(response.status).toBe(404);
+    }
+
     const success = await worker.dispatchFetch("http://localhost/api/household");
     expect(success.status).toBe(200);
     expect(success.headers.get("Cache-Control")).toBe("no-store");
@@ -1521,9 +1637,16 @@ describe("real Worker with disposable SQLite D1", () => {
     await put("meals", { ...meal, id: "first-meal", recipeId: "first", date: "2026-09-21", scale: 1.5 });
     await put("meals", { ...meal, id: "second-meal", recipeId: "second", date: "2026-09-27", scale: 1 });
     await put("meals", { ...meal, id: "outside", recipeId: "second", date: "2026-09-28", scale: 100 });
+    await put("shopping-lists", { id: "week", date: "2026-09-26", label: "" });
+    await put("shopping-lists", { id: "top-up", date: "2026-09-30", label: "Top-up" });
     let household = await state();
 
-    const list = () => shoppingList(household.groceries, household.shoppingOrder);
+    const list = (listId = "week") =>
+      shoppingList(
+        household.groceries,
+        household.shoppingOrder,
+        household.shoppingItems.filter((entry) => entry.listId === listId),
+      );
 
     let items = list();
 
@@ -1536,11 +1659,8 @@ describe("real Worker with disposable SQLite D1", () => {
     };
 
     expect(items).toHaveLength(products.length);
-    expect(
-      items.every(
-        (item) => item.needs.length === 0 && item.recipes.length === 0 && item.warnings.length === 0,
-      ),
-    ).toBe(true);
+    // Planned meals alone never put catalog groceries on a list.
+    expect(items.every((item) => item.entry === undefined)).toBe(true);
     expect([...new Set(items.filter((item) => item.grocery).map((item) => item.grocery?.aisle))]).toEqual([
       "2",
       "10",
@@ -1553,9 +1673,20 @@ describe("real Worker with disposable SQLite D1", () => {
       "Rice bag",
     ]);
 
-    const checkedKey = checkKey(byId("rice"));
-    // Unchecking adds a catalog item; checked=0 must survive household refreshes.
-    await put("checks", { key: checkedKey, checked: 0 });
+    const add = async (listId: string, groceryId: string, packages?: number) => {
+      const response = await send(
+        `shopping-lists/${listId}/items`,
+        "POST",
+        JSON.stringify({ items: [{ groceryId, packages }] }),
+      );
+
+      expect(response.status).toBe(200);
+    };
+
+    const onList = { listId: "week", groceryId: "rice", checked: 0, packages: 1, sources: [] };
+    // Adding puts the catalog grocery on one list; the row must survive household refreshes.
+    await add("week", "rice");
+    await add("top-up", "rice", 4);
 
     const order = {
       aisles: ["Produce", "Bakery", "10", "2", ""],
@@ -1570,25 +1701,41 @@ describe("real Worker with disposable SQLite D1", () => {
       "Rice bag",
       "Oil",
     ]);
-    expect(checkKey(byId("rice"))).toBe(checkedKey);
-    expect(household.checks).toContainEqual({ key: checkedKey, checked: 0, packages: 1 });
+    expect(byId("rice").entry).toMatchObject(onList);
+    expect(items.filter((item) => item.entry).map((item) => item.grocery.id)).toEqual(["rice"]);
     await put("meals", { ...meal, id: "second-meal", recipeId: "second", date: "2026-09-27", scale: 1.1 });
     household = await state();
     items = list();
-    expect(checkKey(byId("rice"))).toBe(checkedKey);
-    expect(household.checks).toContainEqual({ key: checkedKey, checked: 0, packages: 1 });
+    expect(byId("rice").entry).toMatchObject(onList);
     await put("groceries", { ...products[0], quantity: 750, name: "Renamed rice" });
     household = await state();
     items = list();
-    expect(checkKey(byId("rice"))).toBe(checkedKey);
-    expect(household.checks).toContainEqual({ key: checkedKey, checked: 0, packages: 1 });
-    await put("checks", { key: checkedKey, checked: 1 });
-    expect((await state()).checks.some((entry) => entry.key === checkedKey)).toBe(false);
+    // Catalog edits change neither membership nor the package count chosen on each list.
+    expect(byId("rice").entry).toMatchObject(onList);
+    expect(list("top-up").find((item) => item.grocery.id === "rice")?.entry).toMatchObject({
+      ...onList,
+      listId: "top-up",
+      packages: 4,
+    });
+
+    const removed = await send(
+      "shopping-lists/week/items",
+      "DELETE",
+      JSON.stringify({ groceryIds: ["rice"] }),
+    );
+
+    expect(await removed.json()).toEqual({ removed: 1 });
     expect(household.shoppingOrder).toEqual({ ...order, revision: expect.any(String) });
+    household = await state();
+    items = list();
+    expect(byId("rice").entry).toBeUndefined();
+    expect(list("top-up").find((item) => item.grocery.id === "rice")?.entry?.packages).toBe(4);
   });
 
-  it("does not revive membership after a late check write and same-ID product recreation", async () => {
+  it("does not revive list membership after a late list write and same-ID product recreation", async () => {
     const put = (path: string, value: typeof Schema.Json.Type) => send(path, "PUT", JSON.stringify(value));
+
+    const post = (path: string, value: typeof Schema.Json.Type) => send(path, "POST", JSON.stringify(value));
 
     const product = {
       id: 'late-"rice\\雪',
@@ -1600,65 +1747,85 @@ describe("real Worker with disposable SQLite D1", () => {
       aliases: [],
     };
 
-    const key = JSON.stringify(["shopping-list", product.id]);
     const db = await worker.getD1Database("DB");
-    const membership = () => db.prepare("SELECT * FROM checks WHERE key=?").bind(key).first();
 
+    const membership = (groceryId = product.id) =>
+      db
+        .prepare("SELECT checked,packages FROM shopping_list_items WHERE list_id='late' AND grocery_id=?")
+        .bind(groceryId)
+        .first();
+
+    const add = (items: typeof Schema.Json.Type) => post("shopping-lists/late/items", { items });
+
+    const patch = (value: typeof Schema.Json.Type, groceryId = product.id) =>
+      send(`shopping-lists/late/items/${encodeURIComponent(groceryId)}`, "PATCH", JSON.stringify(value));
+
+    expect((await put("shopping-lists", { id: "late", date: "2026-09-26", label: "" })).status).toBe(200);
     expect((await put("groceries", product)).status).toBe(200);
-    expect((await put("checks", { key, checked: 0, packages: 3, onlyIfAbsent: true })).status).toBe(200);
+    expect(await (await add([{ groceryId: product.id, packages: 3 }])).json()).toMatchObject({
+      added: [product.id],
+    });
     // Another client updates the amount after a recipe review was opened.
-    expect((await put("checks", { key, checked: 0, packages: 5 })).status).toBe(200);
-    expect((await put("checks", { key, checked: 0, packages: 2, onlyIfAbsent: true })).status).toBe(200);
-
-    const household = Schema.decodeUnknownSync(HouseholdSchema)(
-      await (await worker.dispatchFetch("http://localhost/api/household")).json(),
-    );
-
-    expect(household.checks).toContainEqual({ key, checked: 0, packages: 5 });
-    expect((await put("checks", { key, checked: 1, onlyIfAbsent: true })).status).toBe(400);
-    expect((await put("checks", { key: "legacy", checked: 0, onlyIfAbsent: true })).status).toBe(400);
-    expect((await put("checks", { key, checked: 0, packages: 3 })).status).toBe(200);
-    expect((await put("checks", { key, checked: 0 })).status).toBe(200);
-    expect(await membership()).toEqual({ key, checked: 0, packages: 3 });
+    expect((await patch({ packages: 5 })).status).toBe(200);
+    expect(await (await add([{ groceryId: product.id, packages: 2 }])).json()).toEqual({
+      added: [],
+      updated: [],
+      unchanged: [],
+      conflicts: [{ groceryId: product.id, checked: 0, packages: 5 }],
+    });
+    expect(await membership()).toEqual({ checked: 0, packages: 5 });
 
     for (const packages of [0, -1, 1.5, 1_000_001]) {
-      expect((await put("checks", { key, checked: 0, packages })).status).toBe(400);
+      expect((await add([{ groceryId: product.id, packages, replace: true }])).status).toBe(400);
+      expect((await patch({ packages })).status).toBe(400);
     }
 
-    expect(await membership()).toEqual({ key, checked: 0, packages: 3 });
+    expect(await membership()).toEqual({ checked: 0, packages: 5 });
     expect((await put("groceries", { ...product, name: "Renamed rice", quantity: 750 })).status).toBe(200);
-    expect(await membership()).toEqual({ key, checked: 0, packages: 3 });
+    expect(await membership()).toEqual({ checked: 0, packages: 5 });
 
     // Force the harmful ordering: deletion commits before the delayed list-add reaches D1.
     expect((await send(`groceries/${encodeURIComponent(product.id)}`, "DELETE", "")).status).toBe(200);
     expect(await membership()).toBeNull();
-    const late = await put("checks", { key, checked: 0 });
-    expect((await put("checks", { key, checked: 0, packages: 2, onlyIfAbsent: true })).status).toBe(400);
+    const late = await add([{ groceryId: product.id }]);
+    expect((await patch({ checked: 1 })).status).toBe(400);
     const orphan = await membership();
     expect((await put("groceries", product)).status).toBe(200);
     const revived = await membership();
     expect(orphan).toBeNull();
     expect(revived).toBeNull();
     expect(late.status).toBe(400);
-    expect(await late.json()).toEqual({ error: "That grocery item no longer exists." });
+    expect(await late.json()).toEqual({
+      error:
+        "Some of those groceries no longer exist. Refresh the groceries before adding them; no items were added.",
+    });
 
-    // A genuine addition to the recreated product must still work; removal is idempotent.
-    expect((await put("checks", { key, checked: 0 })).status).toBe(200);
-    expect(await membership()).toEqual({ key, checked: 0, packages: 1 });
-    expect((await put("checks", { key, checked: 1 })).status).toBe(200);
-    expect((await put("checks", { key, checked: 1 })).status).toBe(200);
+    // A genuine addition to the recreated product starts fresh; removal is idempotent.
+    expect((await add([{ groceryId: product.id }])).status).toBe(200);
+    expect(await membership()).toEqual({ checked: 0, packages: 1 });
+
+    for (const removed of [1, 0]) {
+      const response = await send(
+        "shopping-lists/late/items",
+        "DELETE",
+        JSON.stringify({ groceryIds: [product.id] }),
+      );
+
+      expect(await response.json()).toEqual({ removed });
+    }
+
     expect(await membership()).toBeNull();
 
     // Either database ordering of overlapping DELETE/add requests must leave no orphan.
     for (let attempt = 0; attempt < 12; attempt++) {
       expect((await put("groceries", product)).status).toBe(200);
       const remove = () => send(`groceries/${encodeURIComponent(product.id)}`, "DELETE", "");
-      const add = () => put("checks", { key, checked: 0 });
+      const addOne = () => add([{ groceryId: product.id }]);
 
       const [deleted, added] =
         attempt % 2
-          ? await Promise.all([add(), remove()]).then(([a, d]) => [d, a])
-          : await Promise.all([remove(), add()]);
+          ? await Promise.all([addOne(), remove()]).then(([a, d]) => [d, a])
+          : await Promise.all([remove(), addOne()]);
 
       expect(deleted.status).toBe(200);
       expect([200, 400]).toContain(added.status);
@@ -1666,20 +1833,15 @@ describe("real Worker with disposable SQLite D1", () => {
       expect(await membership()).toBeNull();
     }
 
-    expect((await put("checks", { key, checked: 1 })).status).toBe(200);
-
-    // SQL canonical key construction must agree with returned keys for valid Unicode/control IDs.
+    // Unicode and control-character IDs round-trip through the body and the encoded item path.
     for (const id of ["line\nfeed\t\u0000", "emoji-🛒/rice"]) {
-      const key = JSON.stringify(["shopping-list", id]);
       expect((await put("groceries", { ...product, id })).status).toBe(200);
-      expect((await put("checks", { key, checked: 0 })).status).toBe(200);
-      expect(await db.prepare("SELECT * FROM checks WHERE key=?").bind(key).first()).toEqual({
-        key,
-        checked: 0,
-        packages: 1,
-      });
+      expect((await add([{ groceryId: id }])).status).toBe(200);
+      expect((await patch({ checked: 1 }, id)).status).toBe(200);
+      expect(await membership(id)).toEqual({ checked: 1, packages: 1 });
       expect((await send(`groceries/${encodeURIComponent(id)}`, "DELETE", "")).status).toBe(200);
-      expect((await put("checks", { key, checked: 0 })).status).toBe(400);
+      expect(await membership(id)).toBeNull();
+      expect((await add([{ groceryId: id }])).status).toBe(400);
     }
   });
 
@@ -1809,7 +1971,7 @@ describe("real Worker with disposable SQLite D1", () => {
     expect((await send("groceries/other", "DELETE", "")).status).toBe(200);
     expect((await state()).groceries).toHaveLength(1);
   });
-  it("deletes linked products atomically without losing recipe data or unrelated list membership", async () => {
+  it("deletes linked products atomically from every list without losing recipe data or unrelated list membership", async () => {
     const put = (path: string, value: typeof Schema.Json.Type) => send(path, "PUT", JSON.stringify(value));
 
     const state = async () =>
@@ -1856,11 +2018,27 @@ describe("real Worker with disposable SQLite D1", () => {
       ).toBe(200);
     expect((await put("meals", { ...meal, recipeId: sampleRecipes[0].id })).status).toBe(200);
 
-    for (const product of [removed, keep])
+    for (const [id, date] of [
+      ["this-week", "2026-09-26"],
+      ["same-day", "2026-09-26"],
+      ["next-week", "2026-10-03"],
+    ]) {
+      expect((await put("shopping-lists", { id, date, label: "" })).status).toBe(200);
       expect(
-        (await put("checks", { key: JSON.stringify(["shopping-list", product.id]), checked: 0 })).status,
+        (
+          await send(
+            `shopping-lists/${id}/items`,
+            "POST",
+            JSON.stringify({
+              items: [removed, keep].map((product) => ({ groceryId: product.id, packages: 2 })),
+            }),
+          )
+        ).status,
       ).toBe(200);
+    }
+
     const before = await state();
+    expect(before.shoppingItems.filter((entry) => entry.groceryId === removed.id)).toHaveLength(3);
 
     const expectedRecipes = before.recipes.map((recipe) => ({
       ...recipe,
@@ -1876,8 +2054,9 @@ describe("real Worker with disposable SQLite D1", () => {
       ...before,
       recipes: expectedRecipes,
       groceries: before.groceries.filter((product) => product.id !== removed.id),
-      checks: before.checks.filter((check) => check.key !== JSON.stringify(["shopping-list", removed.id])),
+      shoppingItems: before.shoppingItems.filter((entry) => entry.groceryId !== removed.id),
     });
+    expect(after.shoppingItems.filter((entry) => entry.groceryId === keep.id)).toHaveLength(3);
     expect((await send(`groceries/${encodeURIComponent(removed.id)}`, "DELETE", "")).status).toBe(409);
     expect(await state()).toEqual(after);
     // A stale editor cannot resurrect dangling links or overwrite the unlinked recipe.
@@ -1891,7 +2070,13 @@ describe("real Worker with disposable SQLite D1", () => {
     ).toBe(409);
     expect(await state()).toEqual(after);
     expect(
-      (await put("checks", { key: JSON.stringify(["shopping-list", removed.id]), checked: 0 })).status,
+      (
+        await send(
+          "shopping-lists/this-week/items",
+          "POST",
+          JSON.stringify({ items: [{ groceryId: removed.id }] }),
+        )
+      ).status,
     ).toBe(400);
     expect(await state()).toEqual(after);
     // Recreating an identical name/ID does not silently re-match explicitly unlinked ingredients.
@@ -1899,11 +2084,13 @@ describe("real Worker with disposable SQLite D1", () => {
 
     for (const recipe of after.recipes) expect((await put("recipes", recipe)).status).toBe(200);
     expect((await state()).recipes).toEqual(expectedRecipes);
-    // Failure of the second batch statement rolls back the product deletion and recipe unlinking.
+    // A recreated product is not silently put back on any list.
+    expect((await state()).shoppingItems).toEqual(after.shoppingItems);
+    // Failure of the list cascade rolls back the product deletion and recipe unlinking.
     const db = await worker.getD1Database("DB");
     await db
       .prepare(
-        "CREATE TRIGGER reject_product_delete BEFORE DELETE ON checks BEGIN SELECT RAISE(ABORT, 'Delete rejected'); END",
+        "CREATE TRIGGER reject_product_delete BEFORE DELETE ON shopping_list_items BEGIN SELECT RAISE(ABORT, 'Delete rejected'); END",
       )
       .run();
     const beforeFailure = await state();
@@ -1943,8 +2130,14 @@ describe("real Worker with disposable SQLite D1", () => {
     };
 
     await put("shopping-order", order);
-    await put("checks", { key: '["shopping-list","chicken"]', checked: 0 });
+    await put("shopping-lists", { id: "aisle-list", date: "2026-09-26", label: "" });
+    await send(
+      "shopping-lists/aisle-list/items",
+      "POST",
+      JSON.stringify({ items: [{ groceryId: "chicken", packages: 3 }] }),
+    );
     const before = await state();
+    expect(before.shoppingItems).toHaveLength(1);
 
     for (const to of ["   ", "x".repeat(151)])
       expect((await put("shopping-aisles", { from: "Meat", to })).status).toBe(400);
@@ -1963,7 +2156,8 @@ describe("real Worker with disposable SQLite D1", () => {
       aisles: ["Produce", "Butcher", ""],
       revision: expect.any(String),
     });
-    expect(after.checks).toEqual(before.checks);
+    expect(after.shoppingLists).toEqual(before.shoppingLists);
+    expect(after.shoppingItems).toEqual(before.shoppingItems);
     expect((await put("shopping-aisles", { from: "Butcher", to: "Butcher" })).status).toBe(200);
     expect(await state()).toEqual(after);
   });
@@ -2095,6 +2289,7 @@ describe("real Worker with disposable SQLite D1", () => {
         "0012_entity_revisions.sql",
         "0013_photos.sql",
         "0014_detached_meals.sql",
+        "0015_shopping_lists.sql",
       ]) {
         const migration = await readFile(`migrations/${file}`, "utf8");
         await db.batch(
@@ -2208,8 +2403,8 @@ describe("real Worker with disposable SQLite D1", () => {
       recipes: [],
       recipesAdded: [],
       meals: [],
-      extras: [],
-      checks: [],
+      shoppingLists: [],
+      shoppingItems: [],
     });
     expect((await send("recipes", "PUT", JSON.stringify(sampleRecipes[0]))).status).toBe(200);
     const db = await worker.getD1Database("DB");
@@ -2852,7 +3047,7 @@ describe("real Worker with disposable SQLite D1", () => {
       before.meals.find((entry) => entry.id === "unchanged"),
     );
     expect(after.groceries).toEqual(before.groceries);
-    expect(after.checks).toEqual(before.checks);
+    expect(after.shoppingItems).toEqual(before.shoppingItems);
   });
 
   it("rejects invalid meal snapshots before writes and validates stored snapshot JSON at the read boundary", async () => {
@@ -3003,7 +3198,7 @@ describe("real Worker with disposable SQLite D1", () => {
       rating: "up",
     });
   });
-  it("quick-adds a minimal grocery to the list atomically and keeps saved package counts on retry", async () => {
+  it("quick-adds a minimal grocery to one list atomically and keeps saved package counts on retry", async () => {
     const coffee = {
       id: "coffee",
       name: "  Coffee ",
@@ -3019,90 +3214,823 @@ describe("real Worker with disposable SQLite D1", () => {
         await (await worker.dispatchFetch("http://localhost/api/household")).json(),
       );
 
-    expect((await send("shopping-items", "PUT", JSON.stringify(coffee))).status).toBe(200);
+    const quickAdd = (value: typeof Schema.Json.Type) => send("shopping-items", "PUT", JSON.stringify(value));
+
+    for (const id of ["quick", "other"])
+      expect(
+        (await send("shopping-lists", "PUT", JSON.stringify({ id, date: "2026-09-26", label: id }))).status,
+      ).toBe(200);
+
+    // The list is part of the contract; a missing list writes neither the product nor membership.
+    expect((await quickAdd(coffee)).status).toBe(400);
+    const missing = await quickAdd({ ...coffee, listId: "deleted-list" });
+    expect(missing.status).toBe(400);
+    expect(await missing.json()).toEqual({
+      error: "That shopping list no longer exists. Refresh to see the current lists; nothing was saved.",
+    });
+    expect((await state()).groceries).toEqual([]);
+    expect((await state()).shoppingItems).toEqual([]);
+
+    expect((await quickAdd({ ...coffee, listId: "quick" })).status).toBe(200);
     expect((await state()).groceries).toEqual([
       { ...coffee, name: "Coffee", aisle: "4", revision: expect.any(String) },
     ]);
-    expect((await state()).checks).toEqual([{ key: '["shopping-list","coffee"]', checked: 0, packages: 1 }]);
+    expect((await state()).shoppingItems).toEqual([
+      {
+        listId: "quick",
+        groceryId: "coffee",
+        checked: 0,
+        packages: 1,
+        sources: [],
+        addedAt: expect.any(String),
+        checkedAt: null,
+      },
+    ]);
 
     expect(
-      (await send("checks", "PUT", JSON.stringify({ key: '["shopping-list","coffee"]', checked: 1 }))).status,
+      (await send("shopping-lists/quick/items/coffee", "PATCH", JSON.stringify({ checked: 1, packages: 3 })))
+        .status,
     ).toBe(200);
-    expect(
-      (
-        await send(
-          "checks",
-          "PUT",
-          JSON.stringify({ key: '["shopping-list","coffee"]', checked: 0, packages: 3 }),
-        )
-      ).status,
-    ).toBe(200);
-    expect((await send("shopping-items", "PUT", JSON.stringify(coffee))).status).toBe(200);
-    expect((await state()).checks).toEqual([{ key: '["shopping-list","coffee"]', checked: 0, packages: 3 }]);
-
-    // A rejected item writes neither the product nor its list membership.
-    expect(
-      (await send("shopping-items", "PUT", JSON.stringify({ ...coffee, id: "blank", name: " " }))).status,
-    ).toBe(400);
-    expect((await state()).groceries.map((item) => item.id)).toEqual(["coffee"]);
-    expect((await state()).checks).toHaveLength(1);
-  });
-  it("persists independent extras and ingredient checks, and deletes only the requested extra", async () => {
-    expect(
-      (await send("extras", "PUT", JSON.stringify({ id: "snack", name: "Apples", checked: 0 }))).status,
-    ).toBe(200);
-    expect(
-      (
-        await send(
-          "extras",
-          "PUT",
-          JSON.stringify({ id: "snack", name: "Apples & peanut butter", checked: 1 }),
-        )
-      ).status,
-    ).toBe(200);
-    expect(
-      (await send("checks", "PUT", JSON.stringify({ key: "range-ingredient-total", checked: 1 }))).status,
-    ).toBe(200);
-    const state = await worker.dispatchFetch("http://localhost/api/household");
-    expect(Schema.decodeUnknownSync(HouseholdSchema)(await state.json())).toEqual({
-      collections: defaultCollections,
-      groceries: [],
-      shoppingOrder: { aisles: [], items: [], revision: expect.any(String) },
-      recipes: [],
-      recipesAdded: [],
-      meals: [],
-      extras: [{ id: "snack", name: "Apples & peanut butter", checked: 1, revision: expect.any(String) }],
-      checks: [{ key: "range-ingredient-total", checked: 1, packages: 1 }],
+    expect((await state()).shoppingItems[0]).toMatchObject({
+      checked: 1,
+      packages: 3,
+      checkedAt: expect.any(String),
     });
-    expect((await send("extras/snack", "DELETE", "{}")).status).toBe(200);
-    const db = await worker.getD1Database("DB");
-    expect(await db.prepare("SELECT count(*) AS count FROM extras").first()).toEqual({ count: 0 });
-  });
-  it("removes legacy unchecked identities without changing other checked items", async () => {
+    // Quick-adding something already picked up puts it back as needed, keeping the chosen count.
+    expect((await quickAdd({ ...coffee, listId: "quick" })).status).toBe(200);
+    expect((await state()).shoppingItems).toEqual([
+      expect.objectContaining({
+        listId: "quick",
+        groceryId: "coffee",
+        checked: 0,
+        packages: 3,
+        checkedAt: null,
+      }),
+    ]);
+    // Another list on the same date gets its own fresh row.
+    expect((await quickAdd({ ...coffee, listId: "other" })).status).toBe(200);
     expect(
-      (await send("checks", "PUT", JSON.stringify({ key: "range-ingredient-total", checked: 1 }))).status,
-    ).toBe(200);
-    expect((await send("checks", "PUT", JSON.stringify({ key: "keep-checked", checked: 1 }))).status).toBe(
-      200,
+      (await state()).shoppingItems.map(({ listId, checked, packages }) => ({ listId, checked, packages })),
+    ).toEqual(
+      expect.arrayContaining([
+        { listId: "quick", checked: 0, packages: 3 },
+        { listId: "other", checked: 0, packages: 1 },
+      ]),
     );
 
-    for (const key of ["range-ingredient-total", "never-checked"]) {
-      expect((await send("checks", "PUT", JSON.stringify({ key, checked: 0 }))).status).toBe(200);
+    // A rejected item writes neither the product nor its list membership.
+    expect((await quickAdd({ ...coffee, id: "blank", name: " ", listId: "quick" })).status).toBe(400);
+    expect((await state()).groceries.map((item) => item.id)).toEqual(["coffee"]);
+    expect((await state()).shoppingItems).toHaveLength(2);
+  });
+  it("returns every list and its rows in the household snapshot with decoded sources", async () => {
+    const db = await worker.getD1Database("DB");
+
+    for (const id of ["milk", "eggs"])
+      expect(
+        (
+          await send(
+            "groceries",
+            "PUT",
+            JSON.stringify({ id, name: id, url: "", aisle: "", quantity: 1, unit: "each", aliases: [] }),
+          )
+        ).status,
+      ).toBe(200);
+    expect(
+      (
+        await send(
+          "shopping-lists",
+          "PUT",
+          JSON.stringify({ id: "later", date: "2026-10-03", label: "  Party  " }),
+        )
+      ).status,
+    ).toBe(200);
+    expect(
+      (await send("shopping-lists", "PUT", JSON.stringify({ id: "sooner", date: "2026-09-26", label: "" })))
+        .status,
+    ).toBe(200);
+
+    const sources = [{ title: "Pancakes", mealId: "meal-1", date: "2026-09-27" }, { title: "Custard" }];
+
+    const added = await send(
+      "shopping-lists/later/items",
+      "POST",
+      JSON.stringify({
+        items: [
+          { groceryId: "milk", packages: 2, sources },
+          { groceryId: "eggs", checked: 1 },
+        ],
+      }),
+    );
+
+    expect(await added.json()).toEqual({
+      added: ["milk", "eggs"],
+      updated: [],
+      unchanged: [],
+      conflicts: [],
+    });
+    // Sources are stored as JSON text but must reach callers as structured values.
+    expect(
+      await db
+        .prepare("SELECT typeof(sources) AS type FROM shopping_list_items WHERE grocery_id='milk'")
+        .first(),
+    ).toEqual({ type: "text" });
+
+    const household = await (await worker.dispatchFetch("http://localhost/api/household")).json();
+    expect(Schema.decodeUnknownSync(HouseholdSchema)(household)).toEqual(household);
+    expect(household).toMatchObject({
+      shoppingLists: [
+        { id: "sooner", date: "2026-09-26", label: "", revision: expect.stringMatching(/^[a-f0-9]{32}$/) },
+        {
+          id: "later",
+          date: "2026-10-03",
+          label: "Party",
+          revision: expect.stringMatching(/^[a-f0-9]{32}$/),
+        },
+      ],
+    });
+    expect(Schema.decodeUnknownSync(HouseholdSchema)(household).shoppingItems).toEqual(
+      expect.arrayContaining([
+        {
+          listId: "later",
+          groceryId: "milk",
+          checked: 0,
+          packages: 2,
+          sources,
+          addedAt: expect.stringMatching(/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/),
+          checkedAt: null,
+        },
+        {
+          listId: "later",
+          groceryId: "eggs",
+          checked: 1,
+          packages: 1,
+          sources: [],
+          addedAt: expect.any(String),
+          checkedAt: expect.stringMatching(/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/),
+        },
+      ]),
+    );
+    expect(Schema.decodeUnknownSync(HouseholdSchema)(household).shoppingItems).toHaveLength(2);
+  });
+  it("keeps lists on the same date independent for the same grocery", async () => {
+    const db = await worker.getD1Database("DB");
+
+    for (const id of ["milk", "bread"])
+      expect(
+        (
+          await send(
+            "groceries",
+            "PUT",
+            JSON.stringify({ id, name: id, url: "", aisle: "", quantity: 1, unit: "each", aliases: [] }),
+          )
+        ).status,
+      ).toBe(200);
+
+    for (const id of ["weekly", "top-up"])
+      expect(
+        (await send("shopping-lists", "PUT", JSON.stringify({ id, date: "2026-09-26", label: id }))).status,
+      ).toBe(200);
+
+    const rows = async () =>
+      (
+        await db
+          .prepare(
+            "SELECT list_id,grocery_id,checked,packages FROM shopping_list_items ORDER BY list_id,grocery_id",
+          )
+          .all()
+      ).results;
+
+    expect(
+      (
+        await send(
+          "shopping-lists/weekly/items",
+          "POST",
+          JSON.stringify({ items: [{ groceryId: "milk", packages: 2 }, { groceryId: "bread" }] }),
+        )
+      ).status,
+    ).toBe(200);
+    expect(
+      (
+        await send(
+          "shopping-lists/top-up/items",
+          "POST",
+          JSON.stringify({ items: [{ groceryId: "milk", packages: 5, checked: 1 }] }),
+        )
+      ).status,
+    ).toBe(200);
+    expect(await rows()).toEqual([
+      { list_id: "top-up", grocery_id: "milk", checked: 1, packages: 5 },
+      { list_id: "weekly", grocery_id: "bread", checked: 0, packages: 1 },
+      { list_id: "weekly", grocery_id: "milk", checked: 0, packages: 2 },
+    ]);
+
+    // Checking or recounting a row on one list never touches the same grocery on another list.
+    expect(
+      (await send("shopping-lists/weekly/items/milk", "PATCH", JSON.stringify({ checked: 1 }))).status,
+    ).toBe(200);
+    expect(
+      (await send("shopping-lists/top-up/items/milk", "PATCH", JSON.stringify({ checked: 0, packages: 7 })))
+        .status,
+    ).toBe(200);
+    expect(await rows()).toEqual([
+      { list_id: "top-up", grocery_id: "milk", checked: 0, packages: 7 },
+      { list_id: "weekly", grocery_id: "bread", checked: 0, packages: 1 },
+      { list_id: "weekly", grocery_id: "milk", checked: 1, packages: 2 },
+    ]);
+
+    // Grocery not on this list: a field-scoped patch must not add it, even though another list has it.
+    expect(
+      (await send("shopping-lists/top-up/items/bread", "PATCH", JSON.stringify({ checked: 1 }))).status,
+    ).toBe(400);
+    expect(
+      await (
+        await send("shopping-lists/top-up/items", "DELETE", JSON.stringify({ groceryIds: ["milk", "bread"] }))
+      ).json(),
+    ).toEqual({ removed: 1 });
+    expect(await rows()).toEqual([
+      { list_id: "weekly", grocery_id: "bread", checked: 0, packages: 1 },
+      { list_id: "weekly", grocery_id: "milk", checked: 1, packages: 2 },
+    ]);
+
+    // Editing one list's date and label leaves both lists' rows and the other list's version alone.
+    const before = Schema.decodeUnknownSync(HouseholdSchema)(
+      await (await worker.dispatchFetch("http://localhost/api/household")).json(),
+    );
+
+    expect(
+      (await send("shopping-lists", "PUT", JSON.stringify({ id: "top-up", date: "2026-09-27", label: "" })))
+        .status,
+    ).toBe(200);
+
+    const after = Schema.decodeUnknownSync(HouseholdSchema)(
+      await (await worker.dispatchFetch("http://localhost/api/household")).json(),
+    );
+
+    expect(after.shoppingItems).toEqual(before.shoppingItems);
+    expect(after.shoppingLists.find((list) => list.id === "weekly")).toEqual(
+      before.shoppingLists.find((list) => list.id === "weekly"),
+    );
+    expect(after.shoppingLists.find((list) => list.id === "top-up")).toMatchObject({
+      date: "2026-09-27",
+      label: "",
+    });
+  });
+
+  it("classifies list additions and writes nothing for rejected batches", async () => {
+    const db = await worker.getD1Database("DB");
+
+    for (const id of ["a", "b", "c", "d", "e", "f"])
+      expect(
+        (
+          await send(
+            "groceries",
+            "PUT",
+            JSON.stringify({
+              id,
+              name: `Item ${id}`,
+              url: "",
+              aisle: "",
+              quantity: 1,
+              unit: "each",
+              aliases: [],
+            }),
+          )
+        ).status,
+      ).toBe(200);
+    expect(
+      (await send("shopping-lists", "PUT", JSON.stringify({ id: "list", date: "2026-09-26", label: "" })))
+        .status,
+    ).toBe(200);
+
+    const add = (items: typeof Schema.Json.Type, listId = "list") =>
+      send(`shopping-lists/${listId}/items`, "POST", JSON.stringify({ items }));
+
+    const rows = async () =>
+      Object.fromEntries(
+        (
+          await db
+            .prepare(
+              "SELECT grocery_id,checked,packages,sources,checked_at FROM shopping_list_items WHERE list_id='list'",
+            )
+            .all<{
+              grocery_id: string;
+              checked: number;
+              packages: number;
+              sources: string;
+              checked_at: string | null;
+            }>()
+        ).results.map((row) => [
+          row.grocery_id,
+          {
+            checked: row.checked,
+            packages: row.packages,
+            sources: JSON.parse(row.sources),
+            checkedAt: row.checked_at,
+          },
+        ]),
+      );
+
+    const soup = { title: "Soup", mealId: "meal-soup", date: "2026-09-28" };
+    const stew = { title: "Stew" };
+
+    const first = await add([
+      { groceryId: "a", sources: [soup] },
+      { groceryId: "b", packages: 2, sources: [soup] },
+      { groceryId: "c", checked: 1 },
+      { groceryId: "d", packages: 3 },
+      { groceryId: "e", packages: 4, sources: [soup] },
+    ]);
+
+    expect(await first.json()).toEqual({
+      added: ["a", "b", "c", "d", "e"],
+      updated: [],
+      unchanged: [],
+      conflicts: [],
+    });
+    const initial = await rows();
+    expect(initial).toEqual({
+      a: { checked: 0, packages: 1, sources: [soup], checkedAt: null },
+      b: { checked: 0, packages: 2, sources: [soup], checkedAt: null },
+      c: { checked: 1, packages: 1, sources: [], checkedAt: expect.any(String) },
+      d: { checked: 0, packages: 3, sources: [], checkedAt: null },
+      e: { checked: 0, packages: 4, sources: [soup], checkedAt: null },
+    });
+
+    const second = await add([
+      // Omitted count on an unchecked row: unchanged, the repeated source is not duplicated, the new one merges.
+      { groceryId: "a", sources: [soup, stew] },
+      // Same count on an unchecked row: unchanged.
+      { groceryId: "b", packages: 2, sources: [stew] },
+      // Already picked up: conflict even without a count.
+      { groceryId: "c", sources: [stew] },
+      // Different count: conflict, existing count and sources stay.
+      { groceryId: "d", packages: 1, sources: [stew] },
+      // Replace applies the count and checked state and merges sources.
+      { groceryId: "e", packages: 6, checked: 1, sources: [soup, stew], replace: true },
+      { groceryId: "f", packages: 2 },
+    ]);
+
+    expect(await second.json()).toEqual({
+      added: ["f"],
+      updated: ["e"],
+      unchanged: ["a", "b"],
+      conflicts: [
+        { groceryId: "c", checked: 1, packages: 1 },
+        { groceryId: "d", checked: 0, packages: 3 },
+      ],
+    });
+    const merged = await rows();
+    expect(merged.a).toEqual({ ...initial.a, sources: expect.arrayContaining([soup, stew]) });
+    expect(merged.a.sources).toHaveLength(2);
+    expect(merged.b).toEqual({ ...initial.b, sources: expect.arrayContaining([soup, stew]) });
+    expect(merged.b.sources).toHaveLength(2);
+    expect(merged.c).toEqual(initial.c);
+    expect(merged.d).toEqual(initial.d);
+    expect(merged.e).toEqual({
+      checked: 1,
+      packages: 6,
+      sources: expect.arrayContaining([soup, stew]),
+      checkedAt: expect.any(String),
+    });
+    expect(merged.e.sources).toHaveLength(2);
+    expect(merged.f).toEqual({ checked: 0, packages: 2, sources: [], checkedAt: null });
+
+    // Replace without a count keeps the count; unchecking clears the picked-up time.
+    expect(
+      await (
+        await add([
+          { groceryId: "e", replace: true },
+          { groceryId: "c", replace: true, packages: 2 },
+        ])
+      ).json(),
+    ).toEqual({
+      added: [],
+      updated: ["e", "c"],
+      unchanged: [],
+      conflicts: [],
+    });
+    const replaced = await rows();
+    expect(replaced.e).toEqual({ ...merged.e, checked: 0, checkedAt: null });
+    expect(replaced.c).toEqual({ checked: 0, packages: 2, sources: [], checkedAt: null });
+    // Replacing with the same checked state keeps the original picked-up time.
+    expect((await add([{ groceryId: "a", replace: true, checked: 1 }])).status).toBe(200);
+    const pickedUp = (await rows()).a.checkedAt;
+    expect(pickedUp).toEqual(expect.any(String));
+    expect((await add([{ groceryId: "a", replace: true, checked: 1, packages: 9 }])).status).toBe(200);
+    expect((await rows()).a).toMatchObject({ checked: 1, packages: 9, checkedAt: pickedUp });
+
+    const settled = await rows();
+
+    // A missing list, an unknown grocery, duplicates, or invalid counts reject the whole batch.
+    const missingList = await add([{ groceryId: "a" }], "missing");
+    expect(missingList.status).toBe(400);
+    expect(await missingList.json()).toEqual({
+      error: "That shopping list no longer exists. Refresh to see the current lists.",
+    });
+    expect(
+      await db.prepare("SELECT count(*) AS count FROM shopping_list_items WHERE list_id='missing'").first(),
+    ).toEqual({ count: 0 });
+    expect(await db.prepare("SELECT count(*) AS count FROM shopping_lists").first()).toEqual({ count: 1 });
+
+    const rejected: (typeof Schema.Json.Type)[] = [
+      [{ groceryId: "f", packages: 8, replace: true }, { groceryId: "unknown" }],
+      [
+        { groceryId: "f", packages: 8, replace: true },
+        { groceryId: "f", packages: 9, replace: true },
+      ],
+      [{ groceryId: "f", packages: 0, replace: true }],
+      [{ groceryId: "f", packages: 2.5, replace: true }],
+      [{ groceryId: "f", checked: 2, replace: true }],
+      [],
+    ];
+
+    for (const items of rejected) {
+      const response = await add(items);
+      expect(response.status).toBe(400);
     }
 
-    const db = await worker.getD1Database("DB");
-    expect((await db.prepare("SELECT * FROM checks").all()).results).toEqual([
-      { key: "keep-checked", checked: 1, packages: 1 },
-    ]);
-    expect(
-      (await send("checks", "PUT", JSON.stringify({ key: "range-ingredient-total", checked: 1 }))).status,
-    ).toBe(200);
-    expect(await db.prepare("SELECT count(*) AS count FROM checks").first()).toEqual({ count: 2 });
+    const unknown = await add([{ groceryId: "f", packages: 8, replace: true }, { groceryId: "unknown" }]);
+    expect(await unknown.json()).toEqual({
+      error:
+        "Some of those groceries no longer exist. Refresh the groceries before adding them; no items were added.",
+    });
+    expect(await rows()).toEqual(settled);
+    expect(await db.prepare("SELECT count(*) AS count FROM groceries").first()).toEqual({ count: 6 });
+
+    // Each request allows 50 sources; merging across requests keeps the oldest 50 so the row stays readable.
+    const meals = (from: number) =>
+      Array.from({ length: 30 }, (_, index) => ({ title: `Meal ${from + index}` }));
+
+    expect((await add([{ groceryId: "f", sources: meals(0), replace: true }])).status).toBe(200);
+    expect((await add([{ groceryId: "f", sources: meals(30), replace: true }])).status).toBe(200);
+    expect((await rows()).f?.sources).toEqual([...meals(0), ...meals(30).slice(0, 20)]);
+    expect((await worker.dispatchFetch("http://localhost/api/household")).status).toBe(200);
   });
+
+  it("patches checked state and package counts only for groceries already on the list", async () => {
+    const db = await worker.getD1Database("DB");
+
+    expect(
+      (
+        await send(
+          "groceries",
+          "PUT",
+          JSON.stringify({
+            id: "milk",
+            name: "Milk",
+            url: "",
+            aisle: "",
+            quantity: 1,
+            unit: "l",
+            aliases: [],
+          }),
+        )
+      ).status,
+    ).toBe(200);
+    expect(
+      (await send("shopping-lists", "PUT", JSON.stringify({ id: "list", date: "2026-09-26", label: "" })))
+        .status,
+    ).toBe(200);
+    expect(
+      (
+        await send(
+          "shopping-lists/list/items",
+          "POST",
+          JSON.stringify({ items: [{ groceryId: "milk", packages: 2 }] }),
+        )
+      ).status,
+    ).toBe(200);
+
+    const row = () =>
+      db
+        .prepare(
+          "SELECT checked,packages,checked_at AS checkedAt,added_at AS addedAt FROM shopping_list_items WHERE list_id='list' AND grocery_id='milk'",
+        )
+        .first<{ checked: number; packages: number; checkedAt: string | null; addedAt: string }>();
+
+    const patch = (value: typeof Schema.Json.Type) =>
+      send("shopping-lists/list/items/milk", "PATCH", JSON.stringify(value));
+
+    const added = await row();
+    expect(added).toMatchObject({ checked: 0, packages: 2, checkedAt: null });
+    expect(await (await patch({ checked: 1 })).json()).toEqual({ ok: true });
+    const checked = await row();
+    expect(checked).toMatchObject({
+      checked: 1,
+      packages: 2,
+      checkedAt: expect.stringMatching(/^\d{4}-\d\d-\d\dT/),
+    });
+    // Count-only and repeated check patches keep the state and its original time.
+    expect((await patch({ packages: 4 })).status).toBe(200);
+    expect((await patch({ checked: 1 })).status).toBe(200);
+    expect(await row()).toEqual({ ...checked, packages: 4 });
+    expect((await patch({})).status).toBe(200);
+    expect(await row()).toEqual({ ...checked, packages: 4 });
+    expect((await patch({ checked: 0 })).status).toBe(200);
+    expect(await row()).toEqual({ checked: 0, packages: 4, checkedAt: null, addedAt: added?.addedAt });
+    expect((await patch({ packages: 3 })).status).toBe(200);
+    expect(await row()).toMatchObject({ checked: 0, packages: 3, checkedAt: null });
+
+    const invalid: (typeof Schema.Json.Type)[] = [
+      { checked: 2 },
+      { packages: 0 },
+      { packages: 1.5 },
+      { packages: 1_000_001 },
+    ];
+
+    for (const value of invalid) expect((await patch(value)).status).toBe(400);
+    expect(await row()).toMatchObject({ checked: 0, packages: 3 });
+
+    // Removing deletes the row; patching it afterwards fails instead of re-adding it.
+    expect(
+      await (
+        await send("shopping-lists/list/items", "DELETE", JSON.stringify({ groceryIds: ["milk"] }))
+      ).json(),
+    ).toEqual({ removed: 1 });
+    expect(
+      await (
+        await send("shopping-lists/list/items", "DELETE", JSON.stringify({ groceryIds: ["milk"] }))
+      ).json(),
+    ).toEqual({ removed: 0 });
+    const gone = await patch({ checked: 1 });
+    expect(gone.status).toBe(400);
+    expect(await gone.json()).toEqual({
+      error: "That grocery is no longer on this list. Refresh the list before changing it.",
+    });
+    expect(await row()).toBeNull();
+    expect(
+      (await send("shopping-lists/list/items", "DELETE", JSON.stringify({ groceryIds: [] }))).status,
+    ).toBe(400);
+
+    // Re-adding later is a fresh row: one package, unchecked, unless a count is given.
+    expect(
+      await (
+        await send("shopping-lists/list/items", "POST", JSON.stringify({ items: [{ groceryId: "milk" }] }))
+      ).json(),
+    ).toMatchObject({ added: ["milk"] });
+    expect(await row()).toMatchObject({ checked: 0, packages: 1, checkedAt: null });
+    await send("shopping-lists/list/items", "DELETE", JSON.stringify({ groceryIds: ["milk"] }));
+    expect(
+      (
+        await send(
+          "shopping-lists/list/items",
+          "POST",
+          JSON.stringify({ items: [{ groceryId: "milk", packages: 6 }] }),
+        )
+      ).status,
+    ).toBe(200);
+    expect(await row()).toMatchObject({ checked: 0, packages: 6, checkedAt: null });
+  });
+
+  it("deletes a list with all of its rows only at the observed revision", async () => {
+    const db = await worker.getD1Database("DB");
+
+    const read = async () =>
+      Schema.decodeUnknownSync(HouseholdSchema)(
+        await (await worker.dispatchFetch("http://localhost/api/household")).json(),
+      );
+
+    expect(
+      (
+        await send(
+          "groceries",
+          "PUT",
+          JSON.stringify({
+            id: "milk",
+            name: "Milk",
+            url: "",
+            aisle: "",
+            quantity: 1,
+            unit: "l",
+            aliases: [],
+          }),
+        )
+      ).status,
+    ).toBe(200);
+
+    for (const id of ["doomed", "kept"]) {
+      expect(
+        (await send("shopping-lists", "PUT", JSON.stringify({ id, date: "2026-09-26", label: "" }))).status,
+      ).toBe(200);
+      expect(
+        (await send(`shopping-lists/${id}/items`, "POST", JSON.stringify({ items: [{ groceryId: "milk" }] })))
+          .status,
+      ).toBe(200);
+    }
+
+    const stale = (await read()).shoppingLists.find((list) => list.id === "doomed")?.revision;
+
+    if (!stale) throw new Error("List revision missing");
+    expect(
+      (
+        await send(
+          "shopping-lists",
+          "PUT",
+          JSON.stringify({ id: "doomed", date: "2026-09-26", label: "Renamed" }),
+        )
+      ).status,
+    ).toBe(200);
+    const before = await read();
+
+    const rejected = await send(
+      "shopping-lists/doomed",
+      "DELETE",
+      JSON.stringify({ expectedRevision: stale }),
+    );
+
+    expect(rejected.status).toBe(409);
+    expect(await read()).toEqual(before);
+
+    expect((await send("shopping-lists/doomed", "DELETE", "{}")).status).toBe(200);
+    const after = await read();
+    expect(after.shoppingLists.map((list) => list.id)).toEqual(["kept"]);
+    expect(after.shoppingItems).toEqual(before.shoppingItems.filter((entry) => entry.listId === "kept"));
+    expect(
+      await db.prepare("SELECT count(*) AS count FROM shopping_list_items WHERE list_id='doomed'").first(),
+    ).toEqual({ count: 0 });
+    // The catalog grocery itself survives list deletion.
+    expect(after.groceries.map((item) => item.id)).toEqual(["milk"]);
+    // The deleted list cannot be revived by item writes.
+    expect(
+      (await send("shopping-lists/doomed/items", "POST", JSON.stringify({ items: [{ groceryId: "milk" }] })))
+        .status,
+    ).toBe(400);
+    expect(
+      (await send("shopping-lists/doomed", "DELETE", JSON.stringify({ expectedRevision: stale }))).status,
+    ).toBe(409);
+    expect(await read()).toEqual(after);
+  });
+
+  it("migrates the single legacy list into one dated list with catalog groceries for open extras", async () => {
+    const migrateTo = async (db: D1Database, last: string, first = "") => {
+      for (const name of (await readdir("migrations"))
+        .filter((name) => name.endsWith(".sql") && name >= first && name <= last)
+        .sort()) {
+        const sql = await readFile(`migrations/${name}`, "utf8");
+        await db.batch(
+          sql
+            .replace(/^--.*$/gm, "")
+            .split(/;\s*\n(?=CREATE|INSERT|DROP|ALTER|UPDATE)|;\s*$/)
+            .filter((s) => s.trim())
+            .map((s) => db.prepare(s)),
+        );
+      }
+    };
+
+    for (const legacyState of ["empty", "off-list only", "populated"] as const) {
+      const legacy = new Miniflare(options("true"));
+
+      try {
+        const db = await legacy.getD1Database("DB");
+        await migrateTo(db, "0014_detached_meals.sql");
+
+        const grocery = (id: string, name: string) =>
+          db
+            .prepare(
+              "INSERT INTO groceries(id,name,url,aisle,quantity,unit,aliases) VALUES(?,?,'','2',1,'can','[]')",
+            )
+            .bind(id, name);
+
+        const check = (key: string, checked: number, packages = 1) =>
+          db.prepare("INSERT INTO checks(key,checked,packages) VALUES(?,?,?)").bind(key, checked, packages);
+
+        const extra = (id: string, name: string, checked: number) =>
+          db.prepare("INSERT INTO extras(id,name,checked) VALUES(?,?,?)").bind(id, name, checked);
+
+        await db.batch([grocery("beans", "Black Beans"), grocery("rice", "Rice"), grocery("oil", "Oil")]);
+
+        if (legacyState !== "empty")
+          await db.batch([
+            // Picked up / off the legacy list.
+            check(JSON.stringify(["shopping-list", "rice"]), 1, 4),
+            // Legacy recipe-total and other non-catalog keys.
+            check("range-ingredient-total", 0),
+            check('["Shopping-list","oil"]', 0),
+            check('["shopping-list","deleted-product"]', 0),
+            extra("done", "Paper towels", 1),
+            extra("blank", "   ", 0),
+          ]);
+
+        if (legacyState === "populated")
+          await db.batch([
+            check(JSON.stringify(["shopping-list", "beans"]), 0, 3),
+            check(JSON.stringify(["shopping-list", "oil"]), 0),
+            // Matches the picked-up Rice product case-insensitively, putting it back on the list.
+            extra("same", "  rICE ", 0),
+            extra("new", "  Greek yogurt  ", 0),
+            // Legacy extra IDs could be 100 characters; the prefixed grocery ID must still fit.
+            extra("x".repeat(98), "Long note", 0),
+          ]);
+
+        const before = (await db.prepare("SELECT * FROM checks ORDER BY key").all()).results;
+        await migrateTo(db, "0015_shopping_lists.sql", "0015_shopping_lists.sql");
+
+        const household = Schema.decodeUnknownSync(HouseholdSchema)(
+          await (await legacy.dispatchFetch("http://localhost/api/household")).json(),
+        );
+
+        // Legacy tables stay readable and unchanged for Workers still running the previous release.
+        expect((await db.prepare("SELECT * FROM checks ORDER BY key").all()).results).toEqual(before);
+
+        if (legacyState !== "populated") {
+          expect(household.shoppingLists).toEqual([]);
+          expect(household.shoppingItems).toEqual([]);
+          expect(household.groceries.map((item) => item.id)).toEqual(["beans", "oil", "rice"]);
+          continue;
+        }
+
+        const long = household.groceries.find((item) => item.name === "Long note");
+        expect(long?.id).toMatch(/^extra-[a-f0-9]{32}$/);
+        expect(household.shoppingItems.some((item) => item.groceryId === long?.id)).toBe(true);
+
+        const now = new Date();
+        const saturday = new Date(now.getTime() - ((now.getUTCDay() + 1) % 7) * 86_400_000);
+        const listId = household.shoppingLists[0]?.id;
+        const addedAt = `${saturday.toISOString().slice(0, 10)}T00:00:00.000Z`;
+
+        // A fixed ID keeps the carried-over list identical wherever the migration runs.
+        expect(household.shoppingLists).toEqual([
+          {
+            id: "legacy-list",
+            date: saturday.toISOString().slice(0, 10),
+            label: "",
+            revision: expect.stringMatching(/^[a-f0-9]{32}$/),
+          },
+        ]);
+        expect(
+          household.shoppingItems
+            .filter((item) => item.groceryId !== long?.id)
+            .map(({ groceryId, checked, packages, sources, checkedAt, addedAt, listId: owner }) => ({
+              groceryId,
+              checked,
+              packages,
+              sources,
+              checkedAt,
+              owner,
+              addedAt,
+            }))
+            .sort((a, b) => a.groceryId.localeCompare(b.groceryId)),
+        ).toEqual([
+          {
+            groceryId: "beans",
+            checked: 0,
+            packages: 3,
+            sources: [],
+            checkedAt: null,
+            owner: listId,
+            addedAt,
+          },
+          {
+            groceryId: "extra-new",
+            checked: 0,
+            packages: 1,
+            sources: [],
+            checkedAt: null,
+            owner: listId,
+            addedAt,
+          },
+          { groceryId: "oil", checked: 0, packages: 1, sources: [], checkedAt: null, owner: listId, addedAt },
+          // The open extra reuses the existing grocery instead of creating a duplicate product.
+          {
+            groceryId: "rice",
+            checked: 0,
+            packages: 1,
+            sources: [],
+            checkedAt: null,
+            owner: listId,
+            addedAt,
+          },
+        ]);
+        expect(
+          household.groceries
+            .filter((item) => item !== long)
+            .map((item) => item.id)
+            .sort(),
+        ).toEqual(["beans", "extra-new", "oil", "rice"]);
+        expect(household.groceries.find((item) => item.id === "extra-new")).toEqual({
+          id: "extra-new",
+          name: "Greek yogurt",
+          url: "",
+          aisle: "",
+          quantity: 1,
+          unit: "each",
+          aliases: ["Greek yogurt"],
+          revision: expect.stringMatching(/^[a-f0-9]{32}$/),
+        });
+        expect(household.groceries.find((item) => item.id === "beans")?.name).toBe("Black Beans");
+      } finally {
+        await legacy.dispose();
+      }
+    }
+  });
+
   it("rejects malformed encoded IDs as client errors and decodes valid IDs once", async () => {
     const db = await worker.getD1Database("DB");
 
-    for (const resource of ["recipes", "meals", "extras", "groceries", "collections"]) {
+    for (const resource of ["recipes", "meals", "shopping-lists", "groceries", "collections"]) {
+      const table = resource.replace("-", "_");
+
       for (const id of ["%", "%E0%A4%A"]) {
         const response = await send(`${resource}/${id}`, "DELETE", "{}");
         expect(response.status).toBe(400);
@@ -3120,8 +4048,8 @@ describe("real Worker with disposable SQLite D1", () => {
               ? { ...sampleRecipes[0], id: itemId }
               : resource === "meals"
                 ? { ...meal, id: itemId, recipeId: null, note: "Disposable note" }
-                : resource === "extras"
-                  ? { id: itemId, name: "Milk", checked: 0 }
+                : resource === "shopping-lists"
+                  ? { id: itemId, date: "2026-09-26", label: "" }
                   : resource === "groceries"
                     ? { id: itemId, name: "Milk", aliases: [], quantity: 1, unit: "l", aisle: "", url: "" }
                     : { id: itemId, name: itemId };
@@ -3130,8 +4058,8 @@ describe("real Worker with disposable SQLite D1", () => {
         }
 
         expect((await send(`${resource}/${encodeURIComponent(id)}`, "DELETE", "{}")).status).toBe(200);
-        expect(await db.prepare(`SELECT id FROM ${resource} WHERE id=?`).bind(id).first()).toBeNull();
-        expect(await db.prepare(`SELECT id FROM ${resource} WHERE id=?`).bind(base).first()).toEqual({
+        expect(await db.prepare(`SELECT id FROM ${table} WHERE id=?`).bind(id).first()).toBeNull();
+        expect(await db.prepare(`SELECT id FROM ${table} WHERE id=?`).bind(base).first()).toEqual({
           id: base,
         });
       }
@@ -3191,17 +4119,32 @@ describe("real Worker with disposable SQLite D1", () => {
     });
     expect(household.groceries.some((item) => item.id === "sample-chicken")).toBe(false);
 
-    const items = shoppingList(household.groceries);
+    expect(household.shoppingLists).toEqual([
+      { id: "sample-list", date: "2026-09-26", label: "", revision: expect.any(String) },
+    ]);
+    const items = shoppingList(household.groceries, household.shoppingOrder, household.shoppingItems);
     expect(items).toHaveLength(8);
-    expect(items.every((item) => item.needs.length === 0)).toBe(true);
-    expect(household.checks).toEqual([]);
+    expect(
+      items
+        .filter((item) => item.entry)
+        .map((item) => [item.grocery.id, item.entry?.checked, item.entry?.packages])
+        .sort(),
+    ).toEqual([
+      ["sample-beans", 0, 1],
+      ["sample-spinach", 0, 1],
+    ]);
     expect((await send("demo?today=2026-09-27", "POST", "{}")).status).toBe(409);
     expect(await (await worker.dispatchFetch("http://localhost/api/household")).json()).toEqual(household);
   });
   it("rolls back sample groceries and recipes when the demo batch cannot finish", async () => {
     expect(
-      (await send("extras", "PUT", JSON.stringify({ id: "sample-extra", name: "Keep this", checked: 0 })))
-        .status,
+      (
+        await send(
+          "shopping-lists",
+          "PUT",
+          JSON.stringify({ id: "sample-list", date: "2026-09-01", label: "Keep" }),
+        )
+      ).status,
     ).toBe(200);
     const before = await (await worker.dispatchFetch("http://localhost/api/household")).json();
     expect((await send("demo?today=2026-09-27", "POST", "{}")).status).toBe(500);
@@ -3531,8 +4474,8 @@ describe("real Worker with disposable SQLite D1", () => {
         recipes: [],
         recipesAdded: [],
         meals: [],
-        extras: [],
-        checks: [],
+        shoppingLists: [],
+        shoppingItems: [],
       });
     }
 
@@ -3558,13 +4501,13 @@ describe("real Worker with disposable SQLite D1", () => {
     const headers = { "Cf-Access-Jwt-Assertion": token, "Content-Type": "application/json" };
     const read = await worker.dispatchFetch("http://localhost/api/household", { headers });
     expect(read.status).toBe(200);
-    expect(await read.json()).toHaveProperty("extras.length", 0);
+    expect(await read.json()).toHaveProperty("shoppingLists.length", 0);
 
     for (const method of ["PUT", "POST", "PATCH", "DELETE"]) {
-      const denied = await worker.dispatchFetch("http://localhost/api/extras", {
+      const denied = await worker.dispatchFetch("http://localhost/api/shopping-lists", {
         method,
         headers,
-        body: JSON.stringify({ id: "smoke-item", name: "Must not be saved", checked: 0 }),
+        body: JSON.stringify({ id: "smoke-list", date: "2026-09-26", label: "Must not be saved" }),
       });
 
       expect(denied.status).toBe(403);
@@ -3584,23 +4527,23 @@ describe("real Worker with disposable SQLite D1", () => {
       expect(denied.status).toBe(403);
     }
 
-    const human = await worker.dispatchFetch("http://localhost/api/extras", {
+    const human = await worker.dispatchFetch("http://localhost/api/shopping-lists", {
       method: "PUT",
       headers: {
         ...headers,
         "Cf-Access-Jwt-Assertion": await sign({ sub: "household-user", common_name: undefined }),
       },
       body: JSON.stringify({
-        id: "human-item",
-        name: "Human shopping item",
-        checked: 0,
+        id: "human-list",
+        date: "2026-09-26",
+        label: "Human shopping list",
         expectedRevision: null,
       }),
     });
 
     expect(human.status).toBe(200);
     const household = await worker.dispatchFetch("http://localhost/api/household", { headers });
-    expect(await household.json()).toHaveProperty("extras.length", 1);
+    expect(await household.json()).toHaveProperty("shoppingLists.length", 1);
 
     await worker.setOptions(options("false", "test-hearth", ""));
     expect((await worker.dispatchFetch("http://localhost/api/household", { headers })).status).toBe(403);
@@ -3619,16 +4562,16 @@ describe("real Worker with disposable SQLite D1", () => {
         .sign(signingKey);
 
     const put = async (clientId: string, audience = "test-hearth") =>
-      worker.dispatchFetch("http://localhost/api/extras", {
+      worker.dispatchFetch("http://localhost/api/shopping-lists", {
         method: "PUT",
         headers: {
           "Cf-Access-Jwt-Assertion": await sign(clientId, audience),
           "Content-Type": "application/json",
         },
         body: JSON.stringify({
-          id: "preview-item",
-          name: "Preview shopping item",
-          checked: 0,
+          id: "preview-list",
+          date: "2026-09-26",
+          label: "Preview shopping list",
           expectedRevision: null,
         }),
       });
@@ -3640,8 +4583,13 @@ describe("real Worker with disposable SQLite D1", () => {
       headers: { "Cf-Access-Jwt-Assertion": await sign("preview-test.access") },
     });
 
-    expect(await read.json()).toHaveProperty("extras", [
-      { id: "preview-item", name: "Preview shopping item", checked: 0, revision: expect.any(String) },
+    expect(await read.json()).toHaveProperty("shoppingLists", [
+      {
+        id: "preview-list",
+        date: "2026-09-26",
+        label: "Preview shopping list",
+        revision: expect.any(String),
+      },
     ]);
     expect((await put("unknown.access")).status).toBe(403);
     expect((await put("preview-test.access", "production-audience")).status).toBe(403);

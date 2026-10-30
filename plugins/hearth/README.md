@@ -32,7 +32,7 @@ Availability depends on your account and workspace policies.
 3. Ensure the required Hearth app is available to the intended workspace roles.
    Connect it through OAuth using your authorized household Google account. Review
    consent: the `recipes` scope covers reads and writes across the whole household,
-   including meals, groceries, shopping, and collections. Never paste credentials
+   including meals, groceries, dated shopping lists, and collections. Never paste credentials
    into a conversation.
 4. Install/enable Hearth from [Plugins](https://chatgpt.com/plugins), start a new
    **Work** chat, mention `@Hearth`, and try a read-only request: “Show my saved

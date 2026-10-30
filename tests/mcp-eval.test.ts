@@ -136,6 +136,7 @@ beforeAll(async () => {
     "0012_entity_revisions.sql",
     "0013_photos.sql",
     "0014_detached_meals.sql",
+    "0015_shopping_lists.sql",
   ]) {
     const sql = await readFile(`migrations/${file}`, "utf8");
     await db.batch(

@@ -39,7 +39,7 @@ type Inventory = {
 const previewStateSchema = z.object({ url: z.url() });
 const householdSmokeSchema = z.object({
   recipes: z.array(z.object({}).passthrough()),
-  extras: z.array(z.object({ id: z.string(), name: z.string(), revision: z.string() })),
+  shoppingLists: z.array(z.object({ id: z.string(), label: z.string(), revision: z.string() })),
 });
 
 /** Derives a seven-day disposable resource identity from the full owning thread ID. */
@@ -447,7 +447,7 @@ async function smoke(name: string): Promise<void> {
   const response = await previewFetch(name, "/api/household");
   if (!response.ok) throw new Error(`Authenticated API returned ${response.status}`);
   const initial = householdSmokeSchema.parse(await response.json());
-  if (!Array.isArray(initial.recipes) || !Array.isArray(initial.extras))
+  if (!Array.isArray(initial.recipes) || !Array.isArray(initial.shoppingLists))
     throw new Error("Invalid household response.");
   const html = await previewFetch(name, "/");
   const markup = await html.text();
@@ -462,24 +462,24 @@ async function smoke(name: string): Promise<void> {
   try {
     const saved = await previewFetch(
       name,
-      "/api/extras",
+      "/api/shopping-lists",
       "PUT",
-      JSON.stringify({ id, name: "Preview persistence check", checked: 0, expectedRevision: null }),
+      JSON.stringify({ id, date: "2026-01-01", label: "Preview persistence check", expectedRevision: null }),
     );
     if (!saved.ok) throw new Error(`D1 write failed: ${saved.status}`);
     const household = householdSmokeSchema.parse(await (await previewFetch(name, "/api/household")).json());
-    if (!household.extras.some((e) => e.id === id && e.name === "Preview persistence check"))
+    if (!household.shoppingLists.some((list) => list.id === id && list.label === "Preview persistence check"))
       throw new Error("D1 read-after-write failed.");
   } finally {
     const current = householdSmokeSchema.parse(await (await previewFetch(name, "/api/household")).json());
-    const saved = current.extras.find(extra => extra.id === id);
+    const saved = current.shoppingLists.find(list => list.id === id);
     if (saved) {
-      const deleted = await previewFetch(name, `/api/extras/${id}`, "DELETE", JSON.stringify({ expectedRevision: saved.revision }));
+      const deleted = await previewFetch(name, `/api/shopping-lists/${id}`, "DELETE", JSON.stringify({ expectedRevision: saved.revision }));
       if (!deleted.ok) throw new Error(`Smoke fixture cleanup failed: ${deleted.status}`);
     }
   }
   const final = householdSmokeSchema.parse(await (await previewFetch(name, "/api/household")).json());
-  if (final.extras.some((e) => e.id === id)) throw new Error("D1 delete did not persist.");
+  if (final.shoppingLists.some((list) => list.id === id)) throw new Error("D1 delete did not persist.");
   const samples: number[] = [];
   for (let i = 0; i < 10; i++) {
     const start = performance.now();

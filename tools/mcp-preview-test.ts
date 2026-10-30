@@ -4,7 +4,7 @@ import { randomBytes, createHash } from "node:crypto";
 import { Buffer } from "node:buffer";
 import { Schema } from "effect";
 import { z } from "zod";
-import { CollectionSchema, GroceryItemSchema, RecipeSchema, IngredientSchema, MealSchema, ExtraSchema, ShoppingNeedSchema, ShoppingOrderSchema, MatchReportSchema } from "../src/domain.ts";
+import { CollectionSchema, GroceryItemSchema, RecipeSchema, IngredientSchema, MealSchema, GroceryId, ShoppingListSchema, ShoppingListItemSchema, ShoppingOrderSchema, MatchReportSchema } from "../src/domain.ts";
 
 const root = ".wrangler/mcp-preview";
 const state = z.object({ url: z.url(), client_id: z.string(), client_secret: z.string() }).parse(JSON.parse(await readFile(`${root}/state.json`, "utf8")));
@@ -81,11 +81,12 @@ const auth = await login();
 const wireProperty = z.object({ type: z.string() });
 const tools = z.object({ tools: z.array(z.object({ name: z.string(), outputSchema: z.object({ type: z.string() }).optional(), inputSchema: z.unknown() })) }).parse(await rpc(auth.token, "tools/list")).tools;
 assert.deepEqual(tools.map((tool) => tool.name).sort(), [
-  "add_demo_data", "create_recipes", "delete_collection", "delete_grocery", "delete_meal",
-  "delete_recipe", "delete_shopping_extra", "get_recipes", "get_shopping_list", "import_recipe",
-  "list_collections", "list_groceries", "list_meals", "match_groceries", "save_collection",
-  "save_grocery", "save_meal", "save_shopping_extra", "search_recipes", "set_shopping_checked",
-  "set_shopping_order", "update_recipes",
+  "add_demo_data", "add_shopping_items", "create_recipes", "create_shopping_list", "delete_collection",
+  "delete_grocery", "delete_meal", "delete_recipe", "delete_shopping_list", "get_recipes",
+  "get_shopping_list", "import_recipe", "list_collections", "list_groceries", "list_meals",
+  "list_shopping_lists", "match_groceries", "remove_shopping_items", "save_collection", "save_grocery",
+  "save_meal", "search_recipes", "set_shopping_item", "set_shopping_order", "update_recipes",
+  "update_shopping_list",
 ]);
 assert.ok(tools.every((tool) => tool.outputSchema?.type === "object"));
 const createTool = tools.find((tool) => tool.name === "create_recipes");
@@ -109,10 +110,13 @@ const outputs = {
   match_groceries: Schema.Struct({ ...ok.fields, report: MatchReportSchema }),
   save_meal: Schema.Struct({ meal: MealSchema }),
   list_meals: Schema.Struct({ meals: Schema.Array(MealSchema) }),
-  get_shopping_list: Schema.Struct({ items: Schema.Array(Schema.Struct({ key: Schema.String, checkKey: Schema.String, checked: Schema.Boolean, grocery: Schema.optional(GroceryItemSchema), needs: Schema.Array(ShoppingNeedSchema), packages: Schema.NullOr(Schema.Number) })), extras: Schema.Array(ExtraSchema), shoppingOrder: ShoppingOrderSchema }),
-  save_shopping_extra: Schema.Struct({ extra: ExtraSchema }),
+  list_shopping_lists: Schema.Struct({ lists: Schema.Array(Schema.Struct({ ...ShoppingListSchema.fields, items: Schema.Number, checked: Schema.Number })) }),
+  create_shopping_list: Schema.Struct({ list: ShoppingListSchema }),
+  get_shopping_list: Schema.Struct({ list: ShoppingListSchema, items: Schema.Array(Schema.Struct({ key: Schema.String, groceryId: GroceryId, checked: Schema.Boolean, grocery: GroceryItemSchema, packages: ShoppingListItemSchema.fields.packages, sources: ShoppingListItemSchema.fields.sources })), shoppingOrder: ShoppingOrderSchema }),
+  add_shopping_items: Schema.Struct({ added: Schema.Array(GroceryId), updated: Schema.Array(GroceryId), unchanged: Schema.Array(GroceryId), conflicts: Schema.Array(Schema.Struct({ groceryId: GroceryId, checked: Schema.Boolean, packages: Schema.Number })) }),
+  remove_shopping_items: Schema.Struct({ removed: Schema.Number }),
   delete_recipe: ok, delete_grocery: ok, delete_collection: ok, delete_meal: ok,
-  delete_shopping_extra: ok, set_shopping_checked: ok, set_shopping_order: ok,
+  delete_shopping_list: ok, set_shopping_item: ok, set_shopping_order: ok,
 };
 const toolResult = z.object({ isError: z.boolean().optional(), content: z.array(z.object({ type: z.literal("text"), text: z.string() })), structuredContent: z.unknown().optional() });
 const call = async <N extends keyof typeof outputs>(name: N, args: Record<string, unknown>) => {
@@ -186,20 +190,22 @@ assert.equal((await call("get_recipes", { ids: [planned.id] })).recipes[0].categ
 const { meal } = await call("save_meal", { expectedRevision: null, recipeId: planned.id, date: "2035-06-04", slot: "Dinner", scale: 2.5, note: "Live OAuth workflow" });
 const range = { start: meal.date, end: meal.date };
 assert.ok((await call("list_meals", range)).meals.some((entry) => entry.id === meal.id));
-let shopping = await call("get_shopping_list", range);
-const item = shopping.items.find((entry) => entry.grocery?.id === grocery.id);
-assert.ok(item, "Planned grocery appears in the shopping list");
-assert.equal(item.needs[0].quantity, 625); assert.equal(item.packages, 2);
-await call("set_shopping_checked", { key: item.checkKey, checked: true });
-assert.equal((await call("get_shopping_list", range)).items.find((entry) => entry.key === item.key)?.checked, true);
+const { list: shoppingTarget } = await call("create_shopping_list", { date: meal.date, label: `${tag} list` });
+const listId = shoppingTarget.id;
+const source = { title: planned.title, mealId: meal.id, date: meal.date };
+assert.deepEqual(await call("add_shopping_items", { listId, items: [{ groceryId: grocery.id, packages: 2, sources: [source] }] }), { added: [grocery.id], updated: [], unchanged: [], conflicts: [] });
+let shopping = await call("get_shopping_list", { listId });
+const item = shopping.items.find((entry) => entry.groceryId === grocery.id);
+assert.ok(item, "Added grocery appears on the dated list");
+assert.equal(item.packages, 2); assert.equal(item.checked, false); assert.deepEqual(item.sources, [source]);
+await call("set_shopping_item", { listId, groceryId: grocery.id, checked: true });
+assert.deepEqual((await call("add_shopping_items", { listId, items: [{ groceryId: grocery.id }] })).conflicts, [{ groceryId: grocery.id, checked: true, packages: 2 }], "Checked rows are reported, not overwritten");
 const { meal: scaled } = await call("save_meal", { ...meal, expectedRevision: meal.revision, scale: 3 });
-shopping = await call("get_shopping_list", range);
-assert.equal(shopping.items.find((entry) => entry.key === item.key)?.checked, false);
+shopping = await call("get_shopping_list", { listId });
+assert.equal(shopping.items.find((entry) => entry.key === item.key)?.checked, true, "Meal edits do not change list rows");
 await call("set_shopping_order", { expectedRevision: shopping.shoppingOrder.revision, aisles: ["Pantry"], items: [item.key] });
-assert.deepEqual(withoutRevision((await call("get_shopping_list", range)).shoppingOrder), { aisles: ["Pantry"], items: [item.key] });
-const { extra } = await call("save_shopping_extra", { expectedRevision: null, name: `${tag} towels`, checked: 0 });
-const { extra: checkedExtra } = await call("save_shopping_extra", { ...extra, expectedRevision: extra.revision, checked: 1 });
-assert.ok((await call("get_shopping_list", range)).extras.some((entry) => entry.id === extra.id && entry.checked === 1));
+assert.deepEqual(withoutRevision((await call("get_shopping_list", { listId })).shoppingOrder), { aisles: ["Pantry"], items: [item.key] });
+assert.ok((await call("list_shopping_lists", {})).lists.some((entry) => entry.id === listId && entry.items === 1 && entry.checked === 1));
 assert.ok((await call("list_groceries", {})).groceries.some((entry) => entry.id === grocery.id));
 const currentPlanned = (await call("get_recipes", { ids: [planned.id] })).recipes[0];
 for (const [name, args] of [["delete_recipe", { id: planned.id, expectedRevision: currentPlanned.revision }], ["delete_grocery", { id: grocery.id, expectedRevision: grocery.revision }], ["add_demo_data", { today: meal.date }], ["import_recipe", { url: "https://example.com/recipe" }]] as const) {
@@ -211,10 +217,10 @@ assert.equal(cleared.category, "");
 const currentMeal = (await call("list_meals", range)).meals.find(entry => entry.id === scaled.id);
 await call("delete_meal", { id: meal.id, expectedRevision: currentMeal?.revision });
 await call("delete_recipe", { id: planned.id, expectedRevision: cleared.revision });
+assert.equal((await call("remove_shopping_items", { listId, groceryIds: [grocery.id] })).removed, 1);
 await call("delete_grocery", { id: grocery.id, expectedRevision: grocery.revision });
-await call("delete_shopping_extra", { id: extra.id, expectedRevision: checkedExtra.revision });
-await call("set_shopping_checked", { key: item.checkKey, checked: false });
-await call("set_shopping_order", { expectedRevision: (await call("get_shopping_list", range)).shoppingOrder.revision, aisles: [], items: [] });
+await call("set_shopping_order", { expectedRevision: (await call("get_shopping_list", { listId })).shoppingOrder.revision, aisles: [], items: [] });
+await call("delete_shopping_list", { id: listId, expectedRevision: shoppingTarget.revision });
 
 await writeFile(`${root}/evaluation.json`, JSON.stringify({ tag, count: 28, url: `${origin}/eval/mcp`, matchingReport }, null, 2));
-console.log(JSON.stringify({ checks: "Public discovery, Access-protected consent, live CIMD + PKCE exchange, unchanged recipes grant, 22 tools, structured/text parity, real AI matching and report, 25+3 pagination, ordered gets, field-preserving updates, collection propagation, grocery matching, meal scaling, package rounding, shopping checks and invalidation, route/extras, deletion guards and cleanup, invalid import and nonempty demo refusal", matchingReport, evaluationTag: tag, fixtures: 28, eval: `${origin}/eval/mcp`, credentials: "Eval orbs mint their own Amp identity; no copied bearer settings or tokens logged" }, null, 2));
+console.log(JSON.stringify({ checks: "Public discovery, Access-protected consent, live CIMD + PKCE exchange, unchanged recipes grant, 26 tools, structured/text parity, real AI matching and report, 25+3 pagination, ordered gets, field-preserving updates, collection propagation, grocery matching, meal scaling, package rounding, dated shopping lists with sources, conflicts, checks and removal, route, deletion guards and cleanup, invalid import and nonempty demo refusal", matchingReport, evaluationTag: tag, fixtures: 28, eval: `${origin}/eval/mcp`, credentials: "Eval orbs mint their own Amp identity; no copied bearer settings or tokens logged" }, null, 2));

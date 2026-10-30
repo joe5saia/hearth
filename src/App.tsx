@@ -4,6 +4,7 @@ import { KitchenTimers } from "./KitchenTimers";
 import { GroceryForm, GroceryManager } from "./GroceryManager";
 import { ShoppingItems } from "./ShoppingItems";
 import { ShoppingRecipeForm } from "./ShoppingRecipeForm";
+import { ListSwitcher, ShoppingLists, listName } from "./ShoppingLists";
 import { RecipeChecklist } from "./RecipeChecklist";
 import { MealCard } from "./MealCard";
 import { DateJump } from "./DateJump";
@@ -47,8 +48,8 @@ import {
 } from "lucide-react";
 import {
   addDays,
-  checkKey,
   dateKey,
+  defaultShoppingList,
   displayAmount,
   quantity,
   shoppingList,
@@ -60,7 +61,6 @@ import {
   HouseholdSchema,
   UnitSchema,
   type CalendarDate,
-  type CheckWriteSchema,
   type Household,
   type Collection,
   type IngredientDraft,
@@ -72,6 +72,10 @@ import {
   type Recipe,
   type Rating,
   type GroceryItem,
+  type ShoppingAddition,
+  type ShoppingItem,
+  type ShoppingListItem,
+  type ShoppingListSchema,
   type ShoppingOrder,
 } from "./domain";
 
@@ -79,35 +83,87 @@ const mobileViewport = "(max-width: 850px), (pointer: coarse) and (max-height: 5
 
 type ShoppingEdit =
   | { kind: "order"; order: ShoppingOrder }
-  | ({ kind: "check" } & typeof CheckWriteSchema.Type);
+  | { kind: "item"; listId: string; groceryId: GroceryId; checked?: 0 | 1; packages?: number }
+  | { kind: "add"; listId: string; items: readonly ShoppingAddition[] }
+  | { kind: "remove"; listId: string; groceryIds: readonly GroceryId[] };
 
-function applyShoppingEdit(state: Pick<Household, "shoppingOrder" | "checks">, edit: ShoppingEdit) {
-  if (edit.kind === "check" && edit.onlyIfAbsent && state.checks.some((entry) => entry.key === edit.key))
-    return state;
+type ShoppingState = Pick<Household, "shoppingOrder" | "shoppingItems">;
 
-  return edit.kind === "order"
-    ? { checks: state.checks, shoppingOrder: edit.order }
-    : {
-        shoppingOrder: state.shoppingOrder,
-        checks: [
-          ...state.checks.filter((entry) => entry.key !== edit.key),
-          ...(!edit.checked
-            ? [
-                {
-                  key: edit.key,
-                  checked: edit.checked,
-                  packages:
-                    edit.packages ?? state.checks.find((entry) => entry.key === edit.key)?.packages ?? 1,
-                },
-              ]
-            : []),
-        ],
+// Keeps the oldest 50, like the server's merge.
+const mergeSources = (a: ShoppingListItem["sources"], b: ShoppingListItem["sources"]) =>
+  [...new Map([...a, ...b].map((source) => [JSON.stringify(source), source])).values()].slice(0, 50);
+
+// Mirrors the server's list writes so optimistic rows match what the refresh will return.
+function applyShoppingEdit(state: ShoppingState, edit: ShoppingEdit): ShoppingState {
+  if (edit.kind === "order") return { ...state, shoppingOrder: edit.order };
+  const now = new Date().toISOString();
+  const onList = (entry: ShoppingListItem) => entry.listId === edit.listId;
+
+  if (edit.kind === "remove")
+    return {
+      ...state,
+      shoppingItems: state.shoppingItems.filter(
+        (entry) => !onList(entry) || !edit.groceryIds.includes(entry.groceryId),
+      ),
+    };
+
+  if (edit.kind === "item")
+    return {
+      ...state,
+      shoppingItems: state.shoppingItems.map((entry) =>
+        onList(entry) && entry.groceryId === edit.groceryId
+          ? {
+              ...entry,
+              checked: edit.checked ?? entry.checked,
+              checkedAt:
+                edit.checked === undefined || edit.checked === entry.checked
+                  ? entry.checkedAt
+                  : edit.checked
+                    ? now
+                    : null,
+              packages: edit.packages ?? entry.packages,
+            }
+          : entry,
+      ),
+    };
+
+  const items = [...state.shoppingItems];
+
+  for (const addition of edit.items) {
+    const index = items.findIndex((entry) => onList(entry) && entry.groceryId === addition.groceryId);
+    const prior = items[index];
+    const sources = addition.sources ?? [];
+
+    if (!prior)
+      items.push({
+        listId: edit.listId,
+        groceryId: addition.groceryId,
+        checked: addition.checked ?? 0,
+        packages: addition.packages ?? 1,
+        sources,
+        addedAt: now,
+        checkedAt: addition.checked ? now : null,
+      });
+    else if (addition.replace)
+      items[index] = {
+        ...prior,
+        checked: addition.checked ?? 0,
+        checkedAt:
+          (addition.checked ?? 0) === prior.checked ? prior.checkedAt : addition.checked ? now : null,
+        packages: addition.packages ?? prior.packages,
+        sources: mergeSources(prior.sources, sources),
       };
+    else if (!prior.checked && (addition.packages === undefined || addition.packages === prior.packages))
+      items[index] = { ...prior, sources: mergeSources(prior.sources, sources) };
+  }
+
+  return { ...state, shoppingItems: items };
 }
 
 type Modal =
   | { kind: "collections" }
   | { kind: "shopping-recipes" }
+  | { kind: "shopping-lists" }
   | { kind: "chatgpt" }
   | { kind: "feedback"; context: FeedbackInput["context"] }
   | { kind: "grocery"; item: GroceryDraft }
@@ -122,8 +178,8 @@ const emptyHousehold: Household = {
   recipes: [],
   recipesAdded: [],
   meals: [],
-  extras: [],
-  checks: [],
+  shoppingLists: [],
+  shoppingItems: [],
   groceries: [],
   shoppingOrder: { aisles: [], items: [] },
 };
@@ -156,8 +212,11 @@ async function api(
     | GroceryDraft
     | ShoppingOrder
     | { url: string }
-    | Household["extras"][number]
-    | typeof CheckWriteSchema.Type
+    | (GroceryDraft & { listId: string })
+    | typeof ShoppingListSchema.Encoded
+    | { items: readonly ShoppingAddition[] }
+    | { groceryIds: readonly GroceryId[] }
+    | { checked?: 0 | 1; packages?: number }
     | { from: string; to: string }
     | { expectedRevision: string | null }
     | { note: string; expectedNote: string }
@@ -176,9 +235,15 @@ async function api(
     // The token belongs to the draft being saved, never to a newer background refresh.
     const guarded =
       method === "PUT" &&
-      ["recipes", "meals", "groceries", "shopping-items", "collections", "extras", "shopping-order"].includes(
-        path,
-      );
+      [
+        "recipes",
+        "meals",
+        "groceries",
+        "shopping-items",
+        "collections",
+        "shopping-lists",
+        "shopping-order",
+      ].includes(path);
 
     init.body = JSON.stringify(
       guarded ? { ...body, expectedRevision: "revision" in body ? (body.revision ?? null) : null } : body,
@@ -410,6 +475,7 @@ export function App() {
   const [loaded, setLoaded] = useState(false);
   const [error, setError] = useState("");
   const [toast, setToast] = useState("");
+  const [undo, setUndo] = useState<{ message: string; run: () => void } | null>(null);
   const [busy, setBusy] = useState(false);
   const [modal, setModalState] = useState<Modal | null>(null);
   const [conflictEntry, setConflictEntry] = useState<string>();
@@ -429,7 +495,7 @@ export function App() {
   const shoppingEdits = useRef<ShoppingEdit[]>([]);
   const shoppingWrites = useRef<Promise<boolean | void>>(Promise.resolve());
   const shoppingRevision = useRef(0);
-  const confirmedShopping = useRef<Pick<Household, "shoppingOrder" | "checks">>(emptyHousehold);
+  const confirmedShopping = useRef<ShoppingState>(emptyHousehold);
   const [timerHeaderHost, setTimerHeaderHost] = useState<HTMLDivElement | null>(null);
   const [timerDialogHost, setTimerDialogHost] = useState<HTMLDivElement | null>(null);
   const [jumpDate, setJumpDate] = useState<CalendarDate | null>(null);
@@ -650,8 +716,12 @@ export function App() {
         case "collections":
         case "import":
         case "chatgpt":
-        case "shopping-recipes":
+        case "shopping-lists":
           return { kind: next.view };
+
+        // Add from meals always targets the list chosen on the shopping tab, so it needs one to exist.
+        case "shopping-recipes":
+          return household.shoppingLists.length ? { kind: next.view } : null;
         default:
           return null;
       }
@@ -690,7 +760,10 @@ export function App() {
 
     // A refresh started before a shopping edit must not replace newer acknowledged/optimistic state.
     if (revision === shoppingRevision.current) {
-      confirmedShopping.current = { checks: household.checks, shoppingOrder: household.shoppingOrder };
+      confirmedShopping.current = {
+        shoppingItems: household.shoppingItems,
+        shoppingOrder: household.shoppingOrder,
+      };
     }
 
     setData({ ...household, ...shoppingEdits.current.reduce(applyShoppingEdit, confirmedShopping.current) });
@@ -734,19 +807,18 @@ export function App() {
       let outcome: "success" | "error" | "saved_refresh_failed" = "success";
 
       try {
-        await api(
-          edit.kind === "order" ? "shopping-order" : "checks",
-          "PUT",
-          edit.kind === "order"
-            ? edit.order
-            : {
-                key: edit.key,
-                checked: edit.checked,
-                packages: edit.packages,
-                onlyIfAbsent: edit.onlyIfAbsent,
-              },
-          operationId,
-        );
+        const list = edit.kind === "order" ? "" : `shopping-lists/${encodeURIComponent(edit.listId)}/items`;
+
+        if (edit.kind === "order") await api("shopping-order", "PUT", edit.order, operationId);
+        else if (edit.kind === "item")
+          await api(
+            `${list}/${encodeURIComponent(edit.groceryId)}`,
+            "PATCH",
+            { checked: edit.checked, packages: edit.packages },
+            operationId,
+          );
+        else if (edit.kind === "add") await api(list, "POST", { items: edit.items }, operationId);
+        else await api(list, "DELETE", { groceryIds: edit.groceryIds }, operationId);
         written = performance.now();
         acknowledged = true;
         shoppingRevision.current++;
@@ -760,7 +832,12 @@ export function App() {
       } catch (failure) {
         outcome = acknowledged ? "saved_refresh_failed" : "error";
 
-        if (!acknowledged && failure instanceof ApiError && failure.cause === 409)
+        // A missing list or list item (400) also means this device is out of date.
+        if (
+          !acknowledged &&
+          failure instanceof ApiError &&
+          (failure.cause === 409 || (edit.kind !== "order" && failure.cause === 400))
+        )
           await refresh(operationId).catch(() => {});
 
         if (!acknowledged) written = performance.now();
@@ -771,7 +848,11 @@ export function App() {
           .some(
             (pending) =>
               pending.kind === edit.kind &&
-              (edit.kind === "order" || (pending.kind === "check" && pending.key === edit.key)),
+              (edit.kind === "order" ||
+                (edit.kind === "item" &&
+                  pending.kind === "item" &&
+                  pending.listId === edit.listId &&
+                  pending.groceryId === edit.groceryId)),
           );
 
         if (!superseded)
@@ -785,7 +866,7 @@ export function App() {
           );
       } finally {
         browserEvent("browser_shopping_save", {
-          operation: edit.kind === "order" ? "shopping-order" : "checks",
+          operation: edit.kind === "order" ? "shopping-order" : "shopping-lists",
           outcome,
           acknowledged,
           queueDepth,
@@ -1000,10 +1081,18 @@ export function App() {
   }, [page]);
   useEffect(() => {
     if (!toast) return;
+    setUndo(null);
     const timer = setTimeout(() => setToast(""), 3500);
 
     return () => clearTimeout(timer);
   }, [toast]);
+  useEffect(() => {
+    if (!undo) return;
+    // Long enough to notice a mistaken tap while shopping, short enough not to cover the list.
+    const timer = setTimeout(() => setUndo(null), 6000);
+
+    return () => clearTimeout(timer);
+  }, [undo]);
   useEffect(() => {
     if (!listBuilder || page !== "shopping") {
       setDebouncedBuilderSearch("");
@@ -1210,21 +1299,98 @@ export function App() {
       return (recipeSort === "newest" ? -added : added) || byTitle;
     });
 
-  const catalog = useMemo(
-    () => shoppingList(data.groceries, data.shoppingOrder, data.checks),
-    [data.groceries, data.shoppingOrder, data.checks],
+  // A deleted or unknown list in the URL falls back to the list for today rather than an empty page.
+  const currentList =
+    data.shoppingLists.find((list) => list.id === route.list) ?? defaultShoppingList(data.shoppingLists);
+
+  const listEntries = useMemo(
+    () => data.shoppingItems.filter((entry) => entry.listId === currentList?.id),
+    [data.shoppingItems, currentList?.id],
   );
 
-  const isChecked = (key: string) => (data.checks.find((entry) => entry.key === key)?.checked ?? 1) === 1;
-  const items = listBuilder ? catalog : catalog.filter((item) => !isChecked(checkKey(item)));
+  const catalog = useMemo(
+    () => shoppingList(data.groceries, data.shoppingOrder, listEntries),
+    [data.groceries, data.shoppingOrder, listEntries],
+  );
+
+  const listed = catalog.filter((item) => item.entry);
+  const isChecked = (item: ShoppingItem) => item.entry?.checked === 1;
 
   const visibleItems = listBuilder
-    ? items.filter((item) => item.name.toLowerCase().includes(debouncedBuilderSearch))
-    : items;
+    ? catalog.filter((item) => item.name.toLowerCase().includes(debouncedBuilderSearch))
+    : listed;
 
-  const completed = items.filter((item) => isChecked(checkKey(item))).length;
-  const totalItems = items.length + data.extras.length;
-  const totalCompleted = completed + data.extras.filter((item) => item.checked).length;
+  const totalItems = listed.length;
+  const totalCompleted = listed.filter(isChecked).length;
+
+  const showUndo = (message: string, run: () => void) => {
+    setUndo({ message, run });
+    setToast("");
+  };
+
+  const setItemChecked = (item: ShoppingItem, checked: 0 | 1) => {
+    if (!currentList) return;
+    const listId = currentList.id;
+    void saveShoppingEdit({ kind: "item", listId, groceryId: item.grocery.id, checked });
+
+    if (checked)
+      showUndo(
+        `Picked up ${item.name}`,
+        () => void saveShoppingEdit({ kind: "item", listId, groceryId: item.grocery.id, checked: 0 }),
+      );
+  };
+
+  const addToList = (item: GroceryItem, listId = currentList?.id) => {
+    if (!listId) return;
+    void saveShoppingEdit({ kind: "add", listId, items: [{ groceryId: item.id }] });
+  };
+
+  const removeFromList = (item: ShoppingItem) => {
+    const entry = item.entry;
+
+    if (!currentList || !entry) return;
+    const listId = currentList.id;
+    void saveShoppingEdit({ kind: "remove", listId, groceryIds: [entry.groceryId] });
+    // Undo restores the same row, including its count, sources and picked-up state.
+    showUndo(
+      `Removed ${item.name}`,
+      () =>
+        void saveShoppingEdit({
+          kind: "add",
+          listId,
+          items: [
+            {
+              groceryId: entry.groceryId,
+              packages: entry.packages,
+              checked: entry.checked,
+              sources: entry.sources,
+              replace: true,
+            },
+          ],
+        }),
+    );
+  };
+
+  const saveList = async (list: typeof ShoppingListSchema.Encoded) => {
+    const created = !list.revision;
+
+    if (
+      !(await mutate(
+        "shopping-lists",
+        "PUT",
+        list,
+        created ? `Created ${listName(list)} list` : "List saved",
+      ))
+    )
+      return false;
+
+    if (created) {
+      setModalState(null);
+      updateRoute({ ...baseView, list: list.id, mode: "list" }, true);
+    }
+
+    return true;
+  };
 
   // The focused suggestion disappears with the panel, so return focus to the name field.
   const closeExtraMatches = () => {
@@ -1238,9 +1404,11 @@ export function App() {
     closeExtraMatches();
   };
 
-  // Quick add saves a minimal catalog item (name and aisle) and puts it on the list in one write.
+  // Quick add saves a minimal catalog item (name and aisle) and puts it on this list in one write.
   const createExtraGrocery = async () => {
     const name = extra.trim();
+
+    if (!currentList) return;
     setBusy(true);
     await shoppingWrites.current;
 
@@ -1248,7 +1416,7 @@ export function App() {
       await mutate(
         "shopping-items",
         "PUT",
-        { ...newGrocery(name), aisle: extraAisle.trim() },
+        { ...newGrocery(name), aisle: extraAisle.trim(), listId: currentList.id },
         `Added ${name}`,
       )
     )
@@ -1256,11 +1424,19 @@ export function App() {
   };
 
   const addExistingGrocery = (item: GroceryItem) => {
-    const key = JSON.stringify(["shopping-list", item.id]);
-    const onList = !isChecked(key);
+    const entry = listEntries.find((candidate) => candidate.groceryId === item.id);
 
-    if (!onList) void saveShoppingEdit({ kind: "check", key, checked: 0 });
-    setToast(onList ? `${item.name} is already on your list` : `Added ${item.name}`);
+    if (currentList && entry?.checked)
+      void saveShoppingEdit({ kind: "item", listId: currentList.id, groceryId: item.id, checked: 0 });
+    else if (!entry) addToList(item);
+
+    setToast(
+      entry && !entry.checked
+        ? `${item.name} is already on this list`
+        : entry
+          ? `${item.name} is back on this list`
+          : `Added ${item.name}`,
+    );
     resetExtra();
   };
 
@@ -1430,7 +1606,7 @@ export function App() {
                           : page === "recipes"
                             ? `Recipes${selectedCollection ? ` · ${selectedCollection.name}` : ""}`
                             : page === "shopping"
-                              ? `Shopping list · ${listBuilder ? "Build list" : shoppingMode ? "Shopping mode" : "My list"}`
+                              ? `Shopping list${currentList ? ` ${currentList.date}` : ""} · ${listBuilder ? "Build list" : shoppingMode ? "Shopping mode" : "My list"}`
                               : "Groceries"
                         ).slice(0, 300),
                         view: {
@@ -1893,76 +2069,93 @@ export function App() {
             )}
             {page === "shopping" && (
               <>
-                <div className="shopping-summary">
-                  <div role="status" className={listBuilder || shoppingMode ? "sr-only" : undefined}>
-                    <strong className={shoppingPending > 0 ? "shopping-save-status" : undefined}>
-                      {shoppingPending > 0
-                        ? "Saving…"
-                        : totalItems === 0
-                          ? "Empty list"
-                          : totalCompleted === totalItems
-                            ? "All done!"
-                            : `${totalItems - totalCompleted} left`}
-                    </strong>
-                    <span>
-                      {totalCompleted} of {totalItems} checked
-                    </span>
-                  </div>
-                  <div className="shopping-controls">
-                    {!listBuilder && !shoppingMode && (
-                      <>
+                {/* The tab root is the only place a list is chosen; Builder, Shop Mode and Add from meals use it. */}
+                {currentList && !shoppingMode && !listBuilder && (
+                  <ListSwitcher
+                    lists={data.shoppingLists}
+                    items={data.shoppingItems}
+                    current={currentList}
+                    busy={busy || shoppingPending > 0}
+                    select={(list) => updateRoute({ list: list.id })}
+                    create={(date) => saveList({ id: crypto.randomUUID(), date, label: "" })}
+                    manage={() => {
+                      setError("");
+                      setModal({ kind: "shopping-lists" });
+                    }}
+                  />
+                )}
+                {currentList && (
+                  <div className="shopping-summary">
+                    <div role="status" className={listBuilder || shoppingMode ? "sr-only" : undefined}>
+                      <strong className={shoppingPending > 0 ? "shopping-save-status" : undefined}>
+                        {shoppingPending > 0
+                          ? "Saving…"
+                          : totalItems === 0
+                            ? "Empty list"
+                            : totalCompleted === totalItems
+                              ? "All done!"
+                              : `${totalItems - totalCompleted} left`}
+                      </strong>
+                      <span>
+                        {totalCompleted} of {totalItems} checked
+                      </span>
+                    </div>
+                    <div className="shopping-controls">
+                      {!listBuilder && !shoppingMode && (
+                        <>
+                          <button
+                            className="secondary"
+                            disabled={busy || shoppingPending > 0}
+                            onClick={() => {
+                              setError("");
+                              setModal({ kind: "shopping-recipes" });
+                            }}
+                          >
+                            <BookOpen size={16} /> Add from meals
+                          </button>
+                          <a
+                            className="secondary"
+                            href="#recipe-checklist"
+                            target="_blank"
+                            rel="noopener noreferrer"
+                          >
+                            <ListChecks size={16} /> Recipe checklist <ExternalLink size={14} />
+                          </a>
+                        </>
+                      )}
+                      {!listBuilder && (
                         <button
-                          className="secondary"
-                          disabled={busy || shoppingPending > 0}
+                          className={shoppingMode ? "primary" : "secondary"}
+                          aria-label={shoppingMode ? "Exit shopping mode" : "Shopping mode"}
+                          aria-pressed={shoppingMode}
                           onClick={() => {
-                            setError("");
-                            setModal({ kind: "shopping-recipes" });
+                            updateRoute({ mode: shoppingMode ? "list" : "focus" });
                           }}
                         >
-                          <BookOpen size={16} /> Add from recipes
+                          <ShoppingBasket size={16} />
+                          {shoppingMode ? "Exit" : "Shop Mode"}
                         </button>
-                        <a
-                          className="secondary"
-                          href="#recipe-checklist"
-                          target="_blank"
-                          rel="noopener noreferrer"
+                      )}
+                      {!shoppingMode && (
+                        <button
+                          className={listBuilder ? "primary" : "secondary"}
+                          aria-label={listBuilder ? "Exit List Builder" : "List Builder"}
+                          aria-pressed={listBuilder}
+                          onClick={() => {
+                            updateRoute({ mode: listBuilder ? "list" : "builder" });
+                          }}
                         >
-                          <ListChecks size={16} /> Recipe checklist <ExternalLink size={14} />
-                        </a>
-                      </>
-                    )}
-                    {!listBuilder && (
-                      <button
-                        className={shoppingMode ? "primary" : "secondary"}
-                        aria-label={shoppingMode ? "Exit shopping mode" : "Shopping mode"}
-                        aria-pressed={shoppingMode}
-                        onClick={() => {
-                          updateRoute({ mode: shoppingMode ? "list" : "focus" });
-                        }}
-                      >
-                        <ShoppingBasket size={16} />
-                        {shoppingMode ? "Exit" : "Shop Mode"}
-                      </button>
-                    )}
-                    {!shoppingMode && (
-                      <button
-                        className={listBuilder ? "primary" : "secondary"}
-                        aria-label={listBuilder ? "Exit List Builder" : "List Builder"}
-                        aria-pressed={listBuilder}
-                        onClick={() => {
-                          updateRoute({ mode: listBuilder ? "list" : "builder" });
-                        }}
-                      >
-                        <ListChecks size={16} />
-                        {listBuilder ? "Exit Builder" : "List Builder"}
-                      </button>
-                    )}
+                          <ListChecks size={16} />
+                          {listBuilder ? "Exit Builder" : "List Builder"}
+                        </button>
+                      )}
+                    </div>
                   </div>
-                </div>
-                {listBuilder && (
+                )}
+                {currentList && listBuilder && (
                   <div className="builder-toolbar">
                     <p className="field-hint builder-hint" id="builder-hint">
-                      Uncheck an item to add it to your list. Checked items are off the list.
+                      Tap + to add a grocery to this list, or ✓ to take it off.
                     </p>
                     <label className="search-box">
                       <Search size={18} aria-hidden="true" />
@@ -1977,207 +2170,226 @@ export function App() {
                     </label>
                   </div>
                 )}
-                <div className="shopping-layout">
-                  <section className="shopping-panel" aria-label="Grocery shopping list">
-                    <ShoppingItems
-                      items={visibleItems}
-                      groceries={data.groceries}
-                      order={data.shoppingOrder}
-                      busy={busy || (arranging && shoppingPending > 0)}
-                      shoppingMode={shoppingMode || listBuilder}
-                      listBuilder={listBuilder}
-                      arranging={arranging}
-                      checked={(item) => isChecked(checkKey(item))}
-                      toggle={(item) => {
-                        const key = checkKey(item);
-
-                        const pending = shoppingEdits.current.findLast(
-                          (edit) => edit.kind === "check" && edit.key === key,
-                        );
-
-                        const checked = pending?.kind === "check" ? pending.checked : isChecked(key) ? 1 : 0;
-                        void saveShoppingEdit({ kind: "check", key, checked: checked ? 0 : 1 });
-                      }}
-                      saveAmount={(item, packages) =>
-                        saveShoppingEdit({ kind: "check", key: checkKey(item), checked: 0, packages })
+                {!currentList ? (
+                  <div className="empty-state">
+                    <ShoppingBasket size={32} />
+                    <h2>No shopping lists yet</h2>
+                    <p>Create a list for the day you plan to shop, then add groceries from your meals.</p>
+                    <button
+                      className="primary"
+                      disabled={busy}
+                      onClick={() =>
+                        void saveList({ id: crypto.randomUUID(), date: dateKey(new Date()), label: "" })
                       }
-                      saveOrder={(order) => saveShoppingEdit({ kind: "order", order })}
-                      renameAisle={async (from, to) => {
-                        setBusy(true);
-                        await shoppingWrites.current;
-
-                        return mutate("shopping-aisles", "PUT", { from, to }, "Aisle renamed");
+                    >
+                      <Plus size={16} /> Start a list for today
+                    </button>
+                    <button
+                      className="text-button"
+                      onClick={() => {
+                        setError("");
+                        setModal({ kind: "shopping-lists" });
                       }}
-                      edit={(item) => setModal({ kind: "grocery", item })}
-                    />
-                    {listBuilder && items.length > 0 && visibleItems.length === 0 && (
-                      <div className="empty-state" role="status">
-                        <Search size={32} />
-                        <h2>No grocery items found</h2>
-                        <p>Try another item name or clear your search.</p>
-                      </div>
-                    )}
-                    {items.length === 0 && (
-                      <div className="empty-state">
-                        <ShoppingBasket size={32} />
-                        <h2>Nothing to shop for just yet</h2>
-                        <p>
-                          {catalog.length
-                            ? "Open List Builder and uncheck the groceries you need."
-                            : "Add grocery items to build your shopping list."}
-                        </p>
-                        <button
-                          className="text-button"
-                          onClick={() =>
-                            catalog.length ? updateRoute({ mode: "builder" }) : navigate("groceries")
-                          }
-                        >
-                          {catalog.length ? "Open List Builder" : "Add grocery items"}{" "}
-                          <ArrowRight size={15} />
-                        </button>
-                      </div>
-                    )}
-                  </section>
-                  <aside className="shopping-side">
-                    <section className="extras-panel">
-                      <h2>Household extras</h2>
-                      <p>Add anything to your list. New items are saved to Groceries for next time.</p>
-                      <form
-                        className="extra-form"
-                        onSubmit={async (event) => {
-                          event.preventDefault();
-
-                          // Saving clears the error banner, which would hide a failed queued list change.
-                          if (shoppingPending > 0) return;
-                          const name = extra.trim();
-                          const normalize = (text: string) => text.trim().replace(/\s+/g, " ").toLowerCase();
-                          const key = normalize(name);
-
-                          // Exact name/alias matches lead; lexical search ignores digits and preparation words.
-                          const exact = data.groceries.filter((item) =>
-                            [item.name, ...item.aliases].some((alias) => normalize(alias) === key),
+                    >
+                      Choose another date <ArrowRight size={15} />
+                    </button>
+                  </div>
+                ) : (
+                  <div className="shopping-layout">
+                    <section className="shopping-panel" aria-label="Grocery shopping list">
+                      <ShoppingItems
+                        items={visibleItems}
+                        groceries={data.groceries}
+                        order={data.shoppingOrder}
+                        busy={busy || (arranging && shoppingPending > 0)}
+                        shoppingMode={shoppingMode || listBuilder}
+                        variant={listBuilder ? "catalog" : shoppingMode ? "shop" : "plan"}
+                        arranging={arranging}
+                        checked={isChecked}
+                        onList={(item) => !!item.entry}
+                        toggle={(item) => {
+                          const pending = shoppingEdits.current.findLast(
+                            (edit) =>
+                              edit.kind === "item" &&
+                              edit.listId === currentList.id &&
+                              edit.groceryId === item.grocery.id &&
+                              edit.checked !== undefined,
                           );
 
-                          const matches = [
-                            ...new Set([
-                              ...exact,
-                              ...new GrocerySearch(data.groceries).candidates(name, name),
-                            ]),
-                          ].slice(0, 4);
+                          const checked =
+                            pending?.kind === "item" && pending.checked !== undefined
+                              ? pending.checked
+                              : isChecked(item)
+                                ? 1
+                                : 0;
 
-                          if (matches.length) setExtraMatches(matches);
-                          else await createExtraGrocery();
+                          setItemChecked(item, checked ? 0 : 1);
                         }}
-                      >
-                        <input
-                          ref={extraInput}
-                          aria-label="New household item"
-                          placeholder="e.g. coffee, apples, oat milk"
-                          required
-                          maxLength={150}
-                          value={extra}
-                          onChange={(event) => {
-                            setExtra(event.target.value);
-                            setExtraMatches(null);
-                          }}
-                        />
-                        <input
-                          className="extra-aisle"
-                          aria-label="Aisle for this item (optional)"
-                          placeholder="Aisle (optional)"
-                          list="extra-aisles"
-                          maxLength={150}
-                          value={extraAisle}
-                          onChange={(event) => setExtraAisle(event.target.value)}
-                        />
-                        <datalist id="extra-aisles">
-                          {aisles.map((aisle) => (
-                            <option key={aisle} value={aisle} />
-                          ))}
-                        </datalist>
-                        <button
-                          className="primary"
-                          aria-label="Add household item"
-                          disabled={busy || shoppingPending > 0 || !extra.trim() || extraMatches !== null}
-                        >
-                          <Plus size={18} />
-                        </button>
-                      </form>
-                      {extraMatches && (
-                        <div className="extra-matches" role="group" aria-labelledby="extra-matches-title">
-                          <h3 id="extra-matches-title">Did you mean…</h3>
-                          {extraMatches.map((item, index) => (
-                            <button
-                              type="button"
-                              className="extra-match"
-                              key={item.id}
-                              aria-label={`Use existing ${item.name}`}
-                              aria-describedby={`extra-match-${index}`}
-                              autoFocus={index === 0}
-                              disabled={busy}
-                              onClick={() => addExistingGrocery(item)}
-                            >
-                              <span>
-                                <strong>{item.name}</strong>
-                                <small id={`extra-match-${index}`}>
-                                  {item.aisle ? `Aisle ${item.aisle}` : "No aisle"}
-                                  {isChecked(JSON.stringify(["shopping-list", item.id]))
-                                    ? ""
-                                    : " · On your list"}
-                                </small>
-                              </span>
-                              <span className="extra-match-use">Use</span>
-                            </button>
-                          ))}
-                          <div className="extra-match-actions">
-                            <button
-                              type="button"
-                              className="secondary"
-                              disabled={busy || shoppingPending > 0}
-                              onClick={() => void createExtraGrocery()}
-                            >
-                              <Plus size={16} /> Create “{extra.trim()}”
-                            </button>
-                            <button type="button" className="text-button" onClick={closeExtraMatches}>
-                              Cancel
-                            </button>
-                          </div>
+                        add={(item) => addToList(item.grocery)}
+                        remove={removeFromList}
+                        saveAmount={(item, packages) =>
+                          saveShoppingEdit({
+                            kind: "item",
+                            listId: currentList.id,
+                            groceryId: item.grocery.id,
+                            packages,
+                          })
+                        }
+                        saveOrder={(order) => saveShoppingEdit({ kind: "order", order })}
+                        renameAisle={async (from, to) => {
+                          setBusy(true);
+                          await shoppingWrites.current;
+
+                          return mutate("shopping-aisles", "PUT", { from, to }, "Aisle renamed");
+                        }}
+                        edit={(item) => setModal({ kind: "grocery", item })}
+                      />
+                      {listBuilder && catalog.length > 0 && visibleItems.length === 0 && (
+                        <div className="empty-state" role="status">
+                          <Search size={32} />
+                          <h2>No grocery items found</h2>
+                          <p>Try another item name or clear your search.</p>
                         </div>
                       )}
-                      <div className="extra-items">
-                        {data.extras.map((item) => (
-                          <div className={`extra-item ${item.checked ? "checked" : ""}`} key={item.id}>
-                            <label>
-                              <input
-                                type="checkbox"
-                                checked={!!item.checked}
-                                disabled={busy}
-                                onChange={() =>
-                                  mutate(`extras/${encodeURIComponent(item.id)}`, "PATCH", {
-                                    checked: item.checked ? 0 : 1,
-                                  })
-                                }
-                              />
-                              <span>{item.name}</span>
-                            </label>
-                            <button
-                              className="icon-button"
-                              aria-label={`Remove ${item.name}`}
-                              disabled={busy}
-                              onClick={() =>
-                                mutate(`extras/${encodeURIComponent(item.id)}`, "DELETE", {
-                                  expectedRevision: item.revision ?? null,
-                                })
-                              }
-                            >
-                              <X size={15} />
-                            </button>
-                          </div>
-                        ))}
-                      </div>
+                      {!arranging && visibleItems.length === 0 && !(listBuilder && catalog.length > 0) && (
+                        <div className="empty-state">
+                          <ShoppingBasket size={32} />
+                          <h2>Nothing on this list yet</h2>
+                          <p>
+                            {catalog.length
+                              ? "Add groceries from your meals, open List Builder, or add an item below."
+                              : "Add grocery items to build your shopping list."}
+                          </p>
+                          <button
+                            className="text-button"
+                            onClick={() =>
+                              catalog.length ? updateRoute({ mode: "builder" }) : navigate("groceries")
+                            }
+                          >
+                            {catalog.length ? "Open List Builder" : "Add grocery items"}{" "}
+                            <ArrowRight size={15} />
+                          </button>
+                        </div>
+                      )}
                     </section>
-                  </aside>
-                </div>
+                    <aside className="shopping-side">
+                      <section className="extras-panel">
+                        <h2>Add an item</h2>
+                        <p>
+                          Add anything to the {listName(currentList)} list. New items are saved to Groceries
+                          for next time.
+                        </p>
+                        <form
+                          className="extra-form"
+                          onSubmit={async (event) => {
+                            event.preventDefault();
+
+                            // Saving clears the error banner, which would hide a failed queued list change.
+                            if (shoppingPending > 0) return;
+                            const name = extra.trim();
+
+                            const normalize = (text: string) =>
+                              text.trim().replace(/\s+/g, " ").toLowerCase();
+
+                            const key = normalize(name);
+
+                            // Exact name/alias matches lead; lexical search ignores digits and preparation words.
+                            const exact = data.groceries.filter((item) =>
+                              [item.name, ...item.aliases].some((alias) => normalize(alias) === key),
+                            );
+
+                            const matches = [
+                              ...new Set([
+                                ...exact,
+                                ...new GrocerySearch(data.groceries).candidates(name, name),
+                              ]),
+                            ].slice(0, 4);
+
+                            if (matches.length) setExtraMatches(matches);
+                            else await createExtraGrocery();
+                          }}
+                        >
+                          <input
+                            ref={extraInput}
+                            aria-label="New household item"
+                            placeholder="e.g. coffee, apples, oat milk"
+                            required
+                            maxLength={150}
+                            value={extra}
+                            onChange={(event) => {
+                              setExtra(event.target.value);
+                              setExtraMatches(null);
+                            }}
+                          />
+                          <input
+                            className="extra-aisle"
+                            aria-label="Aisle for this item (optional)"
+                            placeholder="Aisle (optional)"
+                            list="extra-aisles"
+                            maxLength={150}
+                            value={extraAisle}
+                            onChange={(event) => setExtraAisle(event.target.value)}
+                          />
+                          <datalist id="extra-aisles">
+                            {aisles.map((aisle) => (
+                              <option key={aisle} value={aisle} />
+                            ))}
+                          </datalist>
+                          <button
+                            className="primary"
+                            aria-label="Add household item"
+                            disabled={busy || shoppingPending > 0 || !extra.trim() || extraMatches !== null}
+                          >
+                            <Plus size={18} />
+                          </button>
+                        </form>
+                        {extraMatches && (
+                          <div className="extra-matches" role="group" aria-labelledby="extra-matches-title">
+                            <h3 id="extra-matches-title">Did you mean…</h3>
+                            {extraMatches.map((item, index) => {
+                              const entry = listEntries.find((candidate) => candidate.groceryId === item.id);
+
+                              return (
+                                <button
+                                  type="button"
+                                  className="extra-match"
+                                  key={item.id}
+                                  aria-label={`Use existing ${item.name}`}
+                                  aria-describedby={`extra-match-${index}`}
+                                  autoFocus={index === 0}
+                                  disabled={busy}
+                                  onClick={() => addExistingGrocery(item)}
+                                >
+                                  <span>
+                                    <strong>{item.name}</strong>
+                                    <small id={`extra-match-${index}`}>
+                                      {item.aisle ? `Aisle ${item.aisle}` : "No aisle"}
+                                      {entry ? (entry.checked ? " · Picked up" : " · On this list") : ""}
+                                    </small>
+                                  </span>
+                                  <span className="extra-match-use">Use</span>
+                                </button>
+                              );
+                            })}
+                            <div className="extra-match-actions">
+                              <button
+                                type="button"
+                                className="secondary"
+                                disabled={busy || shoppingPending > 0}
+                                onClick={() => void createExtraGrocery()}
+                              >
+                                <Plus size={16} /> Create “{extra.trim()}”
+                              </button>
+                              <button type="button" className="text-button" onClick={closeExtraMatches}>
+                                Cancel
+                              </button>
+                            </div>
+                          </div>
+                        )}
+                      </section>
+                    </aside>
+                  </div>
+                )}
               </>
             )}
           </>
@@ -2194,9 +2406,24 @@ export function App() {
           {toast}
         </div>
       )}
-      {modal?.kind === "shopping-recipes" && (
+      {undo && !toast && (
+        <div className="toast" role="status">
+          <Check size={17} />
+          {undo.message}
+          <button
+            className="toast-undo"
+            onClick={() => {
+              undo.run();
+              setUndo(null);
+            }}
+          >
+            Undo
+          </button>
+        </div>
+      )}
+      {modal?.kind === "shopping-recipes" && currentList && (
         <Dialog
-          title="Add from recipes"
+          title="Add from meals"
           fullScreen={mobileLayout}
           close={() => {
             if (busy) return;
@@ -2208,34 +2435,94 @@ export function App() {
             recipes={data.recipes}
             meals={data.meals}
             groceries={data.groceries}
-            checks={data.checks}
+            list={currentList}
+            items={data.shoppingItems}
             busy={busy}
             error={error}
             cancel={() => {
               setModal(null);
               setError("");
             }}
-            save={async (items) => {
+            save={async (additions) => {
               setBusy(true);
-
-              const results = await Promise.all(
-                items.map(({ id, packages }) =>
-                  saveShoppingEdit({
-                    kind: "check",
-                    key: JSON.stringify(["shopping-list", id]),
-                    checked: 0,
-                    packages,
-                    onlyIfAbsent: true,
-                  }),
-                ),
-              );
-
+              const saved = await saveShoppingEdit({ kind: "add", listId: currentList.id, items: additions });
               setBusy(false);
 
-              if (results.every(Boolean)) {
-                setModal(null);
-                setToast(`${items.length} ${items.length === 1 ? "item" : "items"} added to shopping list`);
-              }
+              if (!saved) return;
+
+              const count = additions.filter(
+                (item) =>
+                  item.replace ||
+                  !data.shoppingItems.some(
+                    (entry) => entry.listId === currentList.id && entry.groceryId === item.groceryId,
+                  ),
+              ).length;
+
+              setModal(null);
+              setToast(`${count} ${count === 1 ? "item" : "items"} added to ${listName(currentList)}`);
+            }}
+          />
+        </Dialog>
+      )}
+      {modal?.kind === "shopping-lists" && (
+        <Dialog
+          title="Shopping lists"
+          fullScreen={mobileLayout}
+          close={() => {
+            if (busy) return;
+            setModal(null);
+            setError("");
+          }}
+        >
+          <ShoppingLists
+            lists={data.shoppingLists}
+            items={data.shoppingItems}
+            selected={currentList}
+            busy={busy || shoppingPending > 0}
+            error={error}
+            open={(list) => {
+              setModalState(null);
+              updateRoute({ ...baseView, list: list.id, mode: "list" }, true);
+            }}
+            save={saveList}
+            remove={(list) =>
+              mutate(
+                `shopping-lists/${encodeURIComponent(list.id)}`,
+                "DELETE",
+                { expectedRevision: list.revision ?? null },
+                `Deleted ${listName(list)} list`,
+              )
+            }
+            carryOver={async (from, groceryIds) => {
+              if (!currentList) return;
+              const target = currentList;
+
+              // Only groceries not yet on the open list carry over; rows already there keep their state.
+              const sources = data.shoppingItems.filter(
+                (entry) =>
+                  entry.listId === from.id &&
+                  groceryIds.includes(entry.groceryId) &&
+                  !data.shoppingItems.some(
+                    (other) => other.listId === target.id && other.groceryId === entry.groceryId,
+                  ),
+              );
+
+              if (!sources.length) return;
+
+              const saved = await saveShoppingEdit({
+                kind: "add",
+                listId: target.id,
+                items: sources.map((entry) => ({
+                  groceryId: entry.groceryId,
+                  packages: entry.packages,
+                  sources: entry.sources,
+                })),
+              });
+
+              if (saved)
+                setToast(
+                  `Added ${sources.length} ${sources.length === 1 ? "item" : "items"} from ${listName(from)} to ${listName(target)}`,
+                );
             }}
           />
         </Dialog>

@@ -184,34 +184,81 @@ export type Rating = Recipe["rating"];
 /** Validated scheduled meal or note. */
 export type Meal = typeof MealSchema.Type;
 
-/** Manual shopping-list extra with a numeric checked flag. */
-export const ExtraSchema = Schema.Struct({
-  id: IdSchema,
-  revision: Schema.optional(Schema.String),
-  name: Schema.String.check(nonblank, Schema.isMaxLength(200)),
-  checked: Schema.Literals([0, 1]),
-});
-
 /** Whole packages to buy; independent of the quantity contained in one catalog package. */
 export const PackageCountSchema = Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 1_000_000 }));
 
-/** Persisted list membership with an optional package count; omitted counts preserve existing amounts. */
-export const CheckSchema = Schema.Struct({
-  key: Schema.String.check(Schema.isMaxLength(1000)),
-  checked: Schema.Literals([0, 1]),
-  packages: Schema.optional(PackageCountSchema),
+/** Dated shopping list; several lists may share a date and none is ever finished or locked. */
+export const ShoppingListSchema = Schema.Struct({
+  id: IdSchema,
+  revision: Schema.optional(Schema.String),
+  date: DateSchema,
+  label: Schema.String.check(Schema.isMaxLength(100)).annotate({
+    description: "Optional name shown beside the date, such as Top-up; empty string for none.",
+  }),
 });
 
-/** Conditional recipe additions preserve existing membership/counts; ordinary writes still replace counts. */
-export const CheckWriteSchema = Schema.Struct({
-  ...CheckSchema.fields,
-  onlyIfAbsent: Schema.optional(Schema.Literal(true)),
-}).check(
-  Schema.makeFilter(
-    (check) => !check.onlyIfAbsent || (check.checked === 0 && check.key.startsWith('["shopping-list",')),
-    { expected: "an unchecked catalog item for a conditional addition" },
-  ),
+/** Validated dated shopping list. */
+export type ShoppingList = typeof ShoppingListSchema.Type;
+
+/** Why a grocery is on a list: a planned meal (with mealId and date) or a recipe title alone. */
+export const ShoppingSourceSchema = Schema.Struct({
+  title: Schema.String.check(nonblank, Schema.isMaxLength(200)),
+  mealId: Schema.optional(IdSchema),
+  date: Schema.optional(DateSchema),
+});
+
+/** Validated shopping source attribution. */
+export type ShoppingSource = typeof ShoppingSourceSchema.Type;
+
+/** Source attributions per list item are bounded to keep household snapshots small. */
+export const ShoppingSourcesSchema = Schema.Array(ShoppingSourceSchema).check(Schema.isMaxLength(50));
+
+/** A grocery on one list; deleting the row removes it, checked only means picked up. */
+export const ShoppingListItemSchema = Schema.Struct({
+  listId: IdSchema,
+  groceryId: GroceryId,
+  checked: Schema.Literals([0, 1]),
+  packages: PackageCountSchema,
+  sources: ShoppingSourcesSchema,
+  addedAt: Schema.String,
+  checkedAt: Schema.NullOr(Schema.String),
+});
+
+/** Validated list membership with its purchase progress and package count. */
+export type ShoppingListItem = typeof ShoppingListItemSchema.Type;
+
+/** One requested addition. Existing rows only change when replace is true. */
+export const ShoppingAdditionSchema = Schema.Struct({
+  groceryId: GroceryId,
+  packages: Schema.optional(PackageCountSchema).annotate({
+    description: "Whole packages to buy. Omit for one on new rows, or to keep an existing row's count.",
+  }),
+  checked: Schema.optional(Schema.Literals([0, 1])).annotate({
+    description: "Picked-up state for the row; defaults to 0 (still needed).",
+  }),
+  sources: Schema.optional(ShoppingSourcesSchema),
+  replace: Schema.optional(Schema.Boolean).annotate({
+    description:
+      "When the grocery is already on the list, true applies checked/packages and merges sources; otherwise the existing row is left alone and reported.",
+  }),
+});
+
+/** Bulk additions to one list, with unique groceries. */
+export const ShoppingAdditionsSchema = Schema.Array(ShoppingAdditionSchema).check(
+  Schema.isLengthBetween(1, 500),
+  Schema.makeFilter((items) => new Set(items.map((item) => item.groceryId)).size === items.length, {
+    expected: "each grocery at most once",
+  }),
 );
+
+/** Validated bulk list additions. */
+export type ShoppingAddition = typeof ShoppingAdditionSchema.Type;
+
+/** Field-scoped change to a grocery already on a list; omitted fields stay unchanged. */
+export const ShoppingItemPatchSchema = Schema.Struct({
+  checked: Schema.optional(Schema.Literals([0, 1])),
+  packages: Schema.optional(PackageCountSchema),
+});
 
 /** Allows legacy migration identifiers longer than newly written identifiers. */
 export const CollectionSchema = Schema.Struct({
@@ -320,16 +367,13 @@ export const HouseholdSchema = Schema.Struct({
   /** Recipe IDs from oldest to newest addition; editing a recipe keeps its place. */
   recipesAdded: Schema.Array(RecipeId),
   meals: Schema.Array(MealSchema),
-  extras: Schema.Array(ExtraSchema),
-  checks: Schema.Array(CheckSchema),
+  shoppingLists: Schema.Array(ShoppingListSchema),
+  shoppingItems: Schema.Array(ShoppingListItemSchema),
   groceries: Schema.Array(GroceryItemSchema),
   shoppingOrder: ShoppingOrderSchema,
 });
 
-/** Validated manual shopping-list extra. */
-export type Extra = typeof ExtraSchema.Type;
-
-/** Validated household snapshot including independent list checks and ordering. */
+/** Validated household snapshot including every dated shopping list and the shared store route. */
 export type Household = typeof HouseholdSchema.Type;
 
 /** Case-insensitive substring search across title and ingredient names, without trimming input. */
@@ -393,16 +437,13 @@ export function quantity(value: number): string {
   return quantityFormatter.format(value);
 }
 
-/** Manual catalog list row retaining recipe-total fields for MCP compatibility. */
+/** A catalog grocery in store-route order, with its row on the selected list when it is on that list. */
 export type ShoppingItem = {
+  /** Store-route item key, JSON.stringify(["grocery", id]); not list membership. */
   key: string;
   name: string;
   grocery: GroceryItem;
-  // Retained in MCP output for compatibility; the manual list has no recipe totals.
-  needs: ShoppingNeed[];
-  packages: number | null;
-  warnings: string[];
-  recipes: string[];
+  entry?: ShoppingListItem;
 };
 
 /** Sorts numeric aisles before named aisles and empty aisles last, with deterministic ties. */
@@ -425,23 +466,20 @@ export function savedOrder(a: string, b: string, order: readonly string[]): numb
   return (ai < 0 ? Infinity : ai) - (bi < 0 ? Infinity : bi) || 0;
 }
 
-/** Builds manual rows with saved package counts, sorted without changing catalog package sizes. */
+/** Sorts every catalog grocery by store route, attaching the selected list's rows by grocery ID. */
 export function shoppingList(
   groceries: readonly GroceryItem[],
   order: ShoppingOrder = { aisles: [], items: [] },
-  checks: readonly (typeof CheckSchema.Type)[] = [],
+  entries: readonly ShoppingListItem[] = [],
 ): ShoppingItem[] {
-  const packages = new Map(checks.map((entry) => [entry.key, entry.packages ?? 1]));
+  const byGrocery = new Map(entries.map((entry) => [entry.groceryId, entry]));
 
   return groceries
     .map((grocery): ShoppingItem => ({
       key: JSON.stringify(["grocery", grocery.id]),
       name: grocery.name,
       grocery,
-      needs: [],
-      packages: packages.get(JSON.stringify(["shopping-list", grocery.id])) ?? 1,
-      warnings: [],
-      recipes: [],
+      entry: byGrocery.get(grocery.id),
     }))
     .sort((a, b) => {
       const aa = a.grocery.aisle;
@@ -457,6 +495,16 @@ export function shoppingList(
     });
 }
 
+/** Chooses the list to open: the nearest list dated today or later, else the latest earlier list. */
+export function defaultShoppingList(
+  lists: readonly ShoppingList[],
+  today: string = dateKey(new Date()),
+): ShoppingList | undefined {
+  const sorted = [...lists].sort((a, b) => a.date.localeCompare(b.date) || a.id.localeCompare(b.id));
+
+  return sorted.find((list) => list.date >= today) ?? sorted.at(-1);
+}
+
 /** Promotes whole compatible quantities to larger units and omits the each label. */
 export function displayAmount(item: ShoppingNeed): string {
   if (item.unit === "g" && item.quantity >= 1000) return `${quantity(item.quantity / 1000)} kg`;
@@ -467,9 +515,4 @@ export function displayAmount(item: ShoppingNeed): string {
     return `${quantity(item.quantity / 3)} tbsp`;
 
   return `${quantity(item.quantity)} ${item.unit === "each" ? "" : item.unit}`.trim();
-}
-
-/** Uses catalog list check keys, deliberately distinct from legacy recipe/range checks. */
-export function checkKey(item: ShoppingItem): string {
-  return JSON.stringify(["shopping-list", item.grocery.id]);
 }

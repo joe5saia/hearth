@@ -3,7 +3,7 @@ import { execFileSync } from "node:child_process";
 import { mkdir } from "node:fs/promises";
 import { resolve } from "node:path";
 import { Schema } from "effect";
-import { HouseholdSchema, CheckSchema, type GroceryDraft, type RecipeDraft, type MealDraft, type ShoppingOrder } from "../src/domain.ts";
+import { HouseholdSchema, type GroceryDraft, type RecipeDraft, type MealDraft, type ShoppingOrder } from "../src/domain.ts";
 
 // Exercises the real browser, Worker and local SQLite. Never writes a remote household.
 const url = process.argv[2] ?? "http://localhost:5173";
@@ -18,17 +18,17 @@ const checkRowAlignment = () => check(`
   [...document.querySelectorAll('.purchase-row')].every(row => {
     const label = row.querySelector('.shopping-item').getBoundingClientRect();
     const center = label.top + label.height / 2;
-    return [...row.querySelectorAll('.custom-check, .item-info, .route-drag, summary')].every(element => {
+    return [...row.querySelectorAll('.custom-check, .membership-button, .item-info, .route-drag, summary')].every(element => {
       const box = element.getBoundingClientRect();
       return Math.abs(box.top + box.height / 2 - center) < 1;
     }) && [...row.querySelectorAll('.route-drag, summary')].every(element => element.getBoundingClientRect().height >= 44)
       && (row.querySelector('.item-info').getBoundingClientRect().height > 32 || label.height <= 48);
-  })`, "shopping text, checkbox and 44px controls stay centered in compact and wrapped rows");
-const request = async (path: string, method = "GET", value?: GroceryDraft | RecipeDraft | MealDraft | ShoppingOrder | typeof CheckSchema.Encoded) => {
+  })`, "shopping text, checkbox or list button and 44px controls stay centered in compact and wrapped rows");
+const request = async (path: string, method = "GET", value?: GroceryDraft | RecipeDraft | MealDraft | ShoppingOrder | { items: { groceryId: string; packages?: number }[] } | { groceryIds: string[] } | { expectedRevision: string | null }) => {
   // Deliberate fixture writes read fresh guards; browser writes retain their original guards.
   let payload = value ? JSON.stringify(value) : undefined;
   const resource = path.split("/")[0];
-  if ((method === "PUT" || method === "DELETE") && (resource === "recipes" || resource === "groceries" || resource === "meals" || resource === "shopping-order")) {
+  if ((method === "PUT" || method === "DELETE") && path.split("/").length <= 2 && (resource === "recipes" || resource === "groceries" || resource === "meals" || resource === "shopping-order")) {
     const current = Schema.decodeUnknownSync(HouseholdSchema)(await (await fetch(`${url}/api/household`)).json());
     const id = method === "DELETE" ? decodeURIComponent(path.slice(resource.length + 1)) : value && "id" in value ? value.id : undefined;
     const saved = resource === "shopping-order" ? current.shoppingOrder : current[resource].find(item => item.id === id);
@@ -43,7 +43,13 @@ const request = async (path: string, method = "GET", value?: GroceryDraft | Reci
 const household = async () => Schema.decodeUnknownSync(HouseholdSchema)(await (await request("household")).json());
 const withoutRevision = <T extends { readonly revision?: string }>({ revision: _revision, ...value }: T) => value;
 const original = await household();
-assert(!original.recipes.length && !original.groceries.length && !original.meals.length && !original.extras.length, "Use an empty disposable local household for grocery browser smoke.");
+assert(!original.recipes.length && !original.groceries.length && !original.meals.length && !original.shoppingLists.length, "Use an empty disposable local household for grocery browser smoke.");
+// The list created through the empty state; every list write below targets it.
+let listId = "";
+const entries = async () => (await household()).shoppingItems.filter(entry => entry.listId === listId);
+const entry = async (product: GroceryDraft) => (await entries()).find(item => item.groceryId === product.id);
+const addToList = (...items: { groceryId: string; packages?: number }[]) => request(`shopping-lists/${encodeURIComponent(listId)}/items`, "POST", { items });
+const removeFromList = (...items: GroceryDraft[]) => request(`shopping-lists/${encodeURIComponent(listId)}/items`, "DELETE", { groceryIds: items.map(item => item.id) });
 const prefix = `grocery-smoke-${crypto.randomUUID()}`;
 const products: GroceryDraft[] = [
   { id: `${prefix}-rice`, name: "Long-grain rice", aliases: ["rice", "white rice"], quantity: 500, unit: "g", aisle: "10", url: "https://example.com/rice" },
@@ -71,6 +77,13 @@ const screenshot = (name: string) => {
   browser("eval", "new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)))");
   browser("screenshot", resolve(`.amp/in/artifacts/${name}.png`));
 };
+// Meals are listed newest first and a recipe can be planned twice; act on the newest visible option for a title.
+const chooseRecipe = (action: "check" | "click", title: string) => browser("eval", `(() => { const box = [...document.querySelectorAll('.shopping-recipe-option')].find(option => option.querySelector('strong')?.textContent === ${JSON.stringify(title)})?.querySelector('input'); if (!box) throw new Error(${JSON.stringify(`Missing recipe option ${title}`)}); if (${JSON.stringify(action)} === 'click' || !box.checked) box.click(); return true; })()`);
+// The list choice above review items pushes them under the sticky actions on narrow screens.
+const reviewItem = (action: "check" | "uncheck", selector: string) => {
+  browser("eval", `document.querySelector(${JSON.stringify(selector)}).scrollIntoView({ block: "center" })`);
+  browser(action, selector);
+};
 const formFill = (label: string, value: string) => browser("find", "label", label, "fill", value);
 const finishSave = () => browser("wait", "--fn", "!document.querySelector('.grocery-form')");
 const submit = (selector: string) => {
@@ -95,9 +108,19 @@ try {
   for (const item of products) await request("groceries", "PUT", item);
   for (const recipe of recipes) await request("recipes", "PUT", recipe);
   await mkdir(".amp/in/artifacts", { recursive: true });
+  browser("open", `${url}/#shopping`);
+  browser("reload");
+  browser("wait", "--fn", "document.querySelector('.shopping-layout, .empty-state')?.textContent.includes('No shopping lists yet')");
+  screenshot("shopping-no-lists");
+  browser("find", "role", "button", "click", "--name", "Start a list for today", "--exact");
+  browser("wait", ".shopping-summary");
+  const [created] = (await household()).shoppingLists;
+  assert(created, "Starting a list persists it.");
+  listId = created.id;
+  check(`location.hash.includes(${JSON.stringify(`list=${listId}`)}) && document.querySelector('.list-switcher > summary')?.textContent.includes('0 items')`, "empty state starts a list for today and opens it");
   shopping();
   browser("set", "viewport", "390", "844", "2");
-  browser("find", "role", "button", "click", "--name", "Add from recipes", "--exact");
+  browser("find", "role", "button", "click", "--name", "Add from meals", "--exact");
   check("document.querySelectorAll('.shopping-recipe-option').length === 2 && document.querySelector('.shopping-recipe-form .primary').disabled", "empty meal plan still offers the entire recipe library without preselecting items");
   check("document.querySelector('.shopping-recipe-form .primary').getAttribute('aria-describedby') === 'shopping-recipe-blocked' && document.getElementById('shopping-recipe-blocked').textContent.includes('Select at least one recipe')", "disabled review explains how to proceed without requiring hover");
   browser("fill", '.shopping-recipe-form input[type=search]', "lunch");
@@ -116,7 +139,7 @@ try {
   await request("meals", "PUT", { id: `${prefix}-meal-repeat`, recipeId: recipes[0].id, date: "2000-01-01", slot: "Dinner", scale: 1, note: "" });
   await request("meals", "PUT", { id: `${prefix}-meal-note`, recipeId: null, date: "2099-01-06", slot: "Dinner", scale: 1, note: "Leftovers" });
   await request("shopping-order", "PUT", { aisles: [], items: [] });
-  await request("checks", "PUT", { key: JSON.stringify(["shopping-list", products[1].id]), checked: 0 });
+  await addToList({ groceryId: products[1].id });
   shopping();
   browser("set", "viewport", "1280", "900", "2");
   browser("find", "role", "button", "click", "--name", "Edit amount for Olive oil", "--exact");
@@ -132,8 +155,7 @@ try {
   formFill("Packages to buy for Olive oil", "3");
   browser("click", ".purchase-amount-editor .primary");
   browser("wait", "--fn", "!document.querySelector('.purchase-amount-editor')");
-  const oilKey = JSON.stringify(["shopping-list", products[1].id]);
-  assert((await household()).checks.some(entry => entry.key === oilKey && entry.packages === 3 && entry.checked === 0), "Saving an amount preserves list membership.");
+  assert.deepEqual([(await entry(products[1]))?.packages, (await entry(products[1]))?.checked], [3, 0], "Saving an amount preserves list membership.");
   assert.equal((await household()).groceries.find(item => item.id === products[1].id)?.quantity, 500, "Buying three packages must not change the catalog package size.");
   shopping();
   check("document.querySelector('.purchase-amount').textContent.includes('3 × 500 ml')", "edited amount survives a full reload");
@@ -143,27 +165,27 @@ try {
   formFill("Packages to buy for Olive oil", "7");
   browser("click", ".purchase-amount-editor .secondary");
   check("!document.querySelector('.purchase-amount-editor') && document.activeElement.getAttribute('aria-label') === 'Edit amount for Olive oil'", "Cancel closes the amount editor and restores keyboard focus in narrow Shop Mode");
-  assert((await household()).checks.some(entry => entry.key === oilKey && entry.packages === 3), "Cancel does not write the draft amount.");
+  assert.equal((await entry(products[1]))?.packages, 3, "Cancel does not write the draft amount.");
   browser("find", "role", "button", "click", "--name", "Edit amount for Olive oil", "--exact");
   formFill("Packages to buy for Olive oil", "1");
   browser("press", "Enter");
   browser("wait", "--fn", "!document.querySelector('.purchase-amount-editor')");
-  assert((await household()).checks.some(entry => entry.key === oilKey && entry.packages === 1), "Keyboard save in Shop Mode restores one package.");
+  assert.equal((await entry(products[1]))?.packages, 1, "Keyboard save in Shop Mode restores one package.");
   browser("find", "role", "button", "click", "--name", "Exit shopping mode", "--exact");
   browser("set", "viewport", "1280", "900", "2");
-  browser("find", "role", "button", "click", "--name", "Add from recipes", "--exact");
-  check("document.querySelector('.shopping-recipe-form .primary').disabled && document.querySelectorAll('.shopping-recipe-option').length === 4", "recipe picker starts unselected with add disabled");
-  check("[...document.querySelectorAll('.shopping-recipe-option strong')].map(el => el.textContent).join('|') === 'Lime rice bowls|Rice for lunch|Earlier lunch|Unplanned recipe'", "planned recipes appear once by latest date, including future and past meals, followed by unplanned recipes");
+  browser("find", "role", "button", "click", "--name", "Add from meals", "--exact");
+  check("document.querySelector('.shopping-recipe-form .primary').disabled && document.querySelectorAll('.shopping-recipe-option').length === 5", "recipe picker starts unselected with add disabled");
+  check("[...document.querySelectorAll('.shopping-recipe-option strong')].map(el => el.textContent).join('|') === 'Lime rice bowls|Rice for lunch|Earlier lunch|Lime rice bowls|Unplanned recipe'", "each planned meal appears newest first, including future and past repeats, followed by unplanned recipes");
   screenshot("shopping-recipes-default");
-  browser("find", "role", "checkbox", "check", "--name", "Lime rice bowls");
+  chooseRecipe("check", "Lime rice bowls");
   browser("fill", '.shopping-recipe-form input[type=search]', "lunch");
   check("[...document.querySelectorAll('.shopping-recipe-option strong')].map(el => el.textContent).join('|') === 'Rice for lunch|Earlier lunch'", "search preserves meal-plan date ordering");
-  browser("find", "role", "checkbox", "check", "--name", "Rice for lunch");
-  check("document.querySelector('.shopping-recipe-preview').textContent.includes('2 selected · 3 items to add') && document.querySelector('.shopping-recipe-preview').textContent.includes('1 already on your list') && document.querySelector('.shopping-recipe-preview').textContent.includes('1 unlinked ingredient')", "selection survives search and deduplicates shared links while skipping existing and unlinked items");
+  chooseRecipe("check", "Rice for lunch");
+  check("document.querySelector('.shopping-recipe-preview').textContent.includes('2 selected · 4 linked groceries') && document.querySelector('.shopping-recipe-preview').textContent.includes('1 unlinked ingredient')", "selection survives search and deduplicates shared links while skipping unlinked items");
   browser("click", '.shopping-recipe-form input[type=search]');
   browser("press", "Control+a");
   browser("press", "Backspace");
-  browser("wait", "--fn", "document.querySelectorAll('.shopping-recipe-option').length === 4");
+  browser("wait", "--fn", "document.querySelectorAll('.shopping-recipe-option').length === 5");
   screenshot("shopping-recipes-selected-desktop");
   for (const width of [320, 390]) {
     browser("set", "viewport", String(width), "844", "2");
@@ -172,6 +194,7 @@ try {
   screenshot("shopping-recipes-selected-narrow");
   browser("click", '.shopping-recipe-form .primary');
   check("document.querySelectorAll('.shopping-review-item').length === 3 && [...document.querySelectorAll('.shopping-review-item input[type=checkbox]')].every(box => box.checked) && document.activeElement.textContent === 'Review items'", "review defaults every unique missing item to checked and focuses its heading");
+  check(`document.querySelector('.shopping-recipe-preview').textContent.includes('1 already on this list with the same count') && document.querySelector('.shopping-target').textContent.includes('Adding to ')`, "review targets the open list and counts an unchanged existing item instead of offering it again");
   check("document.querySelector('[aria-label=\"Packages to buy for Fresh limes · 2 lb bag\"]').value === '' && document.querySelector('.shopping-recipe-form .primary').disabled", "incompatible count and weight require an explicit package count rather than guessing");
   check("document.querySelectorAll('.shopping-review-item.needs-quantity').length === 1 && document.querySelector('.needs-quantity strong').textContent === 'Fresh limes · 2 lb bag' && document.getElementById('shopping-recipe-blocked').textContent.includes('highlighted item')", "only the ingredient needing a quantity is highlighted and explained beside submit");
   screenshot("shopping-review-needs-quantity-narrow");
@@ -187,108 +210,118 @@ try {
   check("!document.querySelector('.needs-quantity') && !document.querySelector('.shopping-recipe-form .primary').disabled && document.querySelector('.shopping-recipe-form .primary').textContent === 'Add 2 items'", "zero skips an item without highlighting or blocking other additions");
   formFill("Packages to buy for Fresh limes · 2 lb bag", "2");
   check("!document.querySelector('.needs-quantity') && !document.getElementById('shopping-recipe-blocked') && !document.querySelector('.shopping-recipe-form .primary').disabled", "valid quantity clears both the highlight and blocked-submit guidance");
-  assert.equal((await household()).checks.length, 1, "Review must not add items before confirmation.");
+  assert.equal((await entries()).length, 1, "Review must not add items before confirmation.");
   browser("set", "viewport", "1280", "900", "2");
   screenshot("shopping-review-default-desktop");
   for (const width of [320, 390]) {
     browser("set", "viewport", String(width), "844", "2");
     check("document.documentElement.scrollWidth <= innerWidth && document.querySelector('dialog').scrollWidth <= document.querySelector('dialog').clientWidth && [...document.querySelectorAll('.shopping-review-item')].every(el => el.getBoundingClientRect().height >= 44)", `${width}px review fits with accessible item targets`);
   }
-  browser("uncheck", '.shopping-review-item:nth-child(1) input[type=checkbox]');
-  browser("uncheck", '.shopping-review-item:nth-child(2) input[type=checkbox]');
-  browser("uncheck", '.shopping-review-item:nth-child(3) input[type=checkbox]');
+  reviewItem("uncheck", '.shopping-review-item:nth-child(1) input[type=checkbox]');
+  reviewItem("uncheck", '.shopping-review-item:nth-child(2) input[type=checkbox]');
+  reviewItem("uncheck", '.shopping-review-item:nth-child(3) input[type=checkbox]');
   check("document.querySelector('.shopping-recipe-form .primary').disabled && document.querySelector('.shopping-recipe-preview strong').textContent.includes('0 items to add')", "unchecking everything disables adding without changing the list");
   screenshot("shopping-review-none");
-  browser("check", '.shopping-review-item:nth-child(1) input[type=checkbox]');
-  browser("check", '.shopping-review-item:nth-child(2) input[type=checkbox]');
+  reviewItem("check", '.shopping-review-item:nth-child(1) input[type=checkbox]');
+  reviewItem("check", '.shopping-review-item:nth-child(2) input[type=checkbox]');
   screenshot("shopping-review-selected-narrow");
   browser("find", "role", "button", "click", "--name", "Back", "--exact");
   check("[...document.querySelectorAll('.shopping-recipe-option input')].filter(box => box.checked).length === 2 && document.activeElement.textContent === 'Choose recipes'", "Back preserves recipe selections and moves focus to the recipe step");
   browser("click", '.shopping-recipe-form .primary');
   check("!document.querySelector('.shopping-review-item:nth-child(3) input').checked && document.querySelector('.shopping-recipe-form .primary').textContent === 'Add 2 items'", "returning to review preserves unchecked items");
-  browser("uncheck", '.shopping-review-item:nth-child(2) input[type=checkbox]');
+  reviewItem("uncheck", '.shopping-review-item:nth-child(2) input[type=checkbox]');
   browser("find", "role", "button", "click", "--name", "Back", "--exact");
-  browser("find", "role", "checkbox", "click", "--name", "Lime rice bowls");
-  browser("find", "role", "checkbox", "click", "--name", "Rice for lunch");
-  browser("find", "role", "checkbox", "check", "--name", "Earlier lunch");
+  chooseRecipe("click", "Lime rice bowls");
+  chooseRecipe("click", "Rice for lunch");
+  chooseRecipe("check", "Earlier lunch");
   browser("click", '.shopping-recipe-form .primary');
   check("document.querySelectorAll('.shopping-review-item').length === 2 && !document.querySelector('.shopping-review-item:nth-child(1) input').checked && document.querySelector('.shopping-review-item:nth-child(1) strong').textContent === 'Long-grain rice' && document.querySelector('.shopping-review-item:nth-child(2) input').checked && document.querySelector('.shopping-review-item:nth-child(2) strong').textContent === 'Rolled oats'", "changing recipes preserves a shared exclusion and defaults a newly introduced product to checked");
   browser("find", "role", "button", "click", "--name", "Unselect all", "--exact");
   browser("find", "role", "button", "click", "--name", "Back", "--exact");
-  browser("find", "role", "checkbox", "click", "--name", "Earlier lunch");
-  browser("find", "role", "checkbox", "check", "--name", "Lime rice bowls");
+  chooseRecipe("click", "Earlier lunch");
+  chooseRecipe("check", "Lime rice bowls");
   browser("click", '.shopping-recipe-form .primary');
   check("document.querySelector('.shopping-review-item:nth-child(1) input').checked && !document.querySelector('.shopping-review-item:nth-child(2) input').checked && !document.querySelector('.shopping-review-item:nth-child(3) input').checked", "Unselect all in another recipe preserves the hidden bread exclusion and does not exclude hidden limes");
   browser("find", "role", "button", "click", "--name", "Back", "--exact");
-  browser("find", "role", "checkbox", "click", "--name", "Lime rice bowls");
-  browser("find", "role", "checkbox", "check", "--name", "Earlier lunch");
+  chooseRecipe("click", "Lime rice bowls");
+  chooseRecipe("check", "Earlier lunch");
   browser("click", '.shopping-recipe-form .primary');
   browser("find", "role", "button", "click", "--name", "Select all", "--exact");
   browser("find", "role", "button", "click", "--name", "Back", "--exact");
-  browser("find", "role", "checkbox", "click", "--name", "Earlier lunch");
-  browser("find", "role", "checkbox", "check", "--name", "Lime rice bowls");
+  chooseRecipe("click", "Earlier lunch");
+  chooseRecipe("check", "Lime rice bowls");
   browser("click", '.shopping-recipe-form .primary');
   check("document.querySelector('.shopping-review-item:nth-child(1) input').checked && document.querySelector('.shopping-review-item:nth-child(2) input').checked && !document.querySelector('.shopping-review-item:nth-child(3) input').checked", "Select all in another recipe selects shared rice but preserves the hidden bread exclusion");
   browser("find", "role", "button", "click", "--name", "Cancel", "--exact");
-  assert.equal((await household()).checks.length, 1, "Cancel must not add items.");
-  browser("find", "role", "button", "click", "--name", "Add from recipes", "--exact");
-  browser("find", "role", "checkbox", "check", "--name", "Lime rice bowls");
+  assert.equal((await entries()).length, 1, "Cancel must not add items.");
+  browser("find", "role", "button", "click", "--name", "Add from meals", "--exact");
+  chooseRecipe("check", "Lime rice bowls");
   browser("click", '.shopping-recipe-form .primary');
   formFill("Packages to buy for Fresh limes · 2 lb bag", "2");
-  browser("uncheck", '.shopping-review-item:nth-child(3) input[type=checkbox]');
-  browser("eval", `(() => { const originalFetch = window.fetch; let rejectWrite = true; let rejectRefresh = true; window.reviewWrites = []; window.fetch = (input, init) => { if (String(input).endsWith('/api/checks')) { window.reviewWrites.push(JSON.parse(init.body).key); if (rejectWrite) { rejectWrite = false; return Promise.resolve(new Response(JSON.stringify({error:'First review item failed'}), {status:503})); } } if (String(input).endsWith('/api/household') && rejectRefresh) { rejectRefresh = false; return Promise.resolve(new Response(JSON.stringify({error:'Refresh failed'}), {status:503})); } return originalFetch(input, init); }; })()`);
+  reviewItem("uncheck", '.shopping-review-item:nth-child(3) input[type=checkbox]');
+  // One atomic list write: a rejection must add nothing and keep the reviewed choices for retry or exclusion.
+  const itemsPath = `/api/shopping-lists/${encodeURIComponent(listId)}/items`;
+  browser("eval", `(() => { const originalFetch = window.fetch; let rejectWrite = true; window.reviewWrites = []; window.fetch = (input, init) => { if (String(input).endsWith(${JSON.stringify(itemsPath)}) && init?.method === 'POST') { window.reviewWrites.push(JSON.parse(init.body).items); if (rejectWrite) { rejectWrite = false; return Promise.resolve(new Response(JSON.stringify({error:'First review item failed'}), {status:503, headers:{'Content-Type':'application/json'}})); } } return originalFetch(input, init); }; })()`);
   browser("click", '.shopping-recipe-form .primary');
   browser("wait", "--fn", "!!document.querySelector('.shopping-recipe-form [role=alert]') && !document.querySelector('.shopping-recipe-form .primary').disabled");
-  check("document.querySelector('.shopping-recipe-form [role=alert]').textContent.includes('First review item failed') && document.querySelector('.shopping-recipe-form .primary').textContent === 'Add 1 item'", "later refresh failure must not hide an earlier unsaved review item");
-  assert.deepEqual(JSON.parse(browser("eval", "window.reviewWrites")), [products[3], products[0]].map(item => JSON.stringify(["shopping-list", item.id])), "Only checked missing products generate writes, in catalog order.");
-  browser("uncheck", '.shopping-review-item:nth-child(1) input[type=checkbox]');
-  check("document.querySelector('.shopping-recipe-form .primary').disabled", "an unsaved failed item can be excluded rather than retried");
+  check("document.querySelector('.shopping-recipe-form [role=alert]').textContent.includes('First review item failed') && document.querySelector('.shopping-recipe-form .primary').textContent === 'Add 2 items'", "a rejected addition keeps review open with its error and the same reviewed items");
+  assert.equal((await entries()).length, 1, "A rejected bulk addition adds nothing.");
+  reviewItem("uncheck", '.shopping-review-item:nth-child(1) input[type=checkbox]');
+  reviewItem("uncheck", '.shopping-review-item:nth-child(2) input[type=checkbox]');
+  check("document.querySelector('.shopping-recipe-form .primary').disabled", "unsaved items can be excluded rather than retried");
   browser("find", "role", "button", "click", "--name", "Cancel", "--exact");
-  check("!document.querySelector('[role=alert]')", "Cancel clears the review error without undoing successful writes");
-  assert((await household()).checks.some(entry => entry.key === JSON.stringify(["shopping-list", products[0].id]) && entry.checked === 0), "Acknowledged rice stays added despite failed refresh and cancellation.");
-  await request("checks", "PUT", { key: JSON.stringify(["shopping-list", products[0].id]), checked: 1 });
+  check("!document.querySelector('[role=alert]')", "Cancel clears the review error");
+  assert.equal((await entries()).length, 1, "Canceling after a rejection adds nothing.");
   shopping();
-  browser("find", "role", "button", "click", "--name", "Add from recipes", "--exact");
-  browser("find", "role", "checkbox", "check", "--name", "Lime rice bowls");
-  browser("find", "role", "checkbox", "check", "--name", "Rice for lunch");
+  browser("find", "role", "button", "click", "--name", "Add from meals", "--exact");
+  chooseRecipe("check", "Lime rice bowls");
+  chooseRecipe("check", "Rice for lunch");
   browser("click", '.shopping-recipe-form .primary');
   check("[...document.querySelectorAll('.shopping-review-item input[type=checkbox]')].every(box => box.checked)", "a fresh flow resets review items to checked");
   formFill("Packages to buy for Fresh limes · 2 lb bag", "2");
   formFill("Packages to buy for Long-grain rice", "3");
-  browser("uncheck", '.shopping-review-item:nth-child(3) input[type=checkbox]');
+  reviewItem("uncheck", '.shopping-review-item:nth-child(3) input[type=checkbox]');
   // Reject one real browser request; other requests still exercise Worker/D1 persistence.
-  browser("eval", `(() => { const originalFetch = window.fetch; let rejectWrite = true; window.reviewWrites = []; window.fetch = (input, init) => { if (String(input).endsWith('/api/checks')) { const key = JSON.parse(init.body).key; window.reviewWrites.push(key); if (rejectWrite && key === ${JSON.stringify(JSON.stringify(["shopping-list", products[3].id]))}) { rejectWrite = false; return Promise.resolve(new Response(JSON.stringify({error:'Recipe item save failed'}), {status:503, headers:{'Content-Type':'application/json'}})); } } return originalFetch(input, init); }; })()`);
+  browser("eval", `(() => { const originalFetch = window.fetch; let rejectWrite = true; window.reviewWrites = []; window.fetch = (input, init) => { if (String(input).endsWith(${JSON.stringify(itemsPath)}) && init?.method === 'POST') { window.reviewWrites.push(JSON.parse(init.body).items); if (rejectWrite) { rejectWrite = false; return Promise.resolve(new Response(JSON.stringify({error:'Recipe item save failed'}), {status:503, headers:{'Content-Type':'application/json'}})); } } return originalFetch(input, init); }; })()`);
   browser("click", '.shopping-recipe-form .primary');
   browser("wait", "--fn", "!!document.querySelector('.shopping-recipe-form [role=alert]') && !document.querySelector('.shopping-recipe-form .primary').disabled");
-  check("document.querySelector('.shopping-recipe-preview').textContent.includes('1 item to add') && document.querySelector('.shopping-recipe-form [role=alert]').textContent.includes('Recipe item save failed')", "partial failure stays open and retry includes only unsaved items");
+  check("document.querySelector('.shopping-recipe-preview').textContent.includes('2 items to add') && document.querySelector('.shopping-recipe-form [role=alert]').textContent.includes('Recipe item save failed')", "failed addition stays open with its reviewed counts for retry");
   screenshot("shopping-recipes-save-error");
   browser("click", '.shopping-recipe-form .primary');
   browser("wait", "--fn", "!document.querySelector('dialog[open]') && !document.querySelector('.shopping-save-status')");
-  assert.deepEqual(JSON.parse(browser("eval", "window.reviewWrites")), [products[3], products[0], products[3]].map(item => JSON.stringify(["shopping-list", item.id])), "Retry writes only the failed product, never the already-saved, existing, or excluded products.");
+  const reviewWrites = Schema.decodeUnknownSync(Schema.Array(Schema.Array(Schema.Struct({ groceryId: Schema.String, packages: Schema.optional(Schema.Number), replace: Schema.optional(Schema.Boolean) }))))(JSON.parse(browser("eval", "window.reviewWrites")));
+  const summarize = (items: (typeof reviewWrites)[number]) => items.map(item => `${item.groceryId}:${item.packages ?? "keep"}`).sort();
+  assert.deepEqual(reviewWrites.map(summarize), [0, 1].map(() => [`${products[0].id}:3`, `${products[1].id}:keep`, `${products[3].id}:2`].sort()), "Retry resends the same reviewed additions once; excluded bread is never sent and unchanged oil keeps its count.");
   browser("reload");
   browser("wait", ".shopping-summary");
-  const selectedKeys = (await household()).checks.filter(entry => entry.checked === 0).map(entry => entry.key).sort();
-  assert.deepEqual(selectedKeys, [products[0], products[1], products[3]].map(item => JSON.stringify(["shopping-list", item.id])).sort(), "Only checked unique groceries persist; existing oil stays, unchecked bread and unrelated oats stay off-list.");
+  const selected = (await entries()).filter(item => item.checked === 0);
+  assert.deepEqual(selected.map(item => item.groceryId).sort(), [products[0], products[1], products[3]].map(item => item.id).sort(), "Only checked unique groceries persist; existing oil stays, unchecked bread and unrelated oats stay off-list.");
+  assert.deepEqual((await entry(products[0]))?.sources.map(source => source.title).sort(), ["Lime rice bowls", "Rice for lunch"], "Added rows record the meals that need them.");
+  assert.deepEqual((await entry(products[1]))?.sources.map(source => source.title), ["Lime rice bowls"], "An unchanged existing row gains the new meal source without changing its count.");
   check("document.querySelectorAll('.purchase-row').length === 3", "only reviewed additions appear on shopping list after reload");
   check("[...document.querySelectorAll('.purchase-row')].find(el => el.textContent.includes('Long-grain rice')).textContent.includes('3 × 500 g') && [...document.querySelectorAll('.purchase-row')].find(el => el.textContent.includes('Fresh limes')).textContent.includes('2 × 2 lb') && !document.querySelector('.purchase-need')", "review additions persist adjusted package counts without altering catalog package sizes");
-  browser("find", "role", "button", "click", "--name", "Add from recipes", "--exact");
-  browser("find", "role", "checkbox", "check", "--name", "Lime rice bowls");
+  browser("find", "role", "button", "click", "--name", "Add from meals", "--exact");
+  chooseRecipe("check", "Lime rice bowls");
   browser("click", '.shopping-recipe-form .primary');
-  check("document.querySelectorAll('.shopping-review-item').length === 1 && document.querySelector('.shopping-review-item strong').textContent === 'Whole-wheat bread' && document.querySelector('.shopping-review-item input').checked", "later additions offer the previously excluded item without duplicating saved items");
+  check("document.querySelectorAll('[aria-label=\"Items to add\"] .shopping-review-item').length === 1 && document.querySelector('[aria-label=\"Items to add\"] .shopping-review-item strong').textContent === 'Whole-wheat bread' && document.querySelector('[aria-label=\"Items to add\"] .shopping-review-item input').checked", "later additions offer the previously excluded item without duplicating saved items");
+  check("document.querySelector('[aria-label=\"Already on this list\"]').textContent.includes('Needs your decision · 1') && document.querySelector('[aria-label=\"Already on this list\"]').textContent.includes('On this list as 3') && !document.querySelector('[aria-label=\"Already on this list\"] input[type=checkbox]').checked && document.querySelector('[aria-label=\"Packages to buy for Long-grain rice\"]').disabled && document.querySelector('.shopping-recipe-form .primary').textContent === 'Add 1 item'", "an existing row with a different count needs an explicit decision and is left alone by default");
   browser("click", '.shopping-recipe-form .primary');
   browser("wait", "--fn", "!document.querySelector('dialog[open]') && !document.querySelector('.shopping-save-status')");
-  assert.equal((await household()).checks.filter(entry => entry.checked === 0).length, 4);
-  browser("find", "role", "button", "click", "--name", "Add from recipes", "--exact");
-  browser("find", "role", "checkbox", "check", "--name", "Lime rice bowls");
-  browser("find", "role", "checkbox", "check", "--name", "Rice for lunch");
-  check("document.querySelector('.shopping-recipe-form .primary').disabled && document.querySelector('.shopping-recipe-preview').textContent.includes('All linked items are already on your list')", "reselecting recipes cannot duplicate or remove shopping items");
+  assert.equal((await entries()).filter(item => item.checked === 0).length, 4);
+  assert.equal((await entry(products[0]))?.packages, 3, "An unticked conflict keeps its existing count.");
+  browser("find", "role", "button", "click", "--name", "Add from meals", "--exact");
+  chooseRecipe("check", "Lime rice bowls");
+  chooseRecipe("check", "Rice for lunch");
+  browser("click", '.shopping-recipe-form .primary');
+  check("document.querySelector('.shopping-recipe-form .primary').disabled && document.querySelector('[aria-label=\"Items to add\"]').textContent.includes('Everything from these meals is already on this list')", "reselecting recipes cannot duplicate or remove shopping items");
   screenshot("shopping-recipes-already-added");
+  browser("find", "role", "button", "click", "--name", "Back", "--exact");
   browser("fill", '.shopping-recipe-form input[type=search]', "no such recipe");
   check("!document.querySelector('.shopping-recipe-option') && document.querySelector('.shopping-recipe-options').textContent.includes('No recipes match')", "recipe picker search has an empty state");
   browser("find", "role", "button", "click", "--name", "Cancel", "--exact");
   for (const suffix of ["past", "repeat", "note"]) await request(`meals/${prefix}-meal-${suffix}`, "DELETE");
   for (const suffix of ["past", "unplanned"]) await request(`recipes/${prefix}-${suffix}`, "DELETE");
-  for (const item of products.slice(0, 4)) await request("checks", "PUT", { key: JSON.stringify(["shopping-list", item.id]), checked: 1 });
+  await removeFromList(...products.slice(0, 4));
   console.log("PASS recipe shopping flow persists unique additions, cancellation, repeat selection and partial-failure retry");
   // Include off-list aisles, blanks, duplicates and numeric boundaries; none require a new aisle API.
   const aisleFixtures = ["20", "3", "Frozen", "Wine", ""].map((aisle, index) => ({ ...products[4], id: `${prefix}-aisle-${index}`, name: `Aisle fixture ${index}`, aisle }));
@@ -297,8 +330,8 @@ try {
   browser("set", "viewport", "1280", "900", "2");
   browser("click", '[aria-label="List Builder"]');
   // Hold a real shopping write so its eventual household refresh arrives with the editor open.
-  browser("eval", "window.aisleOriginalFetch = window.fetch; window.fetch = (input, init) => String(input).endsWith('/api/checks') ? new Promise(resolve => { window.releaseAisleRefresh = () => resolve(window.aisleOriginalFetch(input, init)); }) : window.aisleOriginalFetch(input, init)");
-  browser("uncheck", '[aria-label="Off list Rolled oats"]');
+  browser("eval", "window.aisleOriginalFetch = window.fetch; window.fetch = (input, init) => String(input).endsWith('/items') ? new Promise(resolve => { window.releaseAisleRefresh = () => resolve(window.aisleOriginalFetch(input, init)); }) : window.aisleOriginalFetch(input, init)");
+  browser("click", '[aria-label="Add Rolled oats to this list"]');
   browser("wait", "--fn", "typeof window.releaseAisleRefresh === 'function'");
   browser("click", '[aria-label="Exit List Builder"]');
   browser("click", 'nav a[href="#groceries"]');
@@ -316,7 +349,7 @@ try {
   check("!!document.querySelector('.grocery-form') && document.querySelector('[role=combobox]').value === ''", "Enter after a highlighted aisle disappears neither crashes, selects its replacement, nor submits");
   browser("find", "role", "button", "click", "--name", "Cancel", "--exact");
   await request("groceries", "PUT", aisleFixtures[3]);
-  await request("checks", "PUT", { key: JSON.stringify(["shopping-list", products[4].id]), checked: 1 });
+  await removeFromList(products[4]);
   browser("open", `${url}/#groceries`);
   browser("reload");
   browser("set", "viewport", "1280", "900", "2");
@@ -568,7 +601,7 @@ try {
   shopping();
   check("!document.querySelector('.purchase-row') && !document.querySelector('.shopping-range')", "planned recipes do not dynamically populate the manual list");
   browser("click", '[aria-label="List Builder"]');
-  check("document.querySelectorAll('.purchase-row').length === 6 && [...document.querySelectorAll('.purchase-row input')].every(box => box.checked)", "List Builder includes all groceries, including unused oats, initially checked and off-list");
+  check("document.querySelectorAll('.purchase-row').length === 6 && [...document.querySelectorAll('.purchase-row .membership-button')].every(button => button.getAttribute('aria-pressed') === 'false' && button.getAttribute('aria-label').startsWith('Add '))", "List Builder includes all groceries, including unused oats, each offered for adding");
   check("document.querySelector('.purchase-group h3').textContent === 'Aisle Bakery' && document.querySelector('[aria-label=\"Aisle 10\"] .item-info strong').textContent === 'Olive oil'", "aisle and within-aisle ordering survive reload");
   // Check both debounce boundaries in one browser call, without CLI latency masking an immediate filter.
   browser("eval", `(async () => {
@@ -590,17 +623,17 @@ try {
   browser("set", "viewport", "390", "844", "2");
   check("document.documentElement.scrollWidth <= innerWidth && document.querySelector('[aria-label=\"Search grocery items\"]').getBoundingClientRect().width > 250", "narrow builder search fits with a usable input width");
   screenshot("list-builder-search-narrow");
-  browser("uncheck", '[aria-label="Off list Long-grain rice"]');
+  browser("click", '[aria-label="Add Long-grain rice to this list"]');
   browser("wait", "--fn", "!document.querySelector('.shopping-save-status')");
   browser("fill", '[aria-label="Search grocery items"]', "no such item");
   browser("wait", "--fn", "!document.querySelector('.purchase-row') && document.querySelector('.shopping-panel').textContent.includes('No grocery items found')");
-  check("document.querySelector('.shopping-summary').textContent.includes('1 left') && !document.querySelector('.shopping-panel').textContent.includes('Nothing to shop for')", "no-match search keeps list totals and has a dedicated empty state");
+  check("document.querySelector('.shopping-summary').textContent.includes('1 left') && !document.querySelector('.shopping-panel').textContent.includes('Nothing on this list')", "no-match search keeps list totals and has a dedicated empty state");
   screenshot("list-builder-search-empty");
   browser("click", '[aria-label="Search grocery items"]');
   browser("press", "Control+a");
   browser("press", "Backspace");
   browser("wait", "--fn", "document.querySelectorAll('.purchase-row').length === 6");
-  check("!document.querySelector('[aria-label=\"Off list Long-grain rice\"]').checked && document.querySelector('[aria-label=\"Aisle 10\"] .item-info strong').textContent === 'Olive oil'", "clearing search restores catalog route order and preserves filtered selection");
+  check("document.querySelector('[aria-label=\"Remove Long-grain rice from this list\"]').getAttribute('aria-pressed') === 'true' && document.querySelector('[aria-label=\"Aisle 10\"] .item-info strong').textContent === 'Olive oil'", "clearing search restores catalog route order and preserves filtered selection");
   const beforeSearch = await household();
   for (const query of ["white rice", "Bakery", "[", ".", "Long  grain"]) {
     browser("fill", '[aria-label="Search grocery items"]', query);
@@ -612,7 +645,7 @@ try {
   browser("fill", '[aria-label="Search grocery items"]', "   ");
   browser("wait", "--fn", "document.querySelectorAll('.purchase-row').length === 6");
   const afterSearch = await household();
-  assert.deepEqual(afterSearch.checks, beforeSearch.checks, "Searching must not change hidden or visible shopping membership.");
+  assert.deepEqual(afterSearch.shoppingItems, beforeSearch.shoppingItems, "Searching must not change hidden or visible shopping membership.");
   assert.deepEqual(afterSearch.shoppingOrder, beforeSearch.shoppingOrder, "Searching must not change route order.");
   // Change mode/page in the same turn as input so a still-pending timer is definitely exercised.
   browser("eval", `(async () => {
@@ -646,11 +679,11 @@ try {
     if (document.querySelector('[aria-label="Search grocery items"]').value || document.querySelectorAll('.purchase-row').length !== 6) throw new Error('Pending search survived navigation');
   })()`);
   console.log("PASS blank search restores all items; pending debounce is canceled on Exit, Focus and page navigation");
-  browser("uncheck", '[aria-label="Off list Rolled oats"]');
+  browser("click", '[aria-label="Add Rolled oats to this list"]');
   browser("wait", "--fn", "!document.querySelector('.shopping-save-status')");
-  const riceKey = JSON.stringify(["shopping-list", products[0].id]);
-  assert((await household()).checks.some(entry => entry.key === riceKey && entry.checked === 0));
-  check("document.querySelectorAll('.purchase-row').length === 6 && document.querySelector('.shopping-summary').textContent.includes('2 left')", "unchecking adds items without hiding any catalog rows");
+  assert.equal((await entry(products[0]))?.checked, 0);
+  assert.equal((await entry(products[4]))?.checked, 0);
+  check("document.querySelectorAll('.purchase-row').length === 6 && document.querySelector('.shopping-summary').textContent.includes('2 left')", "adding items keeps every catalog row visible");
   for (const width of [320, 390, 1280]) {
     browser("set", "viewport", String(width), "844", "2");
     check("document.documentElement.scrollWidth <= innerWidth", `${width}px List Builder has no horizontal overflow`);
@@ -667,18 +700,20 @@ try {
   check("!document.querySelector('[aria-label=\"Search grocery items\"]') && document.querySelectorAll('.purchase-row').length === 2 && [...document.querySelectorAll('.purchase-row input')].every(box => !box.checked)", "Focus ignores builder search and shows only the manually selected groceries");
   browser("click", '[aria-label="Picked up Long-grain rice"]');
   browser("wait", "--fn", "!document.querySelector('.shopping-save-status')");
-  check("!document.querySelector('[aria-label=\"Picked up Long-grain rice\"]')", "picking up an item removes it from the active list");
+  check("document.querySelector('[aria-label=\"In cart\"] [aria-label=\"Picked up Long-grain rice\"]').checked && !document.querySelector('[aria-label=\"Aisle 10\"]')?.textContent.includes('Long-grain rice') && [...document.querySelectorAll('.toast')].some(toast => toast.textContent.includes('Picked up Long-grain rice') && toast.querySelector('button')?.textContent === 'Undo')", "picking up an item moves it from its aisle into In cart and offers Undo");
+  assert.equal((await entry(products[0]))?.checked, 1, "Picked-up state persists while the grocery stays on the list.");
+  browser("click", '[aria-label="Picked up Long-grain rice"]');
+  browser("wait", "--fn", "!document.querySelector('.shopping-save-status') && !document.querySelector('[aria-label=\"In cart\"]')");
+  assert.equal((await entry(products[0]))?.checked, 0, "Unchecking returns the grocery to still needed.");
   browser("click", '[aria-label="Exit shopping mode"]');
   browser("click", '[aria-label="List Builder"]');
   check("document.querySelector('[aria-label=\"Search grocery items\"]').value === '' && document.querySelectorAll('.purchase-row').length === 6", "reopening builder starts with an unfiltered catalog");
-  check("document.querySelector('[aria-label=\"Off list Long-grain rice\"]').checked", "removed grocery is checked when revisiting List Builder");
-  browser("uncheck", '[aria-label="Off list Long-grain rice"]');
-  browser("wait", "--fn", "!document.querySelector('.shopping-save-status')");
+  check("document.querySelector('[aria-label=\"Remove Long-grain rice from this list\"]').getAttribute('aria-pressed') === 'true'", "a grocery picked up and put back stays on the list in List Builder");
   browser("click", '[aria-label="Exit List Builder"]');
   await request("meals", "PUT", { ...(await household()).meals[0], scale: 7, date: "2099-02-01" });
   browser("reload");
   browser("wait", ".purchase-row");
-  check("document.querySelectorAll('.purchase-row').length === 2 && document.querySelector('[aria-label=\"Picked up Rolled oats\"]')", "manual selection persists after reload and changing meal date/scale");
+  check("document.querySelectorAll('.purchase-row').length === 2 && document.querySelector('[aria-label=\"Remove Rolled oats from this list\"]')", "manual selection persists after reload and changing meal date/scale");
   browser("click", '[aria-label="Shopping mode"]');
   check("[...document.querySelectorAll('.purchase-row')].filter(el => !el.querySelector('.purchase-warning')).every(el => el.getBoundingClientRect().height <= 88) && [...document.querySelectorAll('.purchase-details summary')].every(el => el.getBoundingClientRect().height >= 44)", "compact rows retain 44px disclosure targets");
   checkRowAlignment();
@@ -720,7 +755,7 @@ try {
   browser("wait", "--fn", "!document.querySelector('.shopping-save-status')");
   assert.deepEqual((await household()).shoppingOrder, savedSearchOrder, "An equal-height search result replacement during drag must not persist an unintended reorder.");
   console.log("PASS search result changes safely cancel an active drag without changing saved route order");
-  await request("checks", "PUT", { key: JSON.stringify(["shopping-list", products[1].id]), checked: 0 });
+  await addToList({ groceryId: products[1].id });
   shopping();
   browser("click", '[aria-label="Page options"]');
   browser("find", "role", "button", "click", "--name", "Arrange route", "--exact");
@@ -742,6 +777,7 @@ try {
     for (const item of current.recipes.filter((item) => item.id.startsWith(prefix))) await request(`recipes/${encodeURIComponent(item.id)}`, "DELETE");
     for (const item of (await household()).groceries.filter((item) => item.id.startsWith(prefix) || item.name.startsWith(prefix) || item.name === "Flat-leaf parsley")) await request(`groceries/${encodeURIComponent(item.id)}`, "DELETE");
     await request("shopping-order", "PUT", original.shoppingOrder);
+    for (const list of (await household()).shoppingLists) await request(`shopping-lists/${encodeURIComponent(list.id)}`, "DELETE", { expectedRevision: list.revision ?? null });
     const restored = await household();
     assert.deepEqual({ ...restored, shoppingOrder: withoutRevision(restored.shoppingOrder) }, { ...original, shoppingOrder: withoutRevision(original.shoppingOrder) }, "Fixture cleanup must restore the starting household domain content.");
   }

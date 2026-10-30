@@ -1,6 +1,16 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Schema } from "effect";
-import { ArrowDown, ArrowUp, Check, ChevronDown, ExternalLink, GripVertical, Pencil } from "lucide-react";
+import {
+  ArrowDown,
+  ArrowUp,
+  Check,
+  ChevronDown,
+  ExternalLink,
+  GripVertical,
+  Pencil,
+  Plus,
+  X,
+} from "lucide-react";
 import {
   compareAisles,
   displayAmount,
@@ -49,17 +59,20 @@ function MoveButtons({
   );
 }
 
-/** Delegates list writes to callers and preserves pointer and arrow-button store-route ordering. */
+/** Renders one list as plan (remove, amounts), shop (check off, In cart) or catalog (add/remove) rows; callers own writes. */
 export function ShoppingItems({
   items,
   groceries,
   order,
   busy,
   shoppingMode,
-  listBuilder,
+  variant,
   arranging,
   checked,
+  onList,
   toggle,
+  add,
+  remove,
   saveAmount,
   saveOrder,
   renameAisle,
@@ -70,10 +83,13 @@ export function ShoppingItems({
   order: ShoppingOrder;
   busy: boolean;
   shoppingMode: boolean;
-  listBuilder: boolean;
+  variant: "plan" | "shop" | "catalog";
   arranging: boolean;
   checked: (item: ShoppingItem) => boolean;
+  onList: (item: ShoppingItem) => boolean;
   toggle: (item: ShoppingItem) => void;
+  add: (item: ShoppingItem) => void;
+  remove: (item: ShoppingItem) => void;
   saveAmount: (item: ShoppingItem, packages: number) => Promise<boolean>;
   saveOrder: (order: ShoppingOrder) => Promise<boolean>;
   renameAisle: (from: string, to: string) => Promise<boolean>;
@@ -286,8 +302,6 @@ export function ShoppingItems({
       a.id.localeCompare(b.id),
   );
 
-  const groups = [...new Set(items.map((item) => item.grocery.aisle))];
-
   const aisleName = (aisle: string) => (aisle ? `Aisle ${aisle}` : "No aisle assigned");
 
   const moveAisle = (index: number, target: number) => {
@@ -425,6 +439,202 @@ export function ShoppingItems({
     );
   };
 
+  const active = variant === "shop" ? items.filter((item) => !checked(item)) : items;
+
+  // Checked items leave their aisle in the store so the remaining route stays short.
+  const inCart = (variant === "shop" ? items.filter(checked) : []).sort((a, b) =>
+    (a.entry?.checkedAt ?? "").localeCompare(b.entry?.checkedAt ?? ""),
+  );
+
+  const groups = [...new Set(active.map((item) => item.grocery.aisle))];
+
+  const row = (item: ShoppingItem, aisle: string | null, position: number, aisleItems: GroceryItem[]) => {
+    const isDragging = dragging !== null && dragging.id === item.grocery.id;
+    const packages = item.entry?.packages ?? 1;
+    const isChecked = checked(item);
+    const included = onList(item);
+
+    const isTarget =
+      dragging !== null &&
+      dragging.aisle === aisle &&
+      !isDragging &&
+      aisleItems[dragging.target]?.id === item.grocery.id;
+
+    const reorderable = aisle !== null && aisleItems.length > 1;
+
+    return (
+      <div
+        className={`purchase-row ${variant === "catalog" ? (included ? "" : "off-list") : isChecked ? "checked" : ""}${reorderable ? " has-drag" : ""}${isDragging ? " is-dragging" : ""}${isTarget ? " drop-target" : ""}`}
+        data-reorder-row={aisle === null ? undefined : true}
+        key={item.key}
+        style={aisle === null ? undefined : rowStyle(item.grocery.id, aisle, position)}
+      >
+        {reorderable &&
+          dragHandle(
+            item.grocery.id,
+            aisle,
+            aisleItems.map((entry) => entry.id),
+            position,
+          )}
+        <div className="shopping-item">
+          {variant === "shop" ? (
+            <>
+              <input
+                id={`shopping-check-${item.grocery.id}`}
+                type="checkbox"
+                checked={isChecked}
+                disabled={busy || editingAmount !== null}
+                aria-label={`Picked up ${item.name}`}
+                onChange={() => toggle(item)}
+              />
+              <label className="custom-check" htmlFor={`shopping-check-${item.grocery.id}`}>
+                <Check size={15} />
+              </label>
+            </>
+          ) : variant === "catalog" ? (
+            <button
+              type="button"
+              className={`membership-button${included ? " on-list" : ""}`}
+              aria-label={included ? `Remove ${item.name} from this list` : `Add ${item.name} to this list`}
+              aria-pressed={included}
+              disabled={busy}
+              onClick={() => (included ? remove(item) : add(item))}
+            >
+              {included ? <Check size={16} /> : <Plus size={16} />}
+            </button>
+          ) : (
+            <button
+              type="button"
+              className="membership-button"
+              aria-label={`Remove ${item.name} from this list`}
+              disabled={busy || editingAmount !== null}
+              onClick={() => remove(item)}
+            >
+              <X size={16} />
+            </button>
+          )}
+          <span className="item-info">
+            <span className="item-heading">
+              {variant === "shop" ? (
+                <label htmlFor={`shopping-check-${item.grocery.id}`}>
+                  <strong>{item.name}</strong>
+                </label>
+              ) : (
+                <strong>{item.name}</strong>
+              )}
+              {variant === "catalog" && !included ? (
+                <span className="purchase-amount">{displayAmount(item.grocery)}</span>
+              ) : (
+                <button
+                  className="purchase-amount"
+                  aria-label={`Edit amount for ${item.name}`}
+                  aria-expanded={editingAmount?.key === item.key}
+                  disabled={busy || isChecked || editingAmount !== null}
+                  onClick={(event) => {
+                    amountTrigger.current = event.currentTarget;
+                    setEditingAmount({ key: item.key, value: String(packages) });
+                  }}
+                >
+                  {packages > 1 ? `${packages} × ` : ""}
+                  {displayAmount(item.grocery)}
+                  {!isChecked && <Pencil size={13} />}
+                </button>
+              )}
+            </span>
+            {variant !== "catalog" && (item.entry?.sources.length || (variant === "plan" && isChecked)) ? (
+              <small className="purchase-sources">
+                {variant === "plan" && isChecked ? "Picked up" : ""}
+                {variant === "plan" && isChecked && item.entry?.sources.length ? " · " : ""}
+                {item.entry?.sources.map((source) => source.title).join(" · ")}
+              </small>
+            ) : null}
+          </span>
+        </div>
+        {editingAmount?.key === item.key && (
+          <form
+            className="purchase-amount-editor"
+            onSubmit={async (event) => {
+              event.preventDefault();
+              const next = Number(editingAmount.value);
+
+              if (busy || savingAmount || !Schema.is(PackageCountSchema)(next)) return;
+              setSavingAmount(true);
+
+              try {
+                if (await saveAmount(item, next)) closeAmount();
+              } finally {
+                setSavingAmount(false);
+              }
+            }}
+            onKeyDown={(event) => {
+              if (event.key === "Escape" && !busy && !savingAmount) {
+                event.preventDefault();
+                closeAmount();
+              }
+            }}
+          >
+            <label>
+              Packages to buy
+              <input
+                type="number"
+                min="1"
+                max="1000000"
+                step="1"
+                required
+                autoFocus
+                aria-label={`Packages to buy for ${item.name}`}
+                value={editingAmount.value}
+                disabled={busy || savingAmount}
+                onChange={(event) => setEditingAmount({ key: item.key, value: event.target.value })}
+              />
+            </label>
+            <span className="field-hint">{displayAmount(item.grocery)} per package</span>
+            <div>
+              <button
+                className="primary"
+                disabled={busy || savingAmount || !Schema.is(PackageCountSchema)(Number(editingAmount.value))}
+              >
+                {savingAmount ? "Saving…" : "Save"}
+              </button>
+              <button
+                type="button"
+                className="secondary"
+                disabled={busy || savingAmount}
+                onClick={closeAmount}
+              >
+                Cancel
+              </button>
+            </div>
+          </form>
+        )}
+        <details className="purchase-details">
+          <summary aria-label={`Details for ${item.name}`}>
+            <ChevronDown size={18} />
+          </summary>
+          <div className="purchase-links">
+            {item.grocery.url && (
+              <a href={item.grocery.url} target="_blank" rel="noreferrer">
+                Store product <ExternalLink size={13} />
+              </a>
+            )}
+            <button
+              className="text-button"
+              disabled={editingAmount !== null}
+              onClick={() => edit(item.grocery)}
+            >
+              <Pencil size={13} /> Edit product
+            </button>
+            {variant === "shop" && (
+              <button className="text-button" disabled={busy} onClick={() => remove(item)}>
+                <X size={13} /> Remove from list
+              </button>
+            )}
+          </div>
+        </details>
+      </div>
+    );
+  };
+
   return (
     <div ref={rootRef} className={dragging?.moved ? "is-reordering" : undefined}>
       {arranging && !shoppingMode ? (
@@ -547,8 +757,8 @@ export function ShoppingItems({
       ) : (
         <div className="purchase-groups">
           {groups.map((aisle) => {
-            const all = items.filter((item) => item.grocery?.aisle === aisle);
-            const aisleItems = all.flatMap((item) => (item.grocery ? [item.grocery] : []));
+            const all = active.filter((item) => item.grocery.aisle === aisle);
+            const aisleItems = all.map((item) => item.grocery);
 
             if (!all.length) return null;
 
@@ -562,154 +772,26 @@ export function ShoppingItems({
                 <div className="aisle-heading">
                   <h3>{aisleName(aisle)}</h3>
                   <span>
-                    {all.filter(checked).length} / {all.length}
+                    {variant === "plan"
+                      ? `${all.filter(checked).length} / ${all.length}`
+                      : variant === "catalog"
+                        ? `${all.filter(onList).length} on list`
+                        : `${all.length} left`}
                   </span>
                 </div>
-                {all.map((item, position) => {
-                  const isDragging = dragging !== null && dragging.id === item.grocery?.id;
-
-                  const isTarget =
-                    dragging !== null &&
-                    dragging.aisle === aisle &&
-                    !isDragging &&
-                    aisleItems[dragging.target]?.id === item.grocery?.id;
-
-                  return (
-                    <div
-                      className={`purchase-row ${checked(item) ? "checked" : ""}${item.grocery && aisleItems.length > 1 ? " has-drag" : ""}${isDragging ? " is-dragging" : ""}${isTarget ? " drop-target" : ""}`}
-                      data-reorder-row
-                      key={item.key}
-                      style={rowStyle(item.grocery?.id, aisle, position)}
-                    >
-                      {item.grocery &&
-                        dragHandle(
-                          item.grocery.id,
-                          aisle,
-                          aisleItems.map((entry) => entry.id),
-                          position,
-                        )}
-                      <div className="shopping-item">
-                        <input
-                          id={`shopping-check-${item.grocery.id}`}
-                          type="checkbox"
-                          checked={checked(item)}
-                          disabled={busy || editingAmount !== null}
-                          aria-label={listBuilder ? `Off list ${item.name}` : `Picked up ${item.name}`}
-                          onChange={() => toggle(item)}
-                        />
-                        <label className="custom-check" htmlFor={`shopping-check-${item.grocery.id}`}>
-                          <Check size={15} />
-                        </label>
-                        <span className="item-info">
-                          <span className="item-heading">
-                            <label htmlFor={`shopping-check-${item.grocery.id}`}>
-                              <strong>{item.name}</strong>
-                            </label>
-                            <button
-                              className="purchase-amount"
-                              aria-label={`Edit amount for ${item.name}`}
-                              aria-expanded={editingAmount?.key === item.key}
-                              disabled={busy || checked(item) || editingAmount !== null}
-                              onClick={(event) => {
-                                amountTrigger.current = event.currentTarget;
-                                setEditingAmount({ key: item.key, value: String(item.packages ?? 1) });
-                              }}
-                            >
-                              {item.packages && item.packages > 1 ? `${item.packages} × ` : ""}
-                              {displayAmount(item.grocery)}
-                              {!checked(item) && <Pencil size={13} />}
-                            </button>
-                          </span>
-                        </span>
-                      </div>
-                      {editingAmount?.key === item.key && (
-                        <form
-                          className="purchase-amount-editor"
-                          onSubmit={async (event) => {
-                            event.preventDefault();
-                            const packages = Number(editingAmount.value);
-
-                            if (busy || savingAmount || !Schema.is(PackageCountSchema)(packages)) return;
-                            setSavingAmount(true);
-
-                            try {
-                              if (await saveAmount(item, packages)) closeAmount();
-                            } finally {
-                              setSavingAmount(false);
-                            }
-                          }}
-                          onKeyDown={(event) => {
-                            if (event.key === "Escape" && !busy && !savingAmount) {
-                              event.preventDefault();
-                              closeAmount();
-                            }
-                          }}
-                        >
-                          <label>
-                            Packages to buy
-                            <input
-                              type="number"
-                              min="1"
-                              max="1000000"
-                              step="1"
-                              required
-                              autoFocus
-                              aria-label={`Packages to buy for ${item.name}`}
-                              value={editingAmount.value}
-                              disabled={busy || savingAmount}
-                              onChange={(event) =>
-                                setEditingAmount({ key: item.key, value: event.target.value })
-                              }
-                            />
-                          </label>
-                          <span className="field-hint">{displayAmount(item.grocery)} per package</span>
-                          <div>
-                            <button
-                              className="primary"
-                              disabled={
-                                busy ||
-                                savingAmount ||
-                                !Schema.is(PackageCountSchema)(Number(editingAmount.value))
-                              }
-                            >
-                              {savingAmount ? "Saving…" : "Save"}
-                            </button>
-                            <button
-                              type="button"
-                              className="secondary"
-                              disabled={busy || savingAmount}
-                              onClick={closeAmount}
-                            >
-                              Cancel
-                            </button>
-                          </div>
-                        </form>
-                      )}
-                      <details className="purchase-details">
-                        <summary aria-label={`Details for ${item.name}`}>
-                          <ChevronDown size={18} />
-                        </summary>
-                        <div className="purchase-links">
-                          {item.grocery?.url && (
-                            <a href={item.grocery.url} target="_blank" rel="noreferrer">
-                              Store product <ExternalLink size={13} />
-                            </a>
-                          )}
-                          <button
-                            className="text-button"
-                            disabled={editingAmount !== null}
-                            onClick={() => edit(item.grocery)}
-                          >
-                            <Pencil size={13} /> Edit product
-                          </button>
-                        </div>
-                      </details>
-                    </div>
-                  );
-                })}
+                {all.map((item, position) => row(item, aisle, position, aisleItems))}
               </section>
             );
           })}
+          {inCart.length > 0 && (
+            <section className="purchase-group in-cart" aria-label="In cart">
+              <div className="aisle-heading">
+                <h3>In cart</h3>
+                <span>{inCart.length}</span>
+              </div>
+              {inCart.map((item, position) => row(item, null, position, []))}
+            </section>
+          )}
         </div>
       )}
     </div>

@@ -3,6 +3,7 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { Schema } from "effect";
 import { HouseholdSchema } from "../src/domain.ts";
+import { restoreShoppingLists, shoppingContent } from "./shopping-fixtures.ts";
 // @ts-ignore Browser declarations exist only after task ui:setup, outside the checkout.
 import type { Browser, BrowserContext, ConsoleMessage, Locator, Page } from "/tmp/hearth-ui/node_modules/playwright/index.d.ts";
 
@@ -43,7 +44,6 @@ const failures: string[] = [];
 const contexts: BrowserContext[] = [];
 const tempExtraIds = new Set<string>();
 const tempExtraNames = new Set<string>();
-const changedChecks = new Set<string>();
 const renamedAisles = new Map<string, string>();
 let changedOrder = false;
 let shot = 0;
@@ -53,17 +53,20 @@ async function household() {
   assert(response.ok, `GET household returned ${response.status}`);
   const data: unknown = await response.json();
   assert(Schema.is(HouseholdSchema)(data), "Expected a valid household snapshot");
-  // Check rows have no display order; toggling a selected item may change D1 insertion order.
-  return { ...data, checks: [...data.checks].sort((a, b) => a.key.localeCompare(b.key)) };
+  return data;
 }
 const withoutRevision = <T extends { readonly revision?: string }>({ revision: _revision, ...value }: T) => value;
 const householdContent = (state: typeof HouseholdSchema.Encoded) => ({ ...state,
   recipes: state.recipes.map(withoutRevision), meals: state.meals.map(withoutRevision),
   groceries: state.groceries.map(withoutRevision), collections: state.collections.map(withoutRevision),
-  extras: state.extras.map(withoutRevision), shoppingOrder: withoutRevision(state.shoppingOrder),
+  ...shoppingContent(state), shoppingOrder: withoutRevision(state.shoppingOrder),
 });
 const original = await household();
 const originalText = JSON.stringify(householdContent(original));
+// Membership writes go to a disposable list so the household's own lists are never changed.
+const listId = `ui-smoke-${process.pid}`;
+const shoppingHash = `#shopping?list=${listId}`;
+const listEntries = async () => (await household()).shoppingItems.filter((entry) => entry.listId === listId);
 
 async function api(path: string, method: string, body?: unknown) {
   // Intentional fixture writes only; never replace guards on intercepted browser requests.
@@ -376,7 +379,7 @@ async function shoppingAndTimers(page: Page, touch: boolean, label: string, capt
   const viewport = page.viewportSize();
   assert(viewport, "Shopping and timers scenario requires a viewport");
   await check(label, page.context().browser()?.browserType().name() ?? "webkit", `${viewport.width}×${viewport.height}`, "focused page-options menu activates Arrange route with pointer input", async () => {
-    await page.goto(`${root}/#shopping`); await settle(page);
+    await page.goto(`${root}/${shoppingHash}`); await settle(page);
     const options = page.getByLabel("Page options", { exact: true });
     await options.focus();
     await page.keyboard.press("Enter");
@@ -417,7 +420,7 @@ async function shoppingAndTimers(page: Page, touch: boolean, label: string, capt
     assert.equal(await page.locator(".page-options").getAttribute("open"), null, "moving keyboard focus outside must dismiss the menu");
   });
   await check(label, page.context().browser()?.browserType().name() ?? "webkit", `${viewport.width}×${viewport.height}`, "List Builder, details/grips, membership persistence and route recovery", async () => {
-    await page.goto(`${root}/#shopping`); await settle(page);
+    await page.goto(`${root}/${shoppingHash}`); await settle(page);
     assert.equal(await page.locator(".shopping-range").count(), 0);
     await activate(page.getByRole("button", { name: "List Builder", exact: true }), touch);
     assert.equal(await page.locator(".purchase-row").count(), original.groceries.length);
@@ -437,12 +440,12 @@ async function shoppingAndTimers(page: Page, touch: boolean, label: string, capt
     await activate(page.getByRole("button", { name: "Add household item" }), touch);
     const create = page.getByRole("button", { name: `Create “${extraName}”` });
     if (await create.isVisible()) await activate(create, touch);
-    await page.getByRole("checkbox", { name: `Off list ${extraName}` }).waitFor();
+    await page.getByRole("button", { name: `Remove ${extraName} from this list`, exact: true }).waitFor();
     const added = (await household()).groceries.find((entry) => entry.name === extraName);
     assert(added, "quick-added grocery was not persisted");
     tempExtraIds.add(added.id);
     assert.equal(added.aisle, "Smoke aisle");
-    assert((await household()).checks.some((entry) => entry.key === JSON.stringify(["shopping-list", added.id]) && entry.checked === 0), "quick-added grocery is not on the list");
+    assert((await listEntries()).some((entry) => entry.groceryId === added.id && entry.checked === 0), "quick-added grocery is not on the selected list");
     await api(`groceries/${encodeURIComponent(added.id)}`, "DELETE");
     tempExtraIds.delete(added.id);
 
@@ -463,22 +466,22 @@ async function shoppingAndTimers(page: Page, touch: boolean, label: string, capt
     // Hold the membership write open: quick-add must wait so its save cannot hide this write's outcome.
     let releaseCheck = () => {};
     const held = new Promise<void>((resolve) => { releaseCheck = resolve; });
-    await page.route("**/api/checks", async (route) => { await held; await route.continue(); });
+    await page.route("**/api/shopping-lists/*/items", async (route) => { await held; await route.continue(); });
     await activate(useExact, touch);
     assert.equal(await page.evaluate(() => document.activeElement?.getAttribute("aria-label")), "New household item", "Use returns focus to the name field");
     await page.getByLabel("New household item").fill(`Quick add pending ${digits}`);
     assert(await page.getByRole("button", { name: "Add household item" }).isDisabled(), "quick-add waits for pending list writes");
     releaseCheck();
     await page.locator(".shopping-save-status").waitFor({ state: "detached" });
-    await page.unroute("**/api/checks");
+    await page.unroute("**/api/shopping-lists/*/items");
     assert(await page.getByRole("button", { name: "Add household item" }).isEnabled(), "quick-add resumes after list writes settle");
-    assert((await household()).checks.some((entry) => entry.key === JSON.stringify(["shopping-list", exact.id]) && entry.checked === 0), "Use existing puts the grocery on the list");
+    assert((await listEntries()).some((entry) => entry.groceryId === exact.id && entry.checked === 0), "Use existing puts the grocery on the selected list");
     await page.getByLabel("New household item").fill(digits);
     await activate(page.getByRole("button", { name: "Add household item" }), touch);
     await useExact.waitFor();
-    assert.equal(await useExact.getAttribute("aria-describedby").then((id) => page.locator(`[id="${id}"]`).textContent()), "No aisle · On your list");
+    assert.equal(await useExact.getAttribute("aria-describedby").then((id) => page.locator(`[id="${id}"]`).textContent()), "No aisle · On this list");
     await activate(useExact, touch);
-    await page.locator(".toast", { hasText: `${exact.name} is already on your list` }).waitFor();
+    await page.locator(".toast", { hasText: `${exact.name} is already on this list` }).waitFor();
     assert.equal((await household()).groceries.length, before, "Use existing never creates a grocery");
     await api(`groceries/${encodeURIComponent(exact.id)}`, "DELETE");
     tempExtraIds.delete(exact.id);
@@ -495,24 +498,18 @@ async function shoppingAndTimers(page: Page, touch: boolean, label: string, capt
       const edit = page.getByRole("button", { name: "Edit product" }).first();
       if (await edit.count()) { await activate(edit, touch); await page.getByRole("dialog", { name: "Grocery item" }).waitFor(); await auditLayout(page, touch); await cancelDialog(page); }
     }
-    const box = page.locator('.purchase-row input[type="checkbox"]').first();
-    if (await box.count()) {
-      const name = await box.getAttribute("aria-label");
-      const was = await box.isChecked();
-      await activate(box, touch);
+    const membership = page.locator(".purchase-row .membership-button").first();
+    if (await membership.count()) {
+      const was = await membership.getAttribute("aria-pressed");
+      const name = await page.locator(".purchase-row .item-info strong").first().textContent();
+      await activate(membership, touch);
       await page.locator(".shopping-save-status").waitFor({ state: "detached" });
-      const current = await household();
-      for (const key of new Set([...current.checks.map((entry) => entry.key), ...original.checks.map((entry) => entry.key)])) {
-        const fallback = key.startsWith('["shopping-list",') ? 1 : 0;
-        const before = original.checks.find((entry) => entry.key === key);
-        const after = current.checks.find((entry) => entry.key === key);
-        if ((before?.checked ?? fallback) !== (after?.checked ?? fallback) || (before?.packages ?? 1) !== (after?.packages ?? 1)) changedChecks.add(key);
-      }
       assert.equal(await page.locator(".purchase-row").count(), original.groceries.length, "Builder must always show every grocery");
-      assert(name !== null, "Shopping checkbox must have an accessible label");
-      const restored = page.getByLabel(name); await restored.waitFor();
-      if ((await restored.isChecked()) !== was) await activate(restored, touch);
+      assert.equal(await membership.getAttribute("aria-pressed"), was === "true" ? "false" : "true", "Membership toggles in place");
+      assert.equal((await listEntries()).some((entry) => original.groceries.find((grocery) => grocery.id === entry.groceryId)?.name === name), was !== "true", "Membership change persists on the selected list");
+      await activate(membership, touch);
       await page.locator(".shopping-save-status").waitFor({ state: "detached" });
+      assert.equal(await membership.getAttribute("aria-pressed"), was);
     }
     await activate(page.getByRole("button", { name: "Exit List Builder" }), touch);
     await activate(page.getByLabel("Page options", { exact: true }), touch);
@@ -521,7 +518,7 @@ async function shoppingAndTimers(page: Page, touch: boolean, label: string, capt
     await activate(page.getByRole("button", { name: "List Builder", exact: true }), touch);
     assert(await page.locator(".app-shell.shopping-mode").isVisible());
     assert.equal(await page.locator(".route-editor").count(), 0, "shopping mode must replace the editor with a checklist");
-    assert(await page.locator('.purchase-row input[type="checkbox"]').first().isVisible());
+    assert(await page.locator(".purchase-row .membership-button").first().isVisible());
     if (capture) await screenshot(page, `${label}-shopping-mode`);
     await activate(page.getByRole("button", { name: "Exit List Builder" }), touch);
     assert.equal(await page.locator(".route-editor").count(), 0, "exit must retain the usable checklist");
@@ -573,7 +570,7 @@ async function shoppingAndTimers(page: Page, touch: boolean, label: string, capt
     await auditLayout(page, touch);
   });
   await check(label, page.context().browser()?.browserType().name() ?? "webkit", `${viewport.width}×${viewport.height}`, `pointer drag, persisted insertion, ${touch ? "rotation cancellation, " : ""}keyboard arrows, quantities and checks preserved`, async () => {
-    await page.goto(`${root}/#shopping`); await settle(page);
+    await page.goto(`${root}/${shoppingHash}`); await settle(page);
     await activate(page.getByRole("button", { name: "List Builder", exact: true }), touch);
     const before = await household();
     const groupIndex = await page.locator(".purchase-group").evaluateAll((groups: Element[]) => groups.findIndex(group => group.querySelectorAll(".route-drag:not(:disabled)").length >= 3));
@@ -610,7 +607,7 @@ async function shoppingAndTimers(page: Page, touch: boolean, label: string, capt
     assert.deepEqual(await names(), [...originalNames.slice(1), originalNames[0]]);
     assert.deepEqual((await group.locator(".item-info").allTextContents()).sort(), quantities.sort(), "reordering must not change ingredient/package quantities");
     const committed = await household();
-    assert.deepEqual(committed.checks, before.checks);
+    assert.deepEqual(committed.shoppingItems, before.shoppingItems);
     assert.deepEqual(committed.shoppingOrder.aisles, before.shoppingOrder.aisles);
     const ids = committed.shoppingOrder.items.map((key) => {
       const parsed: unknown = JSON.parse(key);
@@ -659,7 +656,7 @@ async function shoppingAndTimers(page: Page, touch: boolean, label: string, capt
     await activate(page.getByRole("button", { name: "List Builder", exact: true }), touch);
     await group.locator(".purchase-row").first().waitFor();
     assert.deepEqual(await names(), originalNames);
-    assert.deepEqual((await household()).checks, before.checks);
+    assert.deepEqual((await household()).shoppingItems, before.shoppingItems);
     await activate(page.getByRole("button", { name: "Exit List Builder" }), touch);
   });
   await check(label, page.context().browser()?.browserType().name() ?? "webkit", `${viewport.width}×${viewport.height}`, "whole-aisle dragging, rename, cancellation and reload persistence", async () => {
@@ -692,7 +689,7 @@ async function shoppingAndTimers(page: Page, touch: boolean, label: string, capt
     const moved = await household();
     assert.deepEqual(moved.shoppingOrder.items, before.shoppingOrder.items);
     assert.deepEqual(moved.groceries, before.groceries);
-    assert.deepEqual(moved.checks, before.checks);
+    assert.deepEqual(moved.shoppingItems, before.shoppingItems);
     const viewport = page.viewportSize();
     assert(viewport, "Resize scenario requires a configured viewport");
     const cancelGrip = sections.first().locator(".aisle-heading > .route-drag");
@@ -788,7 +785,7 @@ async function shoppingAndTimers(page: Page, touch: boolean, label: string, capt
     const renamed = await household();
     assert.deepEqual(renamed.groceries.map(withoutRevision), before.groceries.map(withoutRevision).map((item) => item.aisle === oldName ? { ...item, aisle: newName } : item));
     assert.deepEqual(withoutRevision(renamed.shoppingOrder), { ...withoutRevision(moved.shoppingOrder), aisles: [newName, ...moved.shoppingOrder.aisles.slice(1)] });
-    assert.deepEqual(renamed.checks, before.checks);
+    assert.deepEqual(renamed.shoppingItems, before.shoppingItems);
     await page.reload(); await settle(page);
     await activate(page.getByRole("button", { name: "List Builder", exact: true }), touch);
     assert.equal(await page.locator(".purchase-group h3").first().textContent(), `Aisle ${newName}`);
@@ -845,6 +842,7 @@ async function closeContext(context: BrowserContext) {
 }
 
 try {
+  await api("shopping-lists", "PUT", { id: listId, date: "2026-11-01", label: "UI smoke", expectedRevision: null });
   const chrome = await chromium.launch({ headless: true });
   const wk = await webkit.launch({ headless: true });
   try {
@@ -949,14 +947,8 @@ try {
     const current = await household();
     for (const grocery of current.groceries) if (tempExtraIds.has(grocery.id) || tempExtraNames.has(grocery.name)) await api(`groceries/${encodeURIComponent(grocery.id)}`, "DELETE");
     if (changedOrder && JSON.stringify(current.shoppingOrder) !== JSON.stringify(original.shoppingOrder)) await api("shopping-order", "PUT", original.shoppingOrder);
-    const allCheckKeys = new Set([...changedChecks, ...current.checks.map((entry) => entry.key), ...original.checks.map((entry) => entry.key)]);
-    for (const key of allCheckKeys) {
-      const fallback = key.startsWith('["shopping-list",') ? 1 : 0;
-      const wanted = original.checks.find((entry) => entry.key === key);
-      const now = current.checks.find((entry) => entry.key === key);
-      if ((wanted?.checked ?? fallback) !== (now?.checked ?? fallback) || (wanted?.packages ?? 1) !== (now?.packages ?? 1))
-        await api("checks", "PUT", { key, checked: wanted?.checked ?? fallback, packages: wanted?.packages ?? 1 });
-    }
+    // Removes the disposable list and restores rows of any pre-existing list a scenario touched.
+    await restoreShoppingLists(root, original);
     const restored = await household();
     assert.equal(JSON.stringify(householdContent(restored)), originalText, "household domain content differs from exact starting snapshot after cleanup");
     record("cleanup", "worker", "n/a", "household exactly restored");

@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { resolve, join } from "node:path";
 import { Schema } from "effect";
 import { HouseholdSchema, type Household } from "../src/domain.ts";
+import { restoreShoppingLists, shoppingContent } from "./shopping-fixtures.ts";
 // @ts-ignore Browser declarations exist only after task ui:setup, outside the checkout.
 import type * as Playwright from "/tmp/hearth-ui/node_modules/playwright/index.d.ts";
 
@@ -35,7 +36,7 @@ const withoutRevision = <T extends { readonly revision?: string }>({ revision: _
 const householdContent = (state: Household) => ({ ...state,
   recipes: state.recipes.map(withoutRevision), meals: state.meals.map(withoutRevision),
   groceries: state.groceries.map(withoutRevision), collections: state.collections.map(withoutRevision),
-  extras: state.extras.map(withoutRevision), shoppingOrder: withoutRevision(state.shoppingOrder),
+  ...shoppingContent(state), shoppingOrder: withoutRevision(state.shoppingOrder),
 });
 const original = await household();
 assert(original.recipes.length && original.meals.length, "Load a disposable sample week first");
@@ -44,7 +45,6 @@ const owned = {
   groceries: new Set<string>(),
   meals: new Set<string>(),
   collections: new Set<string>(),
-  extras: new Set<string>(),
 };
 function isOwnedKind(kind: string | undefined): kind is keyof typeof owned {
   return kind !== undefined && Object.hasOwn(owned, kind);
@@ -55,6 +55,7 @@ const productName = `Brown rice · demo ${stamp}`;
 const collectionName = `Quick dinners · ${stamp}`;
 const note = `Dinner with friends · demo ${stamp}`;
 const extraName = `Dish soap · demo ${stamp}`;
+const listLabel = `Demo ${stamp}`;
 const chapters: { time: number; title: string; caption: string }[] = [];
 const limitations: string[] = [];
 const errors: string[] = [];
@@ -166,7 +167,7 @@ try {
   try {
     started = Date.now();
     await page.goto(`${root}/#plan`);
-    await page.locator(".calendar").waitFor();
+    await page.locator(".calendar").first().waitFor();
     assert(await page.evaluate(() => matchMedia("(pointer: coarse)").matches));
     await chapter(
       "01 · Content-first navigation",
@@ -195,7 +196,7 @@ try {
     await saveVisible("Save grocery item");
     await dialog().getByLabel("Store product name").fill(productName);
     await dialog().getByLabel("Aisle (optional)").fill("7");
-    await dialog().getByLabel("Package quantity", { exact: true }).selectOption("500");
+    await dialog().getByLabel("Package quantity", { exact: true }).fill("500");
     await dialog().getByLabel("Package unit").selectOption("g");
     await click(dialog().getByRole("button", { name: "Add Alternative", exact: true }));
     await dialog().getByLabel("Alternative 1", { exact: true }).fill("brown rice");
@@ -250,7 +251,8 @@ try {
     await dialog().getByLabel("Ingredient 1 quantity").fill("150");
     await dialog().getByLabel("Ingredient 1 unit").selectOption("g");
     await click(dialog().locator(".ingredient-link-editor > summary").first());
-    await dialog().getByLabel("Grocery item for ingredient 1").selectOption(product.id);
+    await dialog().getByLabel("Grocery item for ingredient 1").fill(productName);
+    await click(dialog().getByRole("region", { name: "Matches for ingredient 1" }).getByRole("button").filter({ hasText: productName }).first());
     await click(dialog().getByRole("button", { name: "Edit product", exact: true }));
     await click(dialog().getByRole("button", { name: "Add Alternative", exact: true }));
     await dialog().getByLabel("Alternative 2", { exact: true }).fill("wholegrain rice");
@@ -293,8 +295,9 @@ try {
       (await household()).recipes.find((r) => r.id === recipe.id)?.ingredients[0]?.quantity,
       150,
     );
+    const detailHash = new URL(page.url()).hash;
     await click(page.getByRole("link", { name: "Steps", exact: true }));
-    assert.equal(new URL(page.url()).hash, "#recipes", "Cooking shortcuts must not change app navigation");
+    assert.equal(new URL(page.url()).hash, detailHash, "Cooking shortcuts must not change app navigation");
     await page.locator(".recipe-detail").evaluate((element: HTMLElement) => {
       element.scrollTop = 0;
     });
@@ -349,25 +352,38 @@ try {
 
     await chapter(
       "06 · Build a shopping list",
-      "List Builder shows the full grocery catalog. Uncheck a product to add it to the list, use Shop Mode to shop, and arrange the store route with keyboard-accessible arrows. Recipes do not automatically populate the list.",
+      "Start a dated list, then use List Builder to add from the full grocery catalog. In Shop Mode, picked-up items move to In cart, with a short Undo. Arrange the store route with keyboard-accessible arrows. Recipes do not automatically populate a list.",
     );
     await click(page.getByRole("button", { name: "Shopping list", exact: true }));
+    const switcher = page.locator(".list-switcher > summary");
+    if (await switcher.isVisible()) {
+      await click(switcher);
+      await click(page.getByRole("button", { name: "All lists…", exact: true }));
+    } else await click(page.getByRole("button", { name: "Choose another date", exact: true }));
+    await dialog().getByLabel("Date", { exact: true }).first().fill(date);
+    await dialog().getByLabel("Label (optional)").first().fill(listLabel);
+    await click(dialog().getByRole("button", { name: "Create list", exact: true }));
+    data = await persisted((h) => h.shoppingLists.some((list) => list.label === listLabel));
+    const list = data.shoppingLists.find((entry) => entry.label === listLabel);
+    assert(list, "Saved demo list must exist");
+    assert.equal(new URLSearchParams(new URL(page.url()).hash.split("?")[1]).get("list"), list.id, "A new list opens");
+    const row = (h: Household, groceryId: string) => h.shoppingItems.find((item) => item.listId === list.id && item.groceryId === groceryId);
     await click(page.getByRole("button", { name: "List Builder", exact: true }));
     const purchase = page.locator(".purchase-row").filter({ hasText: productName });
     await purchase.waitFor();
-    assert(await purchase.locator('input[type="checkbox"]').isChecked(), "New product must start off-list");
-    const purchaseKey = JSON.stringify(["shopping-list", product.id]);
-    await click(purchase.locator('input[type="checkbox"]'));
-    await persisted((h) => h.checks.some((entry) => entry.key === purchaseKey && entry.checked === 0));
-    await click(page.getByRole("button", { name: "Shopping mode", exact: true }));
-    await click(purchase.locator('input[type="checkbox"]'));
-    await persisted((h) => !h.checks.some((entry) => entry.key === purchaseKey));
-    assert.equal(await purchase.count(), 0);
-    await click(page.getByRole("button", { name: "List Builder", exact: true }));
-    await click(purchase.locator('input[type="checkbox"]'));
-    await persisted((h) => h.checks.some((entry) => entry.key === purchaseKey && entry.checked === 0));
+    const membership = purchase.getByRole("button", { name: `Add ${productName} to this list`, exact: true });
+    assert.equal(await membership.getAttribute("aria-pressed"), "false", "New product must start off the list");
+    await click(membership);
+    await persisted((h) => row(h, product.id)?.checked === 0);
     await capture("mobile-list-builder");
     await click(page.getByRole("button", { name: "Exit List Builder", exact: true }));
+    await click(page.getByRole("button", { name: "Shopping mode", exact: true }));
+    await click(page.getByRole("checkbox", { name: `Picked up ${productName}`, exact: true }));
+    await persisted((h) => row(h, product.id)?.checked === 1);
+    await page.getByRole("region", { name: "In cart", exact: true }).getByText(productName, { exact: true }).waitFor();
+    await click(page.getByRole("button", { name: "Undo", exact: true }));
+    await persisted((h) => row(h, product.id)?.checked === 0);
+    await click(page.getByRole("button", { name: "Exit shopping mode", exact: true }));
     await click(purchase.locator("summary"));
     await pause();
     await click(purchase.getByRole("button", { name: "Edit product", exact: true }));
@@ -378,7 +394,8 @@ try {
     await click(dialog().getByRole("button", { name: "Cancel", exact: true }));
     await menu("Arrange route");
     const expectedAisles = (await page.locator(".route-aisle > .aisle-heading h3").allTextContents()).map(
-      (name: string) => (name === "No aisle assigned" ? "" : name.slice("Aisle ".length)),
+      // Headings also contain the rename button's icon spacing.
+      (heading: string) => (heading.trim() === "No aisle assigned" ? "" : heading.trim().slice("Aisle ".length)),
     );
     assert(expectedAisles.length >= 2, "Demo needs two aisles to exercise route arrangement");
     [expectedAisles[0], expectedAisles[1]] = [expectedAisles[1], expectedAisles[0]];
@@ -404,15 +421,14 @@ try {
     data = await persisted((h) => h.groceries.some((g) => g.name === extraName));
     const extra = data.groceries.find((g) => g.name === extraName);
     assert(extra, "Saved demo grocery must exist");
-    const extraKey = JSON.stringify(["shopping-list", extra.id]);
     owned.groceries.add(extra.id);
-    await persisted((h) => h.checks.some((c) => c.key === extraKey && c.checked === 0));
+    await persisted((h) => row(h, extra.id)?.checked === 0);
     await click(page.getByRole("button", { name: "Shopping mode", exact: true }));
     await pause();
     assert(await page.locator(".shopping-mode").isVisible());
     await capture("mobile-focus");
     await click(page.getByRole("checkbox", { name: `Picked up ${extraName}`, exact: true }));
-    await persisted((h) => !h.checks.some((c) => c.key === extraKey && c.checked === 0));
+    await persisted((h) => row(h, extra.id)?.checked === 1);
     await click(page.getByRole("button", { name: "Exit shopping mode", exact: true }));
 
     await nav("recipes");
@@ -488,7 +504,7 @@ try {
 
     await chapter(
       "10 · Remove without losing other data",
-      "Remove the demo meal, delete its collection (the recipe stays Uncollected), then delete the recipe and now-unused grocery product. Original sample data is restored after recording.",
+      "Remove the demo meal, delete its collection (the recipe stays Uncollected), delete the recipe and now-unused grocery product, then delete the demo list. Original sample data is restored after recording.",
     );
     await nav("plan");
     await chooseDate(date);
@@ -518,6 +534,14 @@ try {
     await click(page.getByRole("button", { name: `Edit grocery item ${productName}`, exact: true }));
     await click(dialog().getByRole("button", { name: "Delete item", exact: true }));
     await persisted((h) => !h.groceries.some((g) => g.id === product.id));
+    await nav("shopping");
+    await click(page.locator(".list-switcher > summary"));
+    await click(page.getByRole("button", { name: "All lists…", exact: true }));
+    await click(dialog().getByRole("button", { name: new RegExp(`^Edit .* · ${listLabel}$`) }));
+    await click(dialog().getByRole("button", { name: "Delete list", exact: true }));
+    await click(dialog().getByRole("button", { name: "Delete list", exact: true }));
+    await persisted((h) => !h.shoppingLists.some((entry) => entry.id === list.id));
+    await close();
     await nav("plan");
     await pause(2500);
     assert.deepEqual(errors, [], "No unhandled browser errors");
@@ -565,7 +589,7 @@ try {
       assert(response.ok, `Cleanup ${method} ${path}: ${response.status}`);
     };
     const current = await household();
-    for (const kind of ["extras", "meals", "recipes", "groceries", "collections"] as const) {
+    for (const kind of ["meals", "recipes", "groceries", "collections"] as const) {
       for (const item of current[kind])
         if (owned[kind].has(item.id) || ("name" in item && kind === "groceries" && item.name === extraName))
           await restore(`${kind}/${encodeURIComponent(item.id)}`, "DELETE");
@@ -573,13 +597,8 @@ try {
     const after = await household();
     if (JSON.stringify(after.shoppingOrder) !== JSON.stringify(original.shoppingOrder))
       await restore("shopping-order", "PUT", original.shoppingOrder);
-    for (const key of new Set([...after.checks, ...original.checks].map((check) => check.key))) {
-      const fallback = key.startsWith('["shopping-list",') ? 1 : 0;
-      const wanted = original.checks.find((c) => c.key === key);
-      const now = after.checks.find((c) => c.key === key);
-      if ((wanted?.checked ?? fallback) !== (now?.checked ?? fallback) || (wanted?.packages ?? 1) !== (now?.packages ?? 1))
-        await restore("checks", "PUT", { key, checked: wanted?.checked ?? fallback, packages: wanted?.packages ?? 1 });
-    }
+    // Removes the demo's list and restores rows on lists that existed before recording.
+    await restoreShoppingLists(root, original);
     assert.deepEqual(householdContent(await household()), householdContent(original), "Exact original household domain content must be restored");
     console.log("PASS demo cleanup: exact household restored");
   }

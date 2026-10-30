@@ -14,18 +14,18 @@ const check = (expression: string, message: string) => {
   browser("eval", `(() => { if (!(${expression})) throw new Error(${JSON.stringify(message)}); return true; })()`);
   console.log(`PASS ${message}`);
 };
-const request = async (path: string, method = "GET", body?: GroceryDraft | RecipeDraft | MealDraft) => {
+const request = async (path: string, method = "GET", body?: GroceryDraft | RecipeDraft | MealDraft | { id: string; date: string; label: string; expectedRevision: string | null }) => {
   // Only fixture setup/cleanup uses a freshly read revision; UI requests stay untouched.
   let payload = body ? JSON.stringify(body) : undefined;
   const resource = path.split("/")[0];
-  if ((method === "PUT" || method === "DELETE") && (resource === "recipes" || resource === "groceries" || resource === "meals")) {
+  if ((method === "PUT" || method === "DELETE") && (resource === "recipes" || resource === "groceries" || resource === "meals" || resource === "shopping-lists")) {
     const current = await household();
     const id = method === "DELETE" ? decodeURIComponent(path.slice(resource.length + 1)) : body?.id;
-    const saved = current[resource].find(item => item.id === id);
+    const saved = current[resource === "shopping-lists" ? "shoppingLists" : resource].find(item => item.id === id);
     if (method === "DELETE" && !saved) return new Response(null, { status: 200 });
     payload = JSON.stringify({ ...body, expectedRevision: saved?.revision ?? null });
   }
-  const response = await fetch(`${url}/api/${path}`, { method, headers: { "Content-Type": "application/json" }, body: payload });
+  const response = await fetch(`${url}/api/${path}`, { method, headers: { "Content-Type": "application/json", Connection: "close" }, body: payload });
   assert(response.ok, `${method} ${path}: ${response.status}`);
   return response;
 };
@@ -98,8 +98,12 @@ try {
   for (const grocery of groceries) await request("groceries", "PUT", grocery);
   for (const item of recipes) await request("recipes", "PUT", item);
   for (const item of meals) await request("meals", "PUT", item);
+  // The shopping toolbar belongs to a list; the empty household gets a disposable one.
+  await request("shopping-lists", "PUT", { id: `${prefix}-list`, date: "2026-10-24", label: "", expectedRevision: null });
   const before = await household();
-  browser("open", `${url}/#shopping`);
+  browser("open", `${url}/#shopping?list=${encodeURIComponent(`${prefix}-list`)}`);
+  // A hash-only navigation keeps the already-loaded empty household; reload to read the new list.
+  browser("reload");
   browser("wait", '.shopping-controls a[href="#recipe-checklist"]');
   screenshot("recipe-checklist-shopping-button");
   browser("set", "viewport", "390", "844", "2");
@@ -181,10 +185,10 @@ try {
   await request("meals", "PUT", meal("friday", "dinner", "2026-10-24"));
   await request("meals", "PUT", meal("wednesday", "lunch", "2026-10-23"));
   await request(`meals/${encodeURIComponent(`${prefix}-next-week`)}`, "DELETE");
-  browser("open", `${url}/#shopping`);
+  browser("open", `${url}/#shopping?list=${encodeURIComponent(`${prefix}-list`)}`);
   browser("reload");
   browser("wait", ".shopping-controls");
-  browser("find", "role", "button", "click", "--name", "Add from recipes", "--exact");
+  browser("find", "role", "button", "click", "--name", "Add from meals", "--exact");
   browser("wait", ".shopping-recipe-week");
   const shoppingGroups = "[...document.querySelectorAll('section[aria-labelledby^=\"recipe-week-\"]')].map(group => ({ heading: group.querySelector('h4').innerText.replaceAll('\\n', ' '), recipes: [...group.querySelectorAll('strong')].map(title => title.textContent) }))";
   assert.deepEqual(JSON.parse(browser("eval", shoppingGroups)), [
@@ -214,7 +218,7 @@ try {
   await request("meals", "PUT", meal("wednesday", "lunch", "2026-12-31"));
   browser("reload");
   browser("wait", ".shopping-controls");
-  browser("find", "role", "button", "click", "--name", "Add from recipes", "--exact");
+  browser("find", "role", "button", "click", "--name", "Add from meals", "--exact");
   browser("wait", ".shopping-recipe-week");
   assert.deepEqual(JSON.parse(browser("eval", shoppingGroups)), [
     { heading: "Saturday, December 26 – Friday, January 1, 2027", recipes: ["Rice lunch"] },
@@ -229,6 +233,7 @@ try {
     const current = await household();
     for (const item of current.recipes.filter(item => item.id.startsWith(prefix))) await request(`recipes/${encodeURIComponent(item.id)}`, "DELETE");
     for (const grocery of current.groceries.filter(item => item.id.startsWith(prefix))) await request(`groceries/${encodeURIComponent(grocery.id)}`, "DELETE");
+    for (const list of current.shoppingLists.filter(item => item.id.startsWith(prefix))) await request(`shopping-lists/${encodeURIComponent(list.id)}`, "DELETE");
     assert.deepEqual(await household(), original, "Fixture cleanup must restore the starting household.");
   }
 }

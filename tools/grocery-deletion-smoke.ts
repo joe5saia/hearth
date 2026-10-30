@@ -3,27 +3,27 @@ import { execFileSync } from "node:child_process";
 import { mkdir } from "node:fs/promises";
 import { resolve } from "node:path";
 import { Schema } from "effect";
-import { HouseholdSchema, ExtraSchema, CheckSchema, type GroceryDraft, type RecipeDraft } from "../src/domain.ts";
+import { HouseholdSchema, ShoppingListSchema, type GroceryDraft, type RecipeDraft } from "../src/domain.ts";
 
 // Real browser, Worker and SQLite; fault injection only at the browser HTTP boundary.
 const url = process.argv[2] ?? "http://localhost:5173";
 const selected = process.argv[3] ?? "all";
 assert(["localhost", "127.0.0.1"].includes(new URL(url).hostname), "Use local development only.");
-assert(["all", "extras", "catalog", "busy", "refresh", "rejection"].includes(selected));
+assert(["all", "lists", "catalog", "busy", "refresh", "rejection"].includes(selected));
 const session = `deletion-${process.pid}`;
 const browser = (...args: string[]) => execFileSync("agent-browser", ["--session", session, ...args], { encoding: "utf8", timeout: 30_000 }).trim();
 const check = (expression: string, message: string) => {
   browser("eval", `(() => { if (!(${expression})) throw new Error(${JSON.stringify(message)}); return true; })()`);
   console.log(`PASS ${message}`);
 };
-const request = async (path: string, method = "GET", value?: GroceryDraft | RecipeDraft | typeof ExtraSchema.Encoded | typeof CheckSchema.Encoded) => {
+const request = async (path: string, method = "GET", value?: GroceryDraft | RecipeDraft | typeof ShoppingListSchema.Encoded | { items: { groceryId: string }[] }) => {
   // Refresh guards only for intentional fixture setup/restoration, never browser writes.
   let payload = value === undefined ? undefined : JSON.stringify(value);
-  const resource = path.split("/")[0];
-  if ((method === "PUT" || method === "DELETE") && (resource === "recipes" || resource === "groceries" || resource === "extras")) {
+  const [resource, id, items] = path.split("/");
+  if ((method === "PUT" || method === "DELETE") && !items && (resource === "recipes" || resource === "groceries" || resource === "shopping-lists")) {
     const current = await household();
-    const id = method === "DELETE" ? decodeURIComponent(path.slice(resource.length + 1)) : value && "id" in value ? value.id : undefined;
-    const saved = current[resource].find(item => item.id === id);
+    const target = method === "DELETE" ? decodeURIComponent(id) : value && "id" in value ? value.id : undefined;
+    const saved = current[resource === "shopping-lists" ? "shoppingLists" : resource].find(item => item.id === target);
     if (method === "DELETE" && !saved) return new Response(null, { status: 200 });
     payload = JSON.stringify({ ...value, expectedRevision: saved?.revision ?? null });
   }
@@ -65,28 +65,38 @@ try {
   await mkdir(".amp/in/artifacts", { recursive: true });
   browser("open", `${url}/#shopping`);
   browser("set", "viewport", "1280", "900", "2");
-  if (runs("extras")) {
-    const extras: (typeof ExtraSchema.Encoded)[] = [
-      { id: `${prefix}?query`, name: "Deletion query extra", checked: 0 },
-      { id: prefix, name: "Deletion plain extra", checked: 0 },
-      { id: `${prefix}#fragment`, name: "Deletion fragment extra", checked: 1 },
-      { id: `${prefix}/%20`, name: "Deletion percent extra", checked: 0 },
+  if (runs("lists")) {
+    // IDs that only survive deletion when the browser encodes the complete ID into one path segment.
+    const lists: (typeof ShoppingListSchema.Encoded)[] = [
+      { id: `${prefix}?query`, date: "2026-11-01", label: "Deletion query list" },
+      { id: prefix, date: "2026-11-01", label: "Deletion plain list" },
+      { id: `${prefix}#fragment`, date: "2026-11-01", label: "Deletion fragment list" },
+      { id: `${prefix}/%20`, date: "2026-11-01", label: "Deletion percent list" },
     ];
-    for (const extra of extras) await request("extras", "PUT", extra);
+    for (const list of lists) await request("shopping-lists", "PUT", list);
+    browser("open", `${url}/#shopping?view=shopping-lists`);
     browser("reload");
-    browser("wait", ".extra-item");
-    for (const [index, extra] of extras.entries()) {
-      browser("find", "role", "button", "click", "--name", `Remove ${extra.name}`, "--exact");
-      browser("wait", "--fn", "![...document.querySelectorAll('.extra-item button')].some(button => button.disabled)");
-      assert.deepEqual((await household()).extras.filter(item => item.id.startsWith(prefix)).map(item => item.id).sort(), extras.slice(index + 1).map(item => item.id).sort(), `Removing ${extra.name} must delete only its complete ID.`);
+    browser("wait", ".shopping-list-cards");
+    const clickInDialog = (selector: string, text: string) => browser("eval", `(() => { const button = [...document.querySelectorAll(${JSON.stringify(selector)})].find(element => element.textContent.trim() === ${JSON.stringify(text)} || element.getAttribute('aria-label')?.endsWith(${JSON.stringify(text)})); if (!button) throw new Error('Missing ${text}'); button.click(); return true; })()`);
+    for (const [index, list] of lists.entries()) {
+      clickInDialog(".shopping-list-card-actions button", ` · ${list.label}`);
+      browser("wait", ".shopping-list-card.editing .shopping-list-form");
+      clickInDialog(".shopping-list-card.editing button.danger", "Delete list");
+      browser("wait", ".shopping-list-delete");
+      clickInDialog(".shopping-list-delete button.danger", "Delete list");
+      browser("wait", "--fn", "!document.querySelector('.shopping-list-card.editing')");
+      assert.deepEqual((await household()).shoppingLists.filter(item => item.id.startsWith(prefix)).map(item => item.id).sort(), lists.slice(index + 1).map(item => item.id).sort(), `Deleting ${list.label} must delete only its complete ID.`);
     }
     browser("reload");
-    browser("wait", ".shopping-summary");
-    check("![...document.querySelectorAll('.extra-item')].some(row => row.textContent.includes('Deletion'))", "plain, query, fragment, percent and checked extras remain deleted after reload");
+    browser("wait", ".shopping-lists");
+    check("!document.querySelector('.shopping-lists').textContent.includes('Deletion')", "plain, query, fragment and percent list IDs remain deleted after reload");
+    browser("open", `${url}/#shopping`);
   }
   for (const product of products) await request("groceries", "PUT", product);
   await request("recipes", "PUT", recipe);
-  for (const product of products) await request("checks", "PUT", { key: JSON.stringify(["shopping-list", product.id]), checked: 0 });
+  const listId = `${prefix}-list`;
+  await request("shopping-lists", "PUT", { id: listId, date: "2026-11-01", label: "Deletion smoke" });
+  await request(`shopping-lists/${listId}/items`, "POST", { items: products.map(product => ({ groceryId: product.id })) });
   openCatalog();
   if (runs("busy")) {
     edit(products[1]);
@@ -146,7 +156,8 @@ try {
     const after = await household();
     assert.deepEqual(after.recipes.map(withoutRevision), before.recipes.map(withoutRevision).map(recipe => ({ ...recipe, ingredients: recipe.ingredients.map(ingredient => ingredient.groceryItemId === products[0].id ? { ...ingredient, groceryItemId: null } : ingredient) })));
     assert(!after.groceries.some(item => item.id === products[0].id));
-    assert(!after.checks.some(item => item.key === JSON.stringify(["shopping-list", products[0].id])));
+    assert(!after.shoppingItems.some(item => item.groceryId === products[0].id), "Deleting a grocery removes it from every list.");
+    assert(after.shoppingItems.some(item => item.listId === listId && item.groceryId === products[2].id), "Other groceries stay on the list.");
     edit(products[1]); remove(); finished();
     browser("reload"); browser("wait", ".grocery-manager");
     check("!document.querySelector('[aria-label=\"Edit grocery item Deletion rice\"]') && !document.querySelector('[aria-label=\"Edit grocery item Deletion oats\"]') && !!document.querySelector('[aria-label=\"Edit grocery item Deletion oil\"]')", "one-click linked and unused product deletion persists; unrelated product remains");
@@ -156,7 +167,7 @@ try {
 } finally {
   try { browser("close"); } finally {
     const current = await household();
-    for (const extra of current.extras.filter(item => item.id.startsWith(prefix))) await request(`extras/${encodeURIComponent(extra.id)}`, "DELETE");
+    for (const list of current.shoppingLists.filter(item => item.id.startsWith(prefix))) await request(`shopping-lists/${encodeURIComponent(list.id)}`, "DELETE");
     for (const recipe of current.recipes.filter(item => item.id.startsWith(prefix))) await request(`recipes/${encodeURIComponent(recipe.id)}`, "DELETE");
     for (const product of current.groceries.filter(item => item.id.startsWith(prefix))) await request(`groceries/${encodeURIComponent(product.id)}`, "DELETE");
     assert.deepEqual(await household(), original, new Error("Fixture cleanup must restore the starting household."));

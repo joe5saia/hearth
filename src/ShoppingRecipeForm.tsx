@@ -9,31 +9,44 @@ import {
   type GroceryId,
   type Household,
   type Ingredient,
+  type ShoppingAddition,
+  type ShoppingList,
+  type ShoppingSource,
 } from "./domain";
+import { listName } from "./ShoppingLists";
 import { ingredientTotals } from "./ingredient-totals";
 import { matchGrocery } from "./groceries";
 
-/** Reviews each planned meal's scaled ingredients, with unplanned source recipes available separately. */
+/**
+ * Reviews planned meals' scaled ingredients (and unplanned recipes) against the list selected on the shopping tab. Items already on it
+ * are never silently reset: checked or differently counted rows change only when explicitly ticked.
+ */
 export function ShoppingRecipeForm({
   recipes,
   meals,
   groceries,
-  checks,
+  list,
+  items,
   busy,
   error,
   cancel,
   save,
-}: Pick<Household, "recipes" | "meals" | "groceries" | "checks"> & {
+}: Pick<Household, "recipes" | "meals" | "groceries"> & {
+  list: ShoppingList;
+  items: Household["shoppingItems"];
   busy: boolean;
   error: string;
   cancel: () => void;
-  save: (items: { id: GroceryId; packages: number }[]) => Promise<void>;
+  save: (additions: ShoppingAddition[]) => Promise<void>;
 }) {
   const [search, setSearch] = useState("");
   const [selected, setSelected] = useState<string[]>([]);
   const [reviewing, setReviewing] = useState(false);
   const [excluded, setExcluded] = useState<GroceryId[]>([]);
   const [packageCounts, setPackageCounts] = useState(new Map<GroceryId, string>());
+  // Existing rows that conflict are only updated when ticked here.
+  const [updates, setUpdates] = useState<GroceryId[]>([]);
+
   const stepHeading = useRef<HTMLHeadingElement>(null);
 
   useEffect(() => {
@@ -78,17 +91,64 @@ export function ShoppingRecipeForm({
     groceries,
   }).flatMap((row) => (row.grocery ? [{ ...row, item: row.grocery }] : []));
 
-  const onList = new Set(checks.filter((entry) => entry.checked === 0).map((entry) => entry.key));
-  const missing = linked.filter(({ item }) => !onList.has(JSON.stringify(["shopping-list", item.id])));
+  const linkedId = (ingredient: Ingredient) =>
+    ingredient.groceryItemId === undefined
+      ? matchGrocery(ingredient.name, groceries)?.id
+      : (ingredient.groceryItemId ?? undefined);
 
-  const countFor = (row: (typeof missing)[number]) =>
-    packageCounts.get(row.item.id) ?? (row.packages === null ? "" : String(row.packages));
+  // Record which chosen meals or recipes need each grocery, shown on the list row.
+  const sourcesFor = (id: GroceryId): ShoppingSource[] =>
+    chosen
+      .filter(({ recipe }) => recipe.ingredients.some((ingredient) => linkedId(ingredient) === id))
+      .map(({ recipe, meal }) =>
+        meal ? { title: recipe.title, mealId: meal.id, date: meal.date } : { title: recipe.title },
+      );
 
-  const toAdd = missing
-    .filter(
+  const entries = new Map(
+    items.filter((entry) => entry.listId === list.id).map((entry) => [entry.groceryId, entry]),
+  );
+
+  const countFor = (row: (typeof linked)[number]) =>
+    packageCounts.get(row.item.id) ??
+    (row.packages === null ? (entries.get(row.item.id)?.packages.toString() ?? "") : String(row.packages));
+
+  const statusOf = (row: (typeof linked)[number]) => {
+    const entry = entries.get(row.item.id);
+
+    if (!entry) return "new" as const;
+
+    return entry.checked || (row.packages !== null && row.packages !== entry.packages)
+      ? ("conflict" as const)
+      : ("same" as const);
+  };
+
+  const missing = linked.filter((row) => statusOf(row) === "new");
+  const conflicts = linked.filter((row) => statusOf(row) === "conflict");
+  const same = linked.filter((row) => statusOf(row) === "same");
+
+  const toAdd = [
+    ...missing.filter(
       (row) => !excluded.includes(row.item.id) && !(countFor(row).trim() && Number(countFor(row)) === 0),
-    )
-    .map((row) => ({ id: row.item.id, packages: Number(countFor(row)) }));
+    ),
+    ...conflicts.filter((row) => updates.includes(row.item.id)),
+  ].map((row) => ({ id: row.item.id, packages: Number(countFor(row)) }));
+
+  const additions: ShoppingAddition[] = [
+    ...toAdd.map(({ id, packages }) => ({
+      groceryId: id,
+      packages,
+      sources: sourcesFor(id),
+      // Ticked conflicts go back on as still needed, with the reviewed count.
+      checked: 0 as const,
+      replace: entries.has(id),
+    })),
+    // Matching rows only gain this shop's sources.
+    ...same.map((row) => ({ groceryId: row.item.id, sources: sourcesFor(row.item.id) })),
+  ];
+
+  const listCounts = new Map<string, number>();
+
+  for (const entry of items) listCounts.set(entry.listId, (listCounts.get(entry.listId) ?? 0) + 1);
 
   const invalidCounts = toAdd.filter(({ packages }) => !Schema.is(PackageCountSchema)(packages));
   const validCounts = invalidCounts.length === 0;
@@ -117,10 +177,8 @@ export function ShoppingRecipeForm({
           : ""
       : !selected.length
         ? "Select at least one recipe to review its items."
-        : !missing.length
-          ? linked.length
-            ? "All linked items are already on your list."
-            : `No linked grocery items. ${linkingHelp}`
+        : !linked.length
+          ? `No linked grocery items. ${linkingHelp}`
           : "";
 
   const visible = options.filter(({ recipe }) => matchesRecipeSearch(recipe, search));
@@ -156,8 +214,8 @@ export function ShoppingRecipeForm({
         if (busy) return;
 
         if (reviewing) {
-          if (toAdd.length && validCounts) await save(toAdd);
-        } else if (missing.length) {
+          if (!blockedReason) await save(additions);
+        } else if (linked.length) {
           setReviewing(true);
         }
       }}
@@ -197,56 +255,126 @@ export function ShoppingRecipeForm({
           </button>
         </div>
         {reviewing ? (
-          <div className="shopping-recipe-options" role="group" aria-label="Items to add">
-            {missing.map((row) => (
-              <div
-                className={`shopping-review-item${invalidCounts.some((item) => item.id === row.item.id) ? " needs-quantity" : ""}`}
-                key={row.item.id}
-              >
-                <label className="shopping-recipe-option">
-                  <input
-                    type="checkbox"
-                    checked={!excluded.includes(row.item.id)}
-                    disabled={busy}
-                    onChange={(event) =>
-                      setExcluded((current) =>
-                        event.target.checked
-                          ? current.filter((id) => id !== row.item.id)
-                          : [...current, row.item.id],
-                      )
-                    }
-                  />
-                  <span>
-                    <strong>{row.item.name}</strong>
-                    <span className="small">Recipes need {row.amounts.map(displayAmount).join(" + ")}</span>
-                    <span className="muted small">{displayAmount(row.item)} per package</span>
-                  </span>
-                </label>
-                <label className="shopping-package-count">
-                  Packages to buy
-                  <input
-                    type="number"
-                    inputMode="numeric"
-                    min={0}
-                    max={1_000_000}
-                    step={1}
-                    required
-                    aria-label={`Packages to buy for ${row.item.name}`}
-                    value={countFor(row)}
-                    disabled={busy || excluded.includes(row.item.id)}
-                    onChange={(event) =>
-                      setPackageCounts((current) => new Map(current).set(row.item.id, event.target.value))
-                    }
-                  />
-                </label>
-                {row.packages === null && (
-                  <p className="muted small">
-                    These units can’t be converted to this package. Choose how many to buy.
-                  </p>
-                )}
+          <>
+            <p className="muted small shopping-target">Adding to {listName(list)}</p>
+            {conflicts.length > 0 && (
+              <div className="shopping-recipe-options" role="group" aria-label="Already on this list">
+                <h4 className="shopping-review-heading">Needs your decision · {conflicts.length}</h4>
+                {conflicts.map((row) => (
+                  <div
+                    className={`shopping-review-item conflict${invalidCounts.some((item) => item.id === row.item.id) ? " needs-quantity" : ""}`}
+                    key={row.item.id}
+                  >
+                    <label className="shopping-recipe-option">
+                      <input
+                        type="checkbox"
+                        checked={updates.includes(row.item.id)}
+                        disabled={busy}
+                        onChange={(event) =>
+                          setUpdates((current) =>
+                            event.target.checked
+                              ? [...current, row.item.id]
+                              : current.filter((id) => id !== row.item.id),
+                          )
+                        }
+                      />
+                      <span>
+                        <strong>{row.item.name}</strong>
+                        <span className="shopping-review-conflict small">
+                          {entries.get(row.item.id)?.checked
+                            ? "Already picked up on this list. Tick to put it back on as still needed."
+                            : `On this list as ${entries.get(row.item.id)?.packages ?? 1}. Tick to change the count.`}
+                        </span>
+                        <span className="small">
+                          Recipes need {row.amounts.map(displayAmount).join(" + ")}
+                        </span>
+                        <span className="muted small">{displayAmount(row.item)} per package</span>
+                      </span>
+                    </label>
+                    <label className="shopping-package-count">
+                      Packages to buy
+                      <input
+                        type="number"
+                        inputMode="numeric"
+                        min={0}
+                        max={1_000_000}
+                        step={1}
+                        required
+                        aria-label={`Packages to buy for ${row.item.name}`}
+                        value={countFor(row)}
+                        disabled={busy || !updates.includes(row.item.id)}
+                        onChange={(event) =>
+                          setPackageCounts((current) => new Map(current).set(row.item.id, event.target.value))
+                        }
+                      />
+                    </label>
+                    {row.packages === null && (
+                      <p className="muted small">
+                        These units can’t be converted to this package. Choose how many to buy.
+                      </p>
+                    )}
+                  </div>
+                ))}
               </div>
-            ))}
-          </div>
+            )}
+            <div className="shopping-recipe-options" role="group" aria-label="Items to add">
+              {missing.length > 0 && conflicts.length > 0 && (
+                <h4 className="shopping-review-heading">New for this list · {missing.length}</h4>
+              )}
+              {missing.map((row) => (
+                <div
+                  className={`shopping-review-item${invalidCounts.some((item) => item.id === row.item.id) ? " needs-quantity" : ""}`}
+                  key={row.item.id}
+                >
+                  <label className="shopping-recipe-option">
+                    <input
+                      type="checkbox"
+                      checked={!excluded.includes(row.item.id)}
+                      disabled={busy}
+                      onChange={(event) =>
+                        setExcluded((current) =>
+                          event.target.checked
+                            ? current.filter((id) => id !== row.item.id)
+                            : [...current, row.item.id],
+                        )
+                      }
+                    />
+                    <span>
+                      <strong>{row.item.name}</strong>
+
+                      <span className="small">Recipes need {row.amounts.map(displayAmount).join(" + ")}</span>
+                      <span className="muted small">{displayAmount(row.item)} per package</span>
+                    </span>
+                  </label>
+                  <label className="shopping-package-count">
+                    Packages to buy
+                    <input
+                      type="number"
+                      inputMode="numeric"
+                      min={0}
+                      max={1_000_000}
+                      step={1}
+                      required
+                      aria-label={`Packages to buy for ${row.item.name}`}
+                      value={countFor(row)}
+                      disabled={busy || excluded.includes(row.item.id)}
+                      onChange={(event) =>
+                        setPackageCounts((current) => new Map(current).set(row.item.id, event.target.value))
+                      }
+                    />
+                  </label>
+                  {row.packages === null && (
+                    <p className="muted small">
+                      These units can’t be converted to this package. Choose how many to buy.
+                    </p>
+                  )}
+                </div>
+              ))}
+              {!missing.length && (
+                <p className="muted">Everything from these meals is already on this list.</p>
+              )}
+            </div>
+          </>
         ) : (
           <>
             <label>
@@ -318,10 +446,13 @@ export function ShoppingRecipeForm({
             {reviewing ? toAdd.length : selected.length}{" "}
             {reviewing
               ? `${toAdd.length === 1 ? "item" : "items"} to add`
-              : `selected · ${missing.length} ${missing.length === 1 ? "item" : "items"} to add`}
+              : `selected · ${linked.length} linked ${linked.length === 1 ? "grocery" : "groceries"}`}
           </strong>
-          {linked.length > missing.length && (
-            <p className="muted">{linked.length - missing.length} already on your list.</p>
+          {reviewing && same.length > 0 && (
+            <p className="muted">
+              {same.length} already on this list with the same count. Untick anything you already have at
+              home.
+            </p>
           )}
           {unlinked > 0 && (
             <p className="muted">
@@ -329,11 +460,7 @@ export function ShoppingRecipeForm({
               {linkingHelp}
             </p>
           )}
-          {selected.length > 0 && !missing.length && (
-            <p className="muted">
-              {linked.length ? "All linked items are already on your list." : "No linked grocery items."}
-            </p>
-          )}
+          {selected.length > 0 && !linked.length && <p className="muted">No linked grocery items.</p>}
         </div>
         {error && (
           <p role="alert" className="form-error">

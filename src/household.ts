@@ -4,8 +4,10 @@ import {
   CollectionSchema,
   IdSchema,
   MealSchema,
-  ExtraSchema,
-  CheckWriteSchema,
+  ShoppingListSchema,
+  ShoppingListItemSchema,
+  ShoppingAdditionsSchema,
+  ShoppingItemPatchSchema,
   ShoppingOrderSchema,
   DateSchema,
   RecipeId,
@@ -13,9 +15,12 @@ import {
   RecipeWriteSchema,
   type Collection,
   type Meal,
-  type Extra,
+  type ShoppingList,
+  type ShoppingAddition,
   type ShoppingOrder,
   type CalendarDate,
+  type GroceryId,
+  weekStart,
 } from "./domain";
 import {
   database,
@@ -41,7 +46,20 @@ const ok = { ok: true } as const;
 
 const SavedCollectionSchema = Schema.Struct({ ...CollectionSchema.fields, revision: Schema.NonEmptyString });
 
-const SavedExtraSchema = Schema.Struct({ ...ExtraSchema.fields, revision: Schema.NonEmptyString });
+const SavedShoppingListSchema = Schema.Struct({
+  ...ShoppingListSchema.fields,
+  revision: Schema.NonEmptyString,
+});
+
+const decodeShoppingItemRow = Schema.decodeUnknownSync(
+  Schema.Struct({
+    ...ShoppingListItemSchema.fields,
+    sources: Schema.fromJsonString(ShoppingListItemSchema.fields.sources),
+  }),
+);
+
+const shoppingItemColumns =
+  "list_id AS listId,grocery_id AS groceryId,checked,packages,sources,added_at AS addedAt,checked_at AS checkedAt";
 
 const decodeMealRow = Schema.decodeUnknownSync(
   Schema.Struct({
@@ -91,15 +109,17 @@ export const getHousehold = (db: D1Database) =>
         // Recipe writes upsert in place, so rowid order is addition order; data imports copy rows in rowid order.
         db.prepare("SELECT id FROM recipes ORDER BY rowid"),
         db.prepare("SELECT * FROM meals ORDER BY date,slot,id"),
-        db.prepare("SELECT * FROM extras ORDER BY rowid"),
-        db.prepare("SELECT * FROM checks"),
+        db.prepare("SELECT id,date,label,revision FROM shopping_lists ORDER BY date,created_at,id"),
+        db.prepare(
+          `SELECT ${shoppingItemColumns} FROM shopping_list_items ORDER BY list_id,added_at,grocery_id`,
+        ),
         db.prepare("SELECT * FROM collections ORDER BY name"),
         db.prepare("SELECT * FROM groceries ORDER BY name,id"),
         db.prepare("SELECT aisles,items,revision FROM shopping_order WHERE id=1"),
       ]),
     );
 
-    const [recipes, recipesAdded, meals, extras, checks, collections, groceries, shoppingOrder] = snapshot;
+    const [recipes, recipesAdded, meals, lists, items, collections, groceries, shoppingOrder] = snapshot;
 
     yield* record("household_snapshot", {
       recipes: recipes.results.length,
@@ -124,8 +144,8 @@ export const getHousehold = (db: D1Database) =>
           recipesAdded.results,
         ).map((row) => row.id),
         meals: meals.results.map((row) => decodeMealRow(row)),
-        extras: Schema.decodeUnknownSync(Schema.Array(SavedExtraSchema))(extras.results),
-        checks: checks.results,
+        shoppingLists: Schema.decodeUnknownSync(Schema.Array(SavedShoppingListSchema))(lists.results),
+        shoppingItems: items.results.map((row) => decodeShoppingItemRow(row)),
         collections: Schema.decodeUnknownSync(Schema.Array(SavedCollectionSchema))(collections.results),
         groceries: groceries.results.map(parseGrocery),
         shoppingOrder: decodedOrder,
@@ -287,80 +307,224 @@ export const patchMealNote = (db: D1Database, id: string, input: { note: string;
     return ok;
   });
 
-/** Validates and upserts an independent shopping extra with a trimmed name. */
-export const saveExtra = (db: D1Database, input: Extra, expectedRevision?: string | null) =>
+/** Creates or edits a list's date and label; a null expectation is create-only. */
+export const saveShoppingList = (db: D1Database, input: ShoppingList, expectedRevision?: string | null) =>
   Effect.gen(function* () {
     const revision = yield* requireRevision(expectedRevision);
-    const extra = yield* validate(ExtraSchema, input, "Add an item name of 200 characters or less.");
-    const saved = { ...extra, name: extra.name.trim() };
+
+    const decoded = yield* validate(
+      ShoppingListSchema,
+      input,
+      "Choose a list date and a label of 100 characters or less.",
+    );
+
+    const list = { ...decoded, label: decoded.label.trim() };
 
     const [write, rows] = yield* database(() =>
       db.batch([
         db
           .prepare(
-            "INSERT INTO extras(id,name,checked) SELECT ?1,?2,?3 WHERE ?4 IS NULL OR EXISTS (SELECT 1 FROM extras WHERE id=?1 AND revision=?4) ON CONFLICT(id) DO UPDATE SET name=excluded.name,checked=excluded.checked WHERE extras.revision=?4",
+            `INSERT INTO shopping_lists(id,date,label) SELECT ?1,?2,?3
+            WHERE ?4 IS NULL OR EXISTS (SELECT 1 FROM shopping_lists WHERE id=?1 AND revision=?4)
+            ON CONFLICT(id) DO UPDATE SET date=excluded.date,label=excluded.label WHERE shopping_lists.revision=?4`,
           )
-          .bind(saved.id, saved.name, saved.checked, revision),
-        db.prepare("SELECT * FROM extras WHERE id=?").bind(saved.id),
+          .bind(list.id, list.date, list.label, revision),
+        db.prepare("SELECT id,date,label,revision FROM shopping_lists WHERE id=?").bind(list.id),
       ]),
     );
 
     if (!write.meta.changes) return yield* staleWrite();
 
-    return { extra: yield* stored(() => Schema.decodeUnknownSync(SavedExtraSchema)(rows.results[0])) };
+    return { list: yield* stored(() => Schema.decodeUnknownSync(SavedShoppingListSchema)(rows.results[0])) };
   });
 
-/** Deletes only the observed shopping extra version. */
-export const deleteExtra = (db: D1Database, id: string, expectedRevision?: string | null) =>
-  deleteVersion(db, "extras", id, expectedRevision);
+/** Deletes the observed list version together with every item on it. */
+export const deleteShoppingList = (db: D1Database, id: string, expectedRevision?: string | null) =>
+  deleteVersion(db, "shopping_lists", id, expectedRevision);
 
-/** Field-scoped checked intent never creates a missing extra. */
-export const patchExtraChecked = (db: D1Database, id: string, checked: 0 | 1) =>
+const missingList = () =>
+  new MissingReference({ message: "That shopping list no longer exists. Refresh to see the current lists." });
+
+/** Reads one list's rows; fails when the list itself is absent. */
+export const getShoppingListItems = (db: D1Database, listId: string) =>
   Effect.gen(function* () {
-    const result = yield* database(() =>
-      db.prepare("UPDATE extras SET checked=? WHERE id=?").bind(checked, id).run(),
+    const [list, rows] = yield* database(() =>
+      db.batch([
+        db.prepare("SELECT id,date,label,revision FROM shopping_lists WHERE id=?").bind(listId),
+        db
+          .prepare(
+            `SELECT ${shoppingItemColumns} FROM shopping_list_items WHERE list_id=? ORDER BY added_at,grocery_id`,
+          )
+          .bind(listId),
+      ]),
     );
 
-    if (!result.meta.changes) return yield* staleWrite();
+    if (!list.results.length) return yield* missingList();
 
-    return ok;
+    return yield* stored(() => ({
+      list: Schema.decodeUnknownSync(SavedShoppingListSchema)(list.results[0]),
+      items: rows.results.map((row) => decodeShoppingItemRow(row)),
+    }));
   });
 
-/** Saves membership/counts atomically; conditional additions and omitted counts preserve existing amounts. */
-export const setShoppingChecked = (db: D1Database, input: typeof CheckWriteSchema.Type) =>
+/**
+ * Adds groceries to a list in one transaction. New groceries are inserted. A grocery already on the list
+ * changes only with replace; otherwise a matching unchecked row just gains the sources, and a checked or
+ * differently counted row is left alone and returned as a conflict.
+ */
+export const addShoppingItems = (db: D1Database, listId: string, input: readonly ShoppingAddition[]) =>
   Effect.gen(function* () {
-    const check = yield* validate(CheckWriteSchema, input, "Invalid shopping item.");
-    // Catalog checks default to 1; retain only the unchecked/on-list exception.
-    // Legacy recipe check identities defaulted to 0 and remain readable without a migration.
-    const defaultChecked = check.key.startsWith('["shopping-list",') ? 1 : 0;
+    const additions = yield* validate(
+      ShoppingAdditionsSchema,
+      input,
+      "Add between 1 and 500 groceries, each once, with whole package counts.",
+    );
 
-    // Test existence in the write itself: a separate read races with product deletion.
-    const result = yield* database(() =>
-      check.checked === defaultChecked
-        ? db.prepare("DELETE FROM checks WHERE key=?").bind(check.key).run()
-        : db
+    const ids = additions.map((item) => item.groceryId);
+
+    const known = yield* database(() =>
+      db
+        .prepare("SELECT id FROM groceries WHERE id IN (SELECT value FROM json_each(?))")
+        .bind(JSON.stringify(ids))
+        .all(),
+    );
+
+    if (known.results.length !== ids.length)
+      return yield* new MissingReference({
+        message:
+          "Some of those groceries no longer exist. Refresh the groceries before adding them; no items were added.",
+      });
+
+    // Rows before and after share the batch transaction, so classification matches what was written.
+    const select = db
+      .prepare(
+        `SELECT ${shoppingItemColumns} FROM shopping_list_items WHERE list_id=? AND grocery_id IN (SELECT value FROM json_each(?))`,
+      )
+      .bind(listId, JSON.stringify(ids));
+
+    const results = yield* database(() =>
+      db.batch([
+        db.prepare("SELECT id FROM shopping_lists WHERE id=?").bind(listId),
+        select,
+        ...additions.map((item) =>
+          db
             .prepare(
-              `INSERT INTO checks(key,checked,packages) SELECT ?,?,COALESCE(?,1) WHERE ?=0 OR EXISTS
-                (SELECT 1 FROM groceries WHERE json_array('shopping-list',id)=?)
-                ON CONFLICT(key) DO UPDATE SET checked=excluded.checked,
-                packages=CASE WHEN ? THEN checks.packages ELSE COALESCE(?,checks.packages) END`,
+              `INSERT INTO shopping_list_items(list_id,grocery_id,checked,packages,sources,checked_at)
+              SELECT ?1,?2,?3,COALESCE(?4,1),?5,CASE WHEN ?3 THEN strftime('%Y-%m-%dT%H:%M:%fZ','now') END
+              WHERE EXISTS (SELECT 1 FROM shopping_lists WHERE id=?1)
+                AND EXISTS (SELECT 1 FROM groceries WHERE id=?2)
+              ON CONFLICT(list_id,grocery_id) DO UPDATE SET
+                checked=CASE WHEN ?6 THEN excluded.checked ELSE checked END,
+                checked_at=CASE WHEN ?6 AND excluded.checked<>checked THEN excluded.checked_at ELSE checked_at END,
+                packages=CASE WHEN ?6 THEN COALESCE(?4,packages) ELSE packages END,
+                sources=(SELECT json_group_array(json(value)) FROM (
+                  SELECT value FROM json_each(shopping_list_items.sources)
+                  UNION ALL SELECT value FROM json_each(excluded.sources)
+                    WHERE value NOT IN (SELECT value FROM json_each(shopping_list_items.sources))
+                  -- Stored rows decode with the same 50-source cap as each request, so merges keep the oldest 50.
+                  LIMIT 50))
+              WHERE ?6 OR (checked=0 AND (?4 IS NULL OR packages=?4))`,
             )
             .bind(
-              check.key,
-              check.checked,
-              check.packages ?? null,
-              defaultChecked,
-              check.key,
-              check.onlyIfAbsent ? 1 : 0,
-              check.packages ?? null,
-            )
-            .run(),
+              listId,
+              item.groceryId,
+              item.checked ?? 0,
+              item.packages ?? null,
+              JSON.stringify(item.sources ?? []),
+              item.replace ? 1 : 0,
+            ),
+        ),
+        select,
+      ]),
     );
 
-    if (check.checked !== defaultChecked && !result.meta.changes)
-      return yield* new MissingReference({ message: "That grocery item no longer exists." });
+    const [list, before, ...rest] = results;
+
+    if (!list.results.length) return yield* missingList();
+
+    const after = rest.at(-1);
+
+    return yield* stored(() => {
+      const existing = new Map(
+        before.results.map((row) => decodeShoppingItemRow(row)).map((row) => [row.groceryId, row]),
+      );
+
+      const saved = new Map(
+        (after?.results ?? []).map((row) => decodeShoppingItemRow(row)).map((row) => [row.groceryId, row]),
+      );
+
+      const added: GroceryId[] = [];
+      const updated: GroceryId[] = [];
+      const unchanged: GroceryId[] = [];
+      const conflicts = [];
+
+      for (const item of additions) {
+        const prior = existing.get(item.groceryId);
+        const row = saved.get(item.groceryId);
+
+        // A grocery deleted after the existence check is neither added nor reported.
+        if (!prior) {
+          if (row) added.push(item.groceryId);
+        } else if (item.replace) updated.push(item.groceryId);
+        else if (prior.checked === 0 && (item.packages === undefined || prior.packages === item.packages))
+          unchanged.push(item.groceryId);
+        else if (row)
+          conflicts.push({ groceryId: row.groceryId, checked: row.checked, packages: row.packages });
+      }
+
+      return { added, updated, unchanged, conflicts };
+    });
+  });
+
+/** Changes checked state or package count for a grocery already on a list; never adds it. */
+export const setShoppingItem = (
+  db: D1Database,
+  listId: string,
+  groceryId: GroceryId,
+  input: typeof ShoppingItemPatchSchema.Type,
+) =>
+  Effect.gen(function* () {
+    const patch = yield* validate(
+      ShoppingItemPatchSchema,
+      input,
+      "Choose checked or unchecked and a whole package count.",
+    );
+
+    const result = yield* database(() =>
+      db
+        .prepare(
+          `UPDATE shopping_list_items SET
+            checked=COALESCE(?3,checked),
+            checked_at=CASE WHEN ?3 IS NULL OR ?3=checked THEN checked_at
+              WHEN ?3=1 THEN strftime('%Y-%m-%dT%H:%M:%fZ','now') ELSE NULL END,
+            packages=COALESCE(?4,packages)
+          WHERE list_id=?1 AND grocery_id=?2`,
+        )
+        .bind(listId, groceryId, patch.checked ?? null, patch.packages ?? null)
+        .run(),
+    );
+
+    if (!result.meta.changes)
+      return yield* new MissingReference({
+        message: "That grocery is no longer on this list. Refresh the list before changing it.",
+      });
 
     return ok;
+  });
+
+/** Deletes groceries from one list; groceries already absent are ignored. */
+export const removeShoppingItems = (db: D1Database, listId: string, groceryIds: readonly GroceryId[]) =>
+  Effect.gen(function* () {
+    const result = yield* database(() =>
+      db
+        .prepare(
+          "DELETE FROM shopping_list_items WHERE list_id=? AND grocery_id IN (SELECT value FROM json_each(?))",
+        )
+        .bind(listId, JSON.stringify(groceryIds))
+        .run(),
+    );
+
+    return { removed: result.meta.changes ?? 0 };
   });
 
 /** Replaces both saved shopping sequences after validating uniqueness and size. */
@@ -427,7 +591,11 @@ export const addDemoData = (db: D1Database, today: CalendarDate) =>
           }),
         ),
         ...sampleMeals(today).map((meal) => mealStatement(db, meal)),
-        db.prepare("INSERT INTO extras(id,name,checked) VALUES('sample-extra','Greek yogurt',0)"),
+        db.prepare("INSERT INTO shopping_lists(id,date) VALUES('sample-list',?)").bind(weekStart(today)),
+        db.prepare(
+          `INSERT INTO shopping_list_items(list_id,grocery_id,sources)
+          SELECT 'sample-list',id,'[]' FROM groceries WHERE id IN ('sample-beans','sample-spinach')`,
+        ),
       ]),
     );
 
