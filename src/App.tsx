@@ -3873,6 +3873,7 @@ function RecipeForm({
                 <span className="sr-only">{meal ? "Meal name" : "Recipe name"}</span>
                 <textarea
                   aria-label={meal ? "Meal name" : "Recipe name"}
+                  data-select-on-focus
                   rows={1}
                   required
                   maxLength={150}
@@ -4024,6 +4025,7 @@ function RecipeForm({
                     <div className="ingredient-editor" key={index}>
                       <textarea
                         rows={1}
+                        data-select-on-focus
                         aria-label={`Ingredient ${index + 1} name`}
                         placeholder="Ingredient"
                         maxLength={150}

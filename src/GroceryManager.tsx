@@ -307,10 +307,7 @@ export function GroceryForm({ item, aisles, busy, error, save, cancel, remove }:
                   value={amount}
                   disabled={locked}
                   onFocus={(event) => event.currentTarget.select()}
-                  onClick={(event) => {
-                    event.currentTarget.select();
-                    openAmounts();
-                  }}
+                  onClick={openAmounts}
                   onChange={(event) => {
                     setAmount(event.target.value);
                     const value = Number(event.target.value);

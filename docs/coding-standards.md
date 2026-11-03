@@ -129,6 +129,13 @@ while open. Inline disclosures that push content down (recipe details, Groceries
 sections, timer creation) and side panels used alongside other work (kitchen timers) are
 not menus and stay open until the user collapses them.
 
+Pressing or tapping into a prefilled text, search, number, URL, email, or phone input
+selects its whole value so typing replaces it; leaving without typing keeps it, and a
+second press or an arrow key places the caret to extend it. `src/select-on-focus.ts` owns
+this app-wide, so do not add per-field `select()` handlers for it. Text areas keep native
+caret placement so a keystroke cannot replace a note or instruction; a wrapping name field
+such as a recipe or ingredient name opts in with `data-select-on-focus`.
+
 ## Validation and scope
 
 Preserve behavior while correcting standards violations: do not change routes,

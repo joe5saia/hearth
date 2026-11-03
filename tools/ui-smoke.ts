@@ -549,12 +549,24 @@ async function shoppingAndTimers(page: Page, touch: boolean, label: string, capt
     if (capture) await screenshot(page, `${label}-builder-compact`);
   });
 
-  await check(label, page.context().browser()?.browserType().name() ?? "webkit", `${viewport.width}×${viewport.height}`, "timer create, persistence, edit draft cancellation, focus, and cleanup", async () => {
+  await check(label, page.context().browser()?.browserType().name() ?? "webkit", `${viewport.width}×${viewport.height}`, "timer create, select-on-focus name replacement, persistence, edit draft cancellation, focus, and cleanup", async () => {
     await page.goto(`${root}/#plan`); await settle(page);
     await activate(page.locator(".timer-toggle"), touch);
     const panel = page.getByLabel("Kitchen timers"); await panel.waitFor();
     const name = `UI smoke timer ${Date.now()}`;
-    await panel.locator('input[name="timerName"]').fill(name);
+    const nameInput = panel.locator('input[name="timerName"]');
+    assert.notEqual(await nameInput.inputValue(), "", "timer name should be prefilled");
+    // A first press selects the prefilled name so typing replaces it; a second press places the caret to extend it.
+    await activate(nameInput, touch);
+    await page.keyboard.type(name.slice(0, -4));
+    await nameInput.evaluate((input: HTMLInputElement) => input.blur());
+    await activate(nameInput, touch);
+    const box = await nameInput.boundingBox();
+    assert(box, "Timer name input must have a visible box");
+    const end = { x: box.x + box.width - 8, y: box.y + box.height / 2 };
+    touch ? await page.touchscreen.tap(end.x, end.y) : await page.mouse.click(end.x, end.y);
+    await page.keyboard.type(name.slice(-4));
+    assert.equal(await nameInput.inputValue(), name);
     await panel.locator('input[name="timerMinutes"]').fill("2");
     await activate(panel.getByRole("button", { name: /start timer/i }), touch);
     await page.reload(); await settle(page); await activate(page.locator(".timer-toggle"), touch);
