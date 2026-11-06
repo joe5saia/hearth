@@ -1767,7 +1767,9 @@ main {
 .modal.fullscreen > .grocery-form,
 .modal.fullscreen > .shopping-recipe-form,
 .modal > .recipe-form {
-  flex: 1;
+  /* Basis auto, not 0%: in a dialog sized only by max-height, WebKit resolves a 0% basis to
+     zero height, collapsing the form behind its heading. */
+  flex: 1 1 auto;
   overflow: hidden;
   padding: 0;
   gap: 0;
@@ -3317,6 +3319,10 @@ textarea::placeholder {
   }
 }
 @media (pointer: coarse) and (max-height: 500px) {
+  /* The panel overlaps the sticky topbar here; lift its toolbar above it so the month controls stay tappable. */
+  .section-toolbar:has(.date-picker[open]) {
+    z-index: 11;
+  }
   .date-picker-panel {
     position: fixed;
     top: 12px;
