@@ -114,10 +114,10 @@ async function settle(page: Page) {
 
 async function auditLayout(page: Page, touch: boolean) {
   const problems = await page.evaluate((expectTouch: boolean) => {
+    // checkVisibility also excludes content of closed <details>, which WebKit still gives a layout box.
     const visible = (element: Element) => {
-      const style = getComputedStyle(element);
       const box = element.getBoundingClientRect();
-      return style.visibility !== "hidden" && style.display !== "none" && box.width > 0 && box.height > 0;
+      return element.checkVisibility({ visibilityProperty: true }) && box.width > 0 && box.height > 0;
     };
     const offenders = [...document.querySelectorAll("body *, dialog[open] *")].filter((element) => {
       if (!visible(element)) return false;
@@ -174,6 +174,8 @@ async function cancelDialog(page: Page) {
   assert(title, "Open dialogs must expose an accessible title");
   await dialog.getByRole("button", { name: "Close dialog" }).click();
   await page.getByRole("dialog", { name: title, exact: true }).waitFor({ state: "detached" });
+  // Closing the last dialog goes Back asynchronously; let that land before the next navigation.
+  await page.waitForFunction(() => document.querySelector("dialog[open]") || !location.hash.includes("view="));
 }
 
 async function commonNavigation(page: Page, touch: boolean, label: string, capture: boolean) {
@@ -181,7 +183,11 @@ async function commonNavigation(page: Page, touch: boolean, label: string, captu
   assert(viewport, "Navigation scenario requires a viewport");
   await check(label, page.context().browser()?.browserType().name() ?? "webkit", `${viewport.width}×${viewport.height}`, "meal plan navigation, date disclosure, and unsaved meal cancellation", async () => {
     await page.goto(`${root}/#plan`); await settle(page);
-    const currentWeek = await page.locator(".week-navigation h2").textContent();
+    // The plan is one scrolling timeline; a date jump scrolls the week containing that day into view.
+    const weekInView = (day: string) => page.locator(".plan-week", { has: page.locator(day) }).evaluate((week: HTMLElement) => {
+      const box = week.getBoundingClientRect();
+      return box.top < innerHeight && box.bottom > 0;
+    });
     const trigger = page.getByText("Jump to date", { exact: true });
     await activate(trigger, touch);
     await auditLayout(page, touch);
@@ -203,11 +209,12 @@ async function commonNavigation(page: Page, touch: boolean, label: string, captu
     assert.equal(await page.locator(".date-picker-heading strong").textContent(), "January 2030");
     await activate(page.getByRole("button", { name: "Friday, January 4, 2030", exact: true }), touch);
     assert.equal(await page.locator(".date-picker[open]").count(), 0);
-    assert.equal(await page.locator(".week-navigation h2").textContent(), "Dec 29, 2029 – Jan 4, 2030");
+    assert.equal(await page.locator(".plan-week", { has: page.locator("#plan-2030-01-04") }).locator(".plan-week-heading").textContent(), "Dec 29, 2029 – Jan 4, 2030");
+    assert(await weekInView("#plan-2030-01-04"), "the chosen date's week must be scrolled into view");
     assert(await page.locator("#plan-2030-01-04").evaluate(element => element === document.activeElement));
     await activate(trigger, touch);
     await activate(page.getByRole("button", { name: "Today", exact: true }), touch);
-    assert.equal(await page.locator(".week-navigation h2").textContent(), currentWeek);
+    assert(await weekInView(".day.is-today"), "Today must scroll the current week into view");
     await activate(trigger, touch);
     await activate(page.getByRole("button", { name: "Add a meal" }).first(), touch);
     assert.equal(await page.locator(".date-picker[open]").count(), 0, "an outside tap must dismiss the picker");
@@ -237,8 +244,12 @@ async function commonNavigation(page: Page, touch: boolean, label: string, captu
   });
 
   await check(label, page.context().browser()?.browserType().name() ?? "webkit", `${viewport.width}×${viewport.height}`, "planned meal opens fullscreen details and cancels independent edits", async () => {
-    const card = page.locator(".meal-card:not(.note-only-card)").first();
-    const title = await card.locator("h3").textContent();
+    // Pin the card by day and title: the timeline may load earlier weeks above it, changing `.first()`.
+    const first = page.locator(".meal-card:not(.note-only-card)").first();
+    const title = await first.locator("h3").textContent();
+    const day = await first.evaluate((element: HTMLElement) => element.closest(".day")?.id);
+    assert(title && day, "The first planned recipe needs a title and a day");
+    const card = page.locator(`#${day} .meal-card:not(.note-only-card)`).filter({ has: page.getByRole("heading", { name: title, exact: true }) }).first();
     await activate(card, touch);
     const detail = page.getByRole("dialog", { name: "Meal details" });
     await detail.waitFor();

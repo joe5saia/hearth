@@ -155,7 +155,8 @@ try {
         const card = page.locator(".meal-card").filter({ hasText: recipe.title });
         const remove = page.getByRole("button", { name: `Delete meal ${recipe.title}`, exact: true });
         const touch = async (dx: number, dy: number, duration = 160, cancel = false) => {
-          await card.scrollIntoViewIfNeeded();
+          // Center the card: a partly visible card's center can sit under the sticky toolbar.
+          await card.evaluate((element: HTMLElement) => element.scrollIntoView({ block: "center" }));
           const box = await card.boundingBox();
           assert(box);
           const x = box.x + box.width / 2;
@@ -361,7 +362,7 @@ try {
           await expect(row(0)).toContainText("Recipes need 1.2 kg");
           await expect(row(1)).toContainText("Recipes need 280.95 ml");
           await expect(row(2)).toContainText("Recipes need 1.25 lb");
-          await expect(row(3)).toContainText("Recipes need 10 g + 4.93 ml");
+          await expect(row(3)).toContainText("Recipes need 10 g + 1 tsp");
           for (const [index, expected] of [[0, "3"], [1, "2"], [2, "2"], [3, ""], [4, "1"], [5, "2"], [6, "3"]] as const)
             await expect(count(index)).toHaveValue(expected);
           // A grocery already on the list with another count needs an explicit decision before it changes.
