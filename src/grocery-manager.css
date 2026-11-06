@@ -82,6 +82,11 @@
   height: 44px;
   padding: 0;
 }
+/* Skip layout and paint of offscreen products in the long catalog. */
+.grocery-product {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 47px;
+}
 .grocery-product h2,
 .grocery-recipe-list h3 {
   font-family: var(--serif);

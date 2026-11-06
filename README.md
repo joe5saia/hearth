@@ -613,6 +613,20 @@ Every mutation still reloads the household's structured data. These are local wa
 latency, cold starts, Access authentication, browser rendering, Core Web Vitals, or mobile-device results.
 There are no hardware-dependent pass/fail timing thresholds; correctness failures still fail the command.
 
+### Browser benchmark
+
+```sh
+npx task ui:setup                                          # Once per orb: installs Playwright Chromium
+npx task benchmark:browser                                 # Against the running local Worker on :8787
+npx task benchmark:browser -- --rounds 5 --cpu 4 --out /tmp/hearth-browser.json
+```
+
+Measures the built React app in headless Chromium against a local Worker and its household:
+time until the meal plan is drawn, network and image bytes while visiting Recipes, JS heap,
+Plan → Recipes and Recipes → Groceries navigation, and scroll frame intervals. `--cpu 4` throttles
+the CPU fourfold, closer to a phone. Rebuild (`npx task build`) and restart the Worker before
+measuring app changes; compare runs against the same household on the same idle machine.
+
 ## Deploy to Cloudflare
 
 Deployment is **not performed** as part of local setup. Review it before running: this provisions shared infrastructure and applies migrations.

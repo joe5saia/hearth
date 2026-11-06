@@ -292,7 +292,53 @@ async function api(
   return response;
 }
 
-function Photo({ recipe, className = "" }: { recipe: Pick<Recipe, "photo" | "title">; className?: string }) {
+/** Photo hosts whose `w` query parameter serves the same image at a smaller width. */
+const resizablePhotoHosts = new Set(["www.umami.recipes"]);
+
+/** Smaller widths offered to the browser, below the saved photo's own `w`. */
+const photoWidths = [320, 640, 1024];
+
+/**
+ * A `srcset` of smaller copies of a photo on a host that resizes by `w`, ending with the saved
+ * size, so a thumbnail never downloads the full 2048 px image. Other photos have none.
+ */
+function photoSrcSet(photo: string): string | undefined {
+  let url: URL;
+
+  try {
+    url = new URL(photo);
+  } catch {
+    // Same-origin paths and other non-URL photos load as saved.
+    return undefined;
+  }
+
+  const saved = Number(url.searchParams.get("w"));
+
+  if (!resizablePhotoHosts.has(url.hostname) || !Number.isInteger(saved) || saved <= 0) return undefined;
+
+  return [...photoWidths.filter((width) => width < saved), saved]
+    .map((width) => {
+      url.searchParams.set("w", String(width));
+
+      return `${url.href} ${width}w`;
+    })
+    .join(", ");
+}
+
+/**
+ * A recipe photo over its placeholder. `sizes` is the CSS width the photo needs in its slot,
+ * as for `<img sizes>`: the box's width, or more when `object-fit: cover` crops a wide photo
+ * to a tall box. The browser multiplies it by the screen's pixel ratio.
+ */
+function Photo({
+  recipe,
+  className = "",
+  sizes,
+}: {
+  recipe: Pick<Recipe, "photo" | "title">;
+  className?: string;
+  sizes: string;
+}) {
   const [failed, setFailed] = useState("");
   const [loaded, setLoaded] = useState("");
 
@@ -304,6 +350,8 @@ function Photo({ recipe, className = "" }: { recipe: Pick<Recipe, "photo" | "tit
           key={recipe.photo}
           className={loaded === recipe.photo ? "photo-loaded" : ""}
           src={recipe.photo}
+          srcSet={photoSrcSet(recipe.photo)}
+          sizes={sizes}
           alt={recipe.title}
           loading="lazy"
           decoding="async"
@@ -1865,7 +1913,8 @@ export function App() {
                                       >
                                         {recipe && (
                                           <div className="meal-photo">
-                                            <Photo recipe={recipe} />
+                                            {/* A day column of the wide week grid, else a card's 112 px strip. */}
+                                            <Photo recipe={recipe} sizes="(min-width: 1401px) 260px, 180px" />
                                             <span className="meal-slot">{meal.slot}</span>
                                           </div>
                                         )}
@@ -1970,7 +2019,8 @@ export function App() {
                         className="recipe-row-main"
                         onClick={() => setModal({ kind: "recipe", recipe })}
                       >
-                        <Photo recipe={recipe} />
+                        {/* 146 × 113 px; a 16:9 photo covering it is 200 px wide. */}
+                        <Photo recipe={recipe} sizes="200px" />
                         <div>
                           <span className="category-label">{recipe.category || "Uncollected"}</span>
                           <h2>{recipe.title}</h2>
@@ -3075,7 +3125,7 @@ function MealForm({
                   if (event.currentTarget.form?.reportValidity()) viewRecipe(recipe, draft);
                 }}
               >
-                <Photo recipe={recipe} />
+                <Photo recipe={recipe} sizes="120px" />
                 <span>
                   <strong>{recipe.title}</strong>
                   <small>
@@ -3247,7 +3297,7 @@ function RecipeDetail({
       <div className="detail-title">
         <div className="meal-heading">
           <h1>{recipe.title}</h1>
-          {meal && <Photo recipe={recipe} className="meal-heading-photo" />}
+          {meal && <Photo recipe={recipe} className="meal-heading-photo" sizes="240px" />}
         </div>
         <div className="detail-meta">
           {meal && (
@@ -3443,7 +3493,7 @@ function RecipeDetail({
       )}
       <details className="recipe-about">
         <summary>{meal ? "About this meal" : "About this recipe"}</summary>
-        <Photo recipe={recipe} className="detail-hero" />
+        <Photo recipe={recipe} className="detail-hero" sizes="(min-width: 960px) 960px, 100vw" />
         <p>{recipe.description}</p>
       </details>
       <div className="detail-footer">

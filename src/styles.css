@@ -867,6 +867,10 @@ main {
   text-align: left;
   flex: 1;
   min-width: 0;
+  /* Skip layout and paint of offscreen rows in long lists. Not on .recipe-row: this paint
+     containment would clip the rating menu, which overflows the row. */
+  content-visibility: auto;
+  contain-intrinsic-size: auto 200px;
 }
 .recipe-row-main > .photo-placeholder {
   width: 146px;

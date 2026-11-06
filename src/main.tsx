@@ -6,6 +6,8 @@ import { installDismissal } from "./dismiss";
 import { installSelectOnFocus } from "./select-on-focus";
 import "@fontsource-variable/dm-sans";
 import "@fontsource-variable/lora";
+// Italic Lora for `.open-day p`; browsers download it only when italic text is shown.
+import "@fontsource-variable/lora/wght-italic.css";
 import "./styles.css";
 
 const root = document.getElementById("root");

@@ -99,6 +99,9 @@ tasks:
     cmds:
       - task: build
       - node tests/benchmark.ts {{.CLI_ARGS}}
+  benchmark:browser:
+    desc: Measure the built app's load, transfer, heap, navigation and scrolling in headless Chromium (run ui:setup first; local URL; optional -- --rounds N --cpu 4 --out report.json)
+    cmds: ["node tools/browser-benchmark.ts {{.CLI_ARGS}}"]
   check:
     desc: Run type checking, lint, formatting checks, and integration smoke tests
     cmds:
