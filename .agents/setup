@@ -4,7 +4,9 @@ set -euo pipefail
 node_version="$(cat .node-version)"
 if [[ "$(node --version)" != "v${node_version}" ]]; then
   echo "Installing Node ${node_version}"
-  time npm install --global --prefix /usr/local --prefer-offline --no-audit --no-fund "node@${node_version}"
+  # The orb image's preinstalled node is a plain binary npm did not install, so
+  # replacing it with the pinned version requires --force (otherwise EEXIST).
+  time npm install --global --prefix /usr/local --force --prefer-offline --no-audit --no-fund "node@${node_version}"
 fi
 
 # npm ci spends ~34s rebuilding even a warm, unchanged dependency tree.
