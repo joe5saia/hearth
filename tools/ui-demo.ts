@@ -352,7 +352,7 @@ try {
 
     await chapter(
       "06 · Build a shopping list",
-      "Start a dated list, then use List Builder to add from the full grocery catalog. In Shop Mode, picked-up items move to In cart, with a short Undo. Arrange the store route with keyboard-accessible arrows. Recipes do not automatically populate a list.",
+      "Start a dated list, then use List Builder to add from the full grocery catalog. In Shop Mode, picked-up items stay checked in their aisle, with a short Undo. Arrange the store route with keyboard-accessible arrows. Recipes do not automatically populate a list.",
     );
     await click(page.getByRole("button", { name: "Shopping list", exact: true }));
     const switcher = page.locator(".list-switcher > summary");
@@ -380,7 +380,7 @@ try {
     await click(page.getByRole("button", { name: "Shopping mode", exact: true }));
     await click(page.getByRole("checkbox", { name: `Picked up ${productName}`, exact: true }));
     await persisted((h) => row(h, product.id)?.checked === 1);
-    await page.getByRole("region", { name: "In cart", exact: true }).getByText(productName, { exact: true }).waitFor();
+    await page.locator(".purchase-row.checked").filter({ hasText: productName }).waitFor();
     await click(page.getByRole("button", { name: "Undo", exact: true }));
     await persisted((h) => row(h, product.id)?.checked === 0);
     await click(page.getByRole("button", { name: "Exit shopping mode", exact: true }));

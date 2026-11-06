@@ -59,7 +59,7 @@ function MoveButtons({
   );
 }
 
-/** Renders one list as plan (remove, amounts), shop (check off, In cart) or catalog (add/remove) rows; callers own writes. */
+/** Renders one list as plan (remove, amounts), shop (check off in place) or catalog (add/remove) rows; callers own writes. */
 export function ShoppingItems({
   items,
   groceries,
@@ -439,19 +439,13 @@ export function ShoppingItems({
     );
   };
 
-  const active = variant === "shop" ? items.filter((item) => !checked(item)) : items;
-
-  // Checked items leave their aisle in the store so the remaining route stays short.
-  const inCart = (variant === "shop" ? items.filter(checked) : []).sort((a, b) =>
-    (a.entry?.checkedAt ?? "").localeCompare(b.entry?.checkedAt ?? ""),
-  );
-
-  const groups = [...new Set(active.map((item) => item.grocery.aisle))];
+  const groups = [...new Set(items.map((item) => item.grocery.aisle))];
 
   const row = (item: ShoppingItem, aisle: string | null, position: number, aisleItems: GroceryItem[]) => {
     const isDragging = dragging !== null && dragging.id === item.grocery.id;
     const packages = item.entry?.packages ?? 1;
-    const isChecked = checked(item);
+    // Picked-up state belongs to Shop Mode; the plan view treats every listed row alike.
+    const isChecked = variant === "shop" && checked(item);
     const included = onList(item);
 
     const isTarget =
@@ -541,11 +535,9 @@ export function ShoppingItems({
                 </button>
               )}
             </span>
-            {variant !== "catalog" && (item.entry?.sources.length || (variant === "plan" && isChecked)) ? (
+            {variant !== "catalog" && item.entry?.sources.length ? (
               <small className="purchase-sources">
-                {variant === "plan" && isChecked ? "Picked up" : ""}
-                {variant === "plan" && isChecked && item.entry?.sources.length ? " · " : ""}
-                {item.entry?.sources.map((source) => source.title).join(" · ")}
+                {item.entry.sources.map((source) => source.title).join(" · ")}
               </small>
             ) : null}
           </span>
@@ -757,7 +749,7 @@ export function ShoppingItems({
       ) : (
         <div className="purchase-groups">
           {groups.map((aisle) => {
-            const all = active.filter((item) => item.grocery.aisle === aisle);
+            const all = items.filter((item) => item.grocery.aisle === aisle);
             const aisleItems = all.map((item) => item.grocery);
 
             if (!all.length) return null;
@@ -773,25 +765,16 @@ export function ShoppingItems({
                   <h3>{aisleName(aisle)}</h3>
                   <span>
                     {variant === "plan"
-                      ? `${all.filter(checked).length} / ${all.length}`
+                      ? all.length
                       : variant === "catalog"
                         ? `${all.filter(onList).length} on list`
-                        : `${all.length} left`}
+                        : `${all.filter((item) => !checked(item)).length} left`}
                   </span>
                 </div>
                 {all.map((item, position) => row(item, aisle, position, aisleItems))}
               </section>
             );
           })}
-          {inCart.length > 0 && (
-            <section className="purchase-group in-cart" aria-label="In cart">
-              <div className="aisle-heading">
-                <h3>In cart</h3>
-                <span>{inCart.length}</span>
-              </div>
-              {inCart.map((item, position) => row(item, null, position, []))}
-            </section>
-          )}
         </div>
       )}
     </div>

@@ -2079,13 +2079,17 @@ export function App() {
                           ? "Saving…"
                           : totalItems === 0
                             ? "Empty list"
-                            : totalCompleted === totalItems
-                              ? "All done!"
-                              : `${totalItems - totalCompleted} left`}
+                            : !shoppingMode
+                              ? `${totalItems} ${totalItems === 1 ? "item" : "items"}`
+                              : totalCompleted === totalItems
+                                ? "All done!"
+                                : `${totalItems - totalCompleted} left`}
                       </strong>
-                      <span>
-                        {totalCompleted} of {totalItems} checked
-                      </span>
+                      {shoppingMode && (
+                        <span>
+                          {totalCompleted} of {totalItems} checked
+                        </span>
+                      )}
                     </div>
                     <div className="shopping-controls">
                       {!listBuilder && !shoppingMode && (
@@ -2129,7 +2133,8 @@ export function App() {
                           aria-label={listBuilder ? "Exit List Builder" : "List Builder"}
                           aria-pressed={listBuilder}
                           onClick={() => {
-                            updateRoute({ mode: listBuilder ? "list" : "builder" });
+                            // The URL keeps search only in the builder; clear the in-memory copy too so reopening starts unfiltered.
+                            updateRoute({ mode: listBuilder ? "list" : "builder", search: "" });
                           }}
                         >
                           <ListChecks size={16} />
@@ -2351,7 +2356,7 @@ export function App() {
                                     <strong>{item.name}</strong>
                                     <small id={`extra-match-${index}`}>
                                       {item.aisle ? `Aisle ${item.aisle}` : "No aisle"}
-                                      {entry ? (entry.checked ? " · Picked up" : " · On this list") : ""}
+                                      {entry ? " · On this list" : ""}
                                     </small>
                                   </span>
                                   <span className="extra-match-use">Use</span>

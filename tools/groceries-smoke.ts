@@ -627,7 +627,7 @@ try {
   browser("wait", "--fn", "!document.querySelector('.shopping-save-status')");
   browser("fill", '[aria-label="Search grocery items"]', "no such item");
   browser("wait", "--fn", "!document.querySelector('.purchase-row') && document.querySelector('.shopping-panel').textContent.includes('No grocery items found')");
-  check("document.querySelector('.shopping-summary').textContent.includes('1 left') && !document.querySelector('.shopping-panel').textContent.includes('Nothing on this list')", "no-match search keeps list totals and has a dedicated empty state");
+  check("document.querySelector('.shopping-summary').textContent.includes('1 item') && !document.querySelector('.shopping-panel').textContent.includes('Nothing on this list')", "no-match search keeps list totals and has a dedicated empty state");
   screenshot("list-builder-search-empty");
   browser("click", '[aria-label="Search grocery items"]');
   browser("press", "Control+a");
@@ -683,7 +683,7 @@ try {
   browser("wait", "--fn", "!document.querySelector('.shopping-save-status')");
   assert.equal((await entry(products[0]))?.checked, 0);
   assert.equal((await entry(products[4]))?.checked, 0);
-  check("document.querySelectorAll('.purchase-row').length === 6 && document.querySelector('.shopping-summary').textContent.includes('2 left')", "adding items keeps every catalog row visible");
+  check("document.querySelectorAll('.purchase-row').length === 6 && document.querySelector('.shopping-summary').textContent.includes('2 items')", "adding items keeps every catalog row visible");
   for (const width of [320, 390, 1280]) {
     browser("set", "viewport", String(width), "844", "2");
     check("document.documentElement.scrollWidth <= innerWidth", `${width}px List Builder has no horizontal overflow`);
@@ -700,10 +700,10 @@ try {
   check("!document.querySelector('[aria-label=\"Search grocery items\"]') && document.querySelectorAll('.purchase-row').length === 2 && [...document.querySelectorAll('.purchase-row input')].every(box => !box.checked)", "Focus ignores builder search and shows only the manually selected groceries");
   browser("click", '[aria-label="Picked up Long-grain rice"]');
   browser("wait", "--fn", "!document.querySelector('.shopping-save-status')");
-  check("document.querySelector('[aria-label=\"In cart\"] [aria-label=\"Picked up Long-grain rice\"]').checked && !document.querySelector('[aria-label=\"Aisle 10\"]')?.textContent.includes('Long-grain rice') && [...document.querySelectorAll('.toast')].some(toast => toast.textContent.includes('Picked up Long-grain rice') && toast.querySelector('button')?.textContent === 'Undo')", "picking up an item moves it from its aisle into In cart and offers Undo");
+  check("document.querySelector('[aria-label=\"Aisle 10\"] [aria-label=\"Picked up Long-grain rice\"]').checked && !document.querySelector('[aria-label=\"In cart\"]') && (row => row.closest('.purchase-row').classList.contains('checked') && row.closest('section').querySelector('.aisle-heading span').textContent === `${row.closest('section').querySelectorAll('input:not(:checked)').length} left`)(document.querySelector('[aria-label=\"Picked up Long-grain rice\"]')) && [...document.querySelectorAll('.toast')].some(toast => toast.textContent.includes('Picked up Long-grain rice') && toast.querySelector('button')?.textContent === 'Undo')", "picking up an item keeps it checked in its aisle, counts it as no longer left, and offers Undo");
   assert.equal((await entry(products[0]))?.checked, 1, "Picked-up state persists while the grocery stays on the list.");
   browser("click", '[aria-label="Picked up Long-grain rice"]');
-  browser("wait", "--fn", "!document.querySelector('.shopping-save-status') && !document.querySelector('[aria-label=\"In cart\"]')");
+  browser("wait", "--fn", "!document.querySelector('.shopping-save-status') && !document.querySelector('[aria-label=\"Picked up Long-grain rice\"]').checked");
   assert.equal((await entry(products[0]))?.checked, 0, "Unchecking returns the grocery to still needed.");
   browser("click", '[aria-label="Exit shopping mode"]');
   browser("click", '[aria-label="List Builder"]');
@@ -759,15 +759,16 @@ try {
   shopping();
   browser("click", '[aria-label="Page options"]');
   browser("find", "role", "button", "click", "--name", "Arrange route", "--exact");
-  // Hold one failed order write so a rename draft is entered before the optimistic order rolls back.
+  // Hold one failed order write; route controls stay locked until the optimistic order rolls back.
   browser("eval", "(() => { const originalFetch = window.fetch; window.fetch = (input, init) => { if (String(input).endsWith('/api/shopping-order')) { window.fetch = originalFetch; return new Promise(resolve => { window.rejectOrder = () => resolve(new Response(JSON.stringify({error:'Order rollback smoke'}), {status:503,headers:{'Content-Type':'application/json'}})); }); } return originalFetch(input, init); }; })()");
   submit('[aria-label="Move Olive oil up"]');
   browser("wait", "--fn", "!!window.rejectOrder && document.querySelector('.route-editor').getAnimations({subtree:true}).every(animation => animation.playState !== 'running')");
-  submit('[aria-label="Rename Aisle 10"]');
-  browser("fill", '[aria-label="Aisle name"]', "Unsaved aisle draft");
+  check("document.querySelector('[aria-label=\"Rename Aisle 10\"]').disabled && [...document.querySelectorAll('.route-editor button[aria-label^=\"Move \"]')].every(button => button.disabled)", "a pending route write locks rename and move controls");
   browser("eval", "window.rejectOrder()");
   browser("wait", "--fn", "!document.querySelector('.shopping-save-status')");
-  check("document.querySelector('[aria-label=\"Aisle name\"]')?.value === 'Unsaved aisle draft'", "route rollback cancels stale drag state without discarding an unrelated aisle rename draft");
+  submit('[aria-label="Rename Aisle 10"]');
+  browser("fill", '[aria-label="Aisle name"]', "Unsaved aisle draft");
+  check("document.querySelector('[aria-label=\"Aisle name\"]')?.value === 'Unsaved aisle draft' && !document.querySelector('.is-dragging')", "route rollback cancels stale drag state and unlocks aisle renaming");
   assert.deepEqual((await household()).shoppingOrder, savedSearchOrder, "Rejected order write must leave saved route unchanged.");
   console.log("Grocery browser smoke passed.");
 } finally {
