@@ -81,8 +81,10 @@ order: name, product details, `checked`, `packages`, `sources`, and `key`.
 ## Catalog and ingredient links
 
 - `list_groceries` returns the complete catalog. `save_grocery` replaces all fields:
-  name, url, aisle, quantity, unit, aliases, plus ID for edits. Quantity/unit describe
-  **one package**, not this week's shopping total. Read first and preserve other fields.
+  name, url, aisle, quantity, unit, aliases and `expectedRevision`. Create with no ID
+  and `expectedRevision: null`; edit with the product's ID and its `revision` from
+  `list_groceries`. Quantity/unit describe **one package**, not this week's shopping
+  total. Read first and preserve other fields.
 - To link ingredients, fetch the latest full recipe with `get_recipes` and use
   `update_recipes`, preserving all entries because the ingredients array is replaced.
   Discover product IDs from `list_groceries`; suggestions are candidates, not links.

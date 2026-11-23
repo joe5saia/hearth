@@ -50,6 +50,16 @@ do not automatically update ChatGPT installations. If the plugin is GitHub-manag
 update through its configured source instead; archive replacement is not supported.
 Hosted MCP implementation updates happen independently of bundled skill updates.
 
+### After a tool contract change
+
+The server's tools change when Hearth deploys, but bundled skills change only when
+you install a newer plugin. An old install keeps giving old guidance, such as a
+date-range `get_shopping_list` instead of `{listId}` or saves without
+`expectedRevision`. Check `BUILD.json` against the latest release and upgrade the
+plugin. Desktop/Codex users should reinstall `hearth-plugin.zip`. Then refresh
+the connector's tools (reconnect if prompted) and start a **new** chat. Existing
+chats may keep the tool definitions they loaded first.
+
 ## Registered connection and other workspaces
 
 The web archive references this existing

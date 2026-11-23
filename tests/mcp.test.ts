@@ -1,6 +1,7 @@
 import { beforeAll, afterAll, expect, it } from "vitest";
 import { Miniflare, convertV4MiniflareOptions } from "miniflare";
 import { rolldown } from "rolldown";
+import { parseAst } from "rolldown/parseAst";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { generateKeyPair, exportJWK, SignJWT } from "jose";
 import { Option, Schema } from "effect";
@@ -662,7 +663,60 @@ it("publishes all 27 code-mode-friendly schemas with the single recipes scope", 
     }
   }
 
+  // README code-mode examples must call live tools with exactly the advertised input keys.
+  const readme = await readFile("README.md", "utf8");
+  expect(readme).toContain(`The ${tools.length} tools cover`);
+  expect(readme).toContain(`expose all ${tools.length} tools`);
+
+  const ToolCall = Schema.Struct({
+    type: Schema.Literal("CallExpression"),
+    callee: Schema.Struct({ name: Schema.String }),
+    arguments: Schema.Tuple([
+      Schema.Struct({
+        type: Schema.Literal("ObjectExpression"),
+        // Spread elements have no key; they are recorded as "..." so they fail the unknown-input check.
+        properties: Schema.Array(
+          Schema.Struct({ key: Schema.optional(Schema.Struct({ name: Schema.optional(Schema.String) })) }),
+        ),
+      }),
+    ]),
+  });
+
+  const examples: { name: string; keys: string[] }[] = [];
+
+  for (const [, code] of readme.matchAll(/```js\n([\s\S]*?)```/g)) {
+    // The replacer visits every AST node; only decoded tool calls with an object argument are kept.
+    JSON.stringify(parseAst(code), (_key, node) => {
+      const found = Schema.decodeUnknownOption(ToolCall)(node);
+
+      if (Option.isSome(found) && names.has(found.value.callee.name)) {
+        examples.push({
+          name: found.value.callee.name,
+          keys: found.value.arguments[0].properties.map((property) => property.key?.name ?? "..."),
+        });
+      }
+
+      return node;
+    });
+  }
+
+  expect(examples.map((example) => example.name)).toContain("get_shopping_list");
+
+  for (const { name, keys } of examples) {
+    const schema = tools.find((tool) => tool.name === name)?.inputSchema;
+    expect(keys, `README ${name} example has unknown inputs`).toEqual(
+      keys.filter((key) => key in (schema?.properties ?? {})),
+    );
+    expect(keys, `README ${name} example misses required inputs`).toEqual(
+      expect.arrayContaining(schema?.required ?? []),
+    );
+  }
+
   for (const tool of tools) {
+    if (tool.inputSchema.required?.includes("expectedRevision")) {
+      expect(tool.description, `${tool.name} must explain its revision guard`).toContain("expectedRevision");
+    }
+
     expect(tool.inputSchema.type).toBe("object");
     expect(tool.inputSchema.additionalProperties).toBe(false);
     expect(tool.outputSchema?.type).toBe("object");

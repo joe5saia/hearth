@@ -854,8 +854,10 @@ The builder uses an explicit file allowlist, deterministic ordering and ZIP time
 it does not bundle source trees, environment files, OAuth tokens, or household exports.
 Tests execute the real build task, inspect ZIPs with an independent reader, compare
 checksums, check web/desktop separation and stale-output cleanup, and verify skill tool
-names against the authenticated Worker. ChatGPT model-behavior acceptance scenarios
-are in [EVALUATION.md](plugins/hearth/EVALUATION.md); runtime tests do not prove those pass.
+names, the README tool count, and the README code-mode example's tool inputs against the
+authenticated Worker's live schemas. Every tool that requires `expectedRevision` must say so
+in its description. Run these before a release that changes a tool contract. ChatGPT
+model-behavior acceptance scenarios are in [EVALUATION.md](plugins/hearth/EVALUATION.md); runtime tests do not prove those pass.
 
 After successful production deployment and the public MCP smoke check, the existing
 GitHub workflow builds version `1.0.<workflow run number>` and runs `npx task plugin:release`.
@@ -884,7 +886,7 @@ stateless Streamable HTTP handler (MCP 2026-07-28), with legacy client compatibi
 the SDK. Recipe persistence and validation are shared with the website API in `src/recipes.ts`;
 search uses the same predicate as the app. The household is shared, not partitioned per user.
 
-The 26 tools cover all shared app state: recipes and imports, collections, grocery catalog and
+The 27 tools cover all shared app state: recipes and imports, collections, grocery catalog and
 ingredient links, meal planning, dated shopping lists and their items, checking, saved route
 order, and sample data. Browser-local timers, audio, clipboard and screen navigation intentionally
 remain in the browser; this is shared-state coverage, not literal remote browser parity.
@@ -953,8 +955,10 @@ is only for route ordering. Shopping list writes use the list ID from `list_shop
 
 Every tool advertises JSON input/output schemas and returns `structuredContent` plus equivalent
 JSON text for code-mode and older clients. The existing single `recipes` OAuth scope and grant
-remain unchanged and expose all 26 tools; clients may need to refresh their tool inventory,
-but this expansion does not require reconnecting or reconsenting.
+remain unchanged and expose all 27 tools. When a tool's inputs change, clients must refresh
+their tool inventory and start a new chat, and plugin users must install the matching plugin
+release so bundled skills agree (see the plugin README's tool-contract section). Reconnecting
+or reconsenting is needed only if the scope changes.
 Call `list_collections` before assigning a recipe category; it discovers collections even when no
 recipes use them. Use `save_collection` and `delete_collection` for collection editing.
 Search pagination is a live view, not a snapshot across concurrent edits.
@@ -964,12 +968,24 @@ substring behavior; this is intended for the household collection, not a large p
 For code-mode clients that return structured objects directly (the module alias is client-specific):
 
 ```js
-import { list_collections, list_groceries, get_recipes, save_meal, get_shopping_list } from "hearth";
+import {
+  get_recipes,
+  list_groceries,
+  save_grocery,
+  save_meal,
+  list_shopping_lists,
+  create_shopping_list,
+  add_shopping_items,
+  get_shopping_list,
+} from "hearth";
 
-const [collections, groceries] = await Promise.all([list_collections({}), list_groceries({})]);
 // Independent reads can run concurrently; use a recipe ID discovered earlier.
-const { recipes } = await get_recipes({ ids: [recipeId] });
+const [{ recipes }, { groceries }] = await Promise.all([
+  get_recipes({ ids: [recipeId] }),
+  list_groceries({}),
+]);
 if (recipes.length !== 1) throw new Error("Recipe no longer exists");
+// Create: omit id and send expectedRevision: null.
 const { meal } = await save_meal({
   expectedRevision: null,
   recipeId: recipes[0].id,
@@ -978,8 +994,30 @@ const { meal } = await save_meal({
   scale: 6 / recipes[0].servings,
   note: "Six servings",
 });
-// This read depends on the completed write; do not run it alongside save_meal.
-const shopping = await get_shopping_list({ start: "2026-10-05", end: "2026-10-11" });
+// Edit: send every field with the ID and the revision observed in the read.
+const rice = groceries.find((grocery) => grocery.name === "Rice");
+const { grocery } = await save_grocery({
+  expectedRevision: rice.revision,
+  id: rice.id,
+  name: rice.name,
+  url: rice.url,
+  aisle: rice.aisle,
+  quantity: rice.quantity,
+  unit: rice.unit,
+  aliases: [...rice.aliases, "basmati rice"],
+});
+// Shopping lists are dated. Reuse the list for that date (ask when several match) or create one.
+const { lists } = await list_shopping_lists({});
+const sameDay = lists.filter((list) => list.date === "2026-10-03");
+if (sameDay.length > 1) throw new Error("Ask which list to use");
+const list = sameDay[0] ?? (await create_shopping_list({ date: "2026-10-03", label: "" })).list;
+const source = { title: meal.recipe.title, mealId: meal.id, date: meal.date };
+await add_shopping_items({
+  listId: list.id,
+  items: [{ groceryId: grocery.id, packages: 2, sources: [source] }],
+});
+// This read depends on the completed write; do not run it alongside add_shopping_items.
+const shopping = await get_shopping_list({ listId: list.id });
 ```
 
 Cloudflare's OAuth provider handles CIMD, discovery, PKCE, tokens and consent transactions.
