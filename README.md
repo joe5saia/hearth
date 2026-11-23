@@ -174,6 +174,15 @@ After an authorized push, verify the exact deployment revision and authenticated
 delivery before claiming the complete production loop works. Secret presence
 alone is not a household delivery acknowledgement.
 
+Agents connected to the MCP server can call the `feedback` tool with one request
+(1–4,000 characters). The MCP Worker files it as a `source: "mcp"` ticket with no
+browser context and `identity: null`, through the same D1 persistence, shared
+ten-per-ten-minutes limit, signing and intake. Its execution thread triages first:
+it fixes reproducible Hearth bugs and only reports its assessment for anything
+else, then summarizes for human review without shipping. `feedback:provision` and
+`feedback:status` cover both the Website and MCP Workers; until the MCP Worker has
+its secrets, the tool reports that intake isn't connected.
+
 The intake authenticates HMAC-SHA256 before interpreting any data, validates the
 same contract, and exclusively persists the ticket/event claim before creating
 an isolated Hearth execution thread. Its fixed project and trusted

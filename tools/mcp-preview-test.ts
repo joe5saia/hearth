@@ -82,7 +82,7 @@ const wireProperty = z.object({ type: z.string() });
 const tools = z.object({ tools: z.array(z.object({ name: z.string(), outputSchema: z.object({ type: z.string() }).optional(), inputSchema: z.unknown() })) }).parse(await rpc(auth.token, "tools/list")).tools;
 assert.deepEqual(tools.map((tool) => tool.name).sort(), [
   "add_demo_data", "add_shopping_items", "create_recipes", "create_shopping_list", "delete_collection",
-  "delete_grocery", "delete_meal", "delete_recipe", "delete_shopping_list", "get_recipes",
+  "delete_grocery", "delete_meal", "delete_recipe", "delete_shopping_list", "feedback", "get_recipes",
   "get_shopping_list", "import_recipe", "list_collections", "list_groceries", "list_meals",
   "list_shopping_lists", "match_groceries", "remove_shopping_items", "save_collection", "save_grocery",
   "save_meal", "search_recipes", "set_shopping_item", "set_shopping_order", "update_recipes",
@@ -223,4 +223,4 @@ await call("set_shopping_order", { expectedRevision: (await call("get_shopping_l
 await call("delete_shopping_list", { id: listId, expectedRevision: shoppingTarget.revision });
 
 await writeFile(`${root}/evaluation.json`, JSON.stringify({ tag, count: 28, url: `${origin}/eval/mcp`, matchingReport }, null, 2));
-console.log(JSON.stringify({ checks: "Public discovery, Access-protected consent, live CIMD + PKCE exchange, unchanged recipes grant, 26 tools, structured/text parity, real AI matching and report, 25+3 pagination, ordered gets, field-preserving updates, collection propagation, grocery matching, meal scaling, package rounding, dated shopping lists with sources, conflicts, checks and removal, route, deletion guards and cleanup, invalid import and nonempty demo refusal", matchingReport, evaluationTag: tag, fixtures: 28, eval: `${origin}/eval/mcp`, credentials: "Eval orbs mint their own Amp identity; no copied bearer settings or tokens logged" }, null, 2));
+console.log(JSON.stringify({ checks: "Public discovery, Access-protected consent, live CIMD + PKCE exchange, unchanged recipes grant, 27 tools, structured/text parity, real AI matching and report, 25+3 pagination, ordered gets, field-preserving updates, collection propagation, grocery matching, meal scaling, package rounding, dated shopping lists with sources, conflicts, checks and removal, route, deletion guards and cleanup, invalid import and nonempty demo refusal", matchingReport, evaluationTag: tag, fixtures: 28, eval: `${origin}/eval/mcp`, credentials: "Eval orbs mint their own Amp identity; no copied bearer settings or tokens logged" }, null, 2));

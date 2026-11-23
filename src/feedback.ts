@@ -1,4 +1,4 @@
-import { Schema } from "effect";
+import { Data, Schema } from "effect";
 import { FeedbackInputSchema, FeedbackSchema, feedbackURL, type Feedback } from "./feedback-contract";
 
 /** Server-only delivery bindings; absent credentials leave drafts recoverable instead of faking acceptance. */
@@ -69,23 +69,52 @@ export async function submitFeedback(
     return reply("Enter a request of up to 4,000 characters with valid page context.", 400);
   }
 
+  const outcome = await deliverFeedback(env, ticket.id, JSON.stringify(ticket), { ...ticket, delivery });
+
+  if (outcome === "queued")
+    return Response.json(
+      { id: ticket.id, status: "queued" },
+      { status: 202, headers: { "Cache-Control": "no-store" } },
+    );
+
+  return {
+    unconnected: reply("Ticket intake isn’t connected yet. Your draft is still here.", 503),
+    busy: reply("A few tickets just came in. Please try again in ten minutes.", 429),
+    conflict: reply("This ticket already has a different request. Close it and start a new ticket.", 409),
+    rejected: reply("Amp couldn’t receive this ticket yet. Retry safely with the same draft.", 503),
+    uncertain: reply("We couldn’t confirm delivery. Retry safely with the same draft.", 503),
+  }[outcome];
+}
+
+/** A ticket was not confirmed as queued; message says whether resending is safe. */
+export class FeedbackUnavailable extends Data.TaggedError("FeedbackUnavailable")<{ message: string }> {}
+
+/** Why a ticket was not queued; every outcome except conflict leaves a same-ID retry safe. */
+export type FeedbackOutcome = "queued" | "unconnected" | "busy" | "conflict" | "rejected" | "uncertain";
+
+/** Persists the immutable ticket once, then signs and delivers its exact stored envelope to the Amp intake. */
+export async function deliverFeedback(
+  env: FeedbackEnv,
+  id: string,
+  body: string,
+  ticket: Feedback,
+): Promise<FeedbackOutcome> {
   const { FEEDBACK_WEBHOOK_URL: webhook, FEEDBACK_SIGNING_KEY: secret } = env;
 
-  if (!webhook || !secret) return reply("Ticket intake isn’t connected yet. Your draft is still here.", 503);
-  const body = JSON.stringify(ticket);
+  if (!webhook || !secret) return "unconnected";
 
   try {
-    // Server identity and receipt/correlation data never come from browser fields.
+    // Server identity and receipt/correlation data never come from client fields.
     // Persist once: retries retain the original receipt, identity and exact signed bytes.
-    const envelope = JSON.stringify(Schema.decodeUnknownSync(FeedbackSchema)({ ...ticket, delivery }));
+    const envelope = JSON.stringify(Schema.decodeUnknownSync(FeedbackSchema)(ticket));
     // Atomic quota plus insert. Reusing an ID must never replace the original ask.
     await env.DB.prepare(`INSERT OR IGNORE INTO feedback(id,body,envelope,createdAt)
       SELECT ?,?,?,? WHERE (SELECT COUNT(*) FROM feedback WHERE createdAt > ?) < 10`)
-      .bind(ticket.id, body, envelope, Date.now(), Date.now() - 600000)
+      .bind(id, body, envelope, Date.now(), Date.now() - 600000)
       .run();
 
     const stored = await env.DB.prepare("SELECT body,envelope,queued FROM feedback WHERE id=?")
-      .bind(ticket.id)
+      .bind(id)
       .first<unknown>();
 
     const saved =
@@ -95,10 +124,9 @@ export async function submitFeedback(
             Schema.Struct({ body: Schema.String, envelope: Schema.String, queued: Schema.Literals([0, 1]) }),
           )(stored);
 
-    if (!saved) return reply("A few tickets just came in. Please try again in ten minutes.", 429);
+    if (!saved) return "busy";
 
-    if (saved.body !== body)
-      return reply("This ticket already has a different request. Close it and start a new ticket.", 409);
+    if (saved.body !== body) return "conflict";
 
     if (!saved.queued) {
       const key = await crypto.subtle.importKey(
@@ -119,24 +147,20 @@ export async function submitFeedback(
         redirect: "manual",
         headers: {
           "Content-Type": "application/json",
-          "Idempotency-Key": ticket.id,
+          "Idempotency-Key": id,
           "X-Hearth-Signature": signature,
         },
         body: saved.envelope,
         signal: AbortSignal.timeout(8000),
       });
 
-      if (!result.ok)
-        return reply("Amp couldn’t receive this ticket yet. Retry safely with the same draft.", 503);
-      await env.DB.prepare("UPDATE feedback SET queued=1 WHERE id=?").bind(ticket.id).run();
+      if (!result.ok) return "rejected";
+      await env.DB.prepare("UPDATE feedback SET queued=1 WHERE id=?").bind(id).run();
     }
 
-    return Response.json(
-      { id: ticket.id, status: "queued" },
-      { status: 202, headers: { "Cache-Control": "no-store" } },
-    );
+    return "queued";
   } catch {
     // Neither exceptions nor outbound response bodies are logged: they may contain capabilities.
-    return reply("We couldn’t confirm delivery. Retry safely with the same draft.", 503);
+    return "uncertain";
   }
 }

@@ -67,24 +67,28 @@ try {
       stage = previousStage;
     }
   } else {
-    const workers = (await api.list("/workers/scripts", workerSchema)).filter(worker =>
-      ["alchemy:stack:hearth", "alchemy:stage:production", "alchemy:id:Website"].every(tag => worker.tags?.includes(tag)),
-    );
-    assert.equal(workers.length, 1, "Production Hearth Website must be unambiguous.");
-    const worker = workers[0].id;
-    if (mode === "provision") {
-      stage = "private-source-validation";
-      const url = (await readFile(".amp/feedback-state/webhook-url", "utf8")).trim();
-      const owner = z.object({ signingKey: z.string().min(32) }).parse(JSON.parse(await readFile(".amp/feedback-state/owner.json", "utf8")));
-      assert.equal(new URL(url).protocol, "https:", "Intake URL must be HTTPS.");
-      stage = "production-provision";
-      for (const [index, name] of names.entries()) await api.request(`/workers/scripts/${worker}/secrets`, secretSchema, "PUT", { name, type: "secret_text", text: index === 0 ? url : owner.signingKey });
-    }
-    stage = "production-status";
-    const secrets = await api.request(`/workers/scripts/${worker}/secrets`, z.array(secretSchema));
-    for (const name of names) {
-      assert(secrets.some(secret => secret.name === name && secret.type === "secret_text"), "Required Cloudflare secret binding missing.");
-      console.log(`PRESENT ${name}: Cloudflare-managed secret_text (value not retrieved).`);
+    // The Website serves browser tickets; the MCP Worker serves the agent feedback tool.
+    const all = await api.list("/workers/scripts", workerSchema);
+    for (const id of ["Website", "Mcp"]) {
+      const workers = all.filter(worker =>
+        ["alchemy:stack:hearth", "alchemy:stage:production", `alchemy:id:${id}`].every(tag => worker.tags?.includes(tag)),
+      );
+      assert.equal(workers.length, 1, `Production Hearth ${id} must be unambiguous.`);
+      const worker = workers[0].id;
+      if (mode === "provision") {
+        stage = "private-source-validation";
+        const url = (await readFile(".amp/feedback-state/webhook-url", "utf8")).trim();
+        const owner = z.object({ signingKey: z.string().min(32) }).parse(JSON.parse(await readFile(".amp/feedback-state/owner.json", "utf8")));
+        assert.equal(new URL(url).protocol, "https:", "Intake URL must be HTTPS.");
+        stage = `production-provision-${id}`;
+        for (const [index, name] of names.entries()) await api.request(`/workers/scripts/${worker}/secrets`, secretSchema, "PUT", { name, type: "secret_text", text: index === 0 ? url : owner.signingKey });
+      }
+      stage = `production-status-${id}`;
+      const secrets = await api.request(`/workers/scripts/${worker}/secrets`, z.array(secretSchema));
+      for (const name of names) {
+        assert(secrets.some(secret => secret.name === name && secret.type === "secret_text"), "Required Cloudflare secret binding missing.");
+        console.log(`PRESENT ${id} ${name}: Cloudflare-managed secret_text (value not retrieved).`);
+      }
     }
     console.log("Production secret presence verified; this is not a household delivery acknowledgement.");
   }

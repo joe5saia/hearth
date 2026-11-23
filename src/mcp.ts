@@ -42,6 +42,8 @@ import {
   addDemoData,
 } from "./household";
 import { matchGroceries, matchNewRecipes, type AiUnavailable } from "./matching-run";
+import { deliverFeedback, FeedbackUnavailable, type FeedbackEnv } from "./feedback";
+import { AgentFeedbackInputSchema } from "./feedback-contract";
 import { database, stored, ValidationError, ExpectedRevisionSchema, type HouseholdError } from "./storage";
 
 const id = IdSchema;
@@ -168,11 +170,12 @@ export function recipeMcp(
   observation?: Observation,
   tracer = Tracer.nativeTracer,
   ctx?: ExecutionContext,
+  feedback: Omit<FeedbackEnv, "DB"> & { TELEMETRY_ENVIRONMENT?: string; TELEMETRY_VERSION?: string } = {},
 ) {
   function result<T extends Record<string, unknown>>(
     name: string,
     context: ServerContext,
-    operation: Effect.Effect<T, HouseholdError | AiUnavailable>,
+    operation: Effect.Effect<T, HouseholdError | AiUnavailable | FeedbackUnavailable>,
   ) {
     const failure = (text: string) => ({
       isError: true as const,
@@ -199,6 +202,7 @@ export function recipeMcp(
         NotFound: (error) => Effect.succeed(failure(error.message)),
         Conflict: (error) => Effect.succeed(failure(error.message)),
         AiUnavailable: (error) => Effect.succeed(failure(error.message)),
+        FeedbackUnavailable: (error) => Effect.succeed(failure(error.message)),
         StorageError: () => Effect.succeed(failure(unavailable)),
         StoredDataError: () => Effect.succeed(failure(unavailable)),
       }),
@@ -953,6 +957,70 @@ export function recipeMcp(
             ),
         );
       }
+
+      server.registerTool(
+        "feedback",
+        {
+          title: "Send feedback",
+          description:
+            "Report a Hearth bug, confusing behavior or missing capability to the household's developer. Each call files one new ticket in Amp: a separate agent reviews it, fixes confirmed bugs on an isolated branch, and summarizes the work for a person to review before anything ships. Describe what you or the user tried, what happened and what was expected, with relevant IDs or dates. Never include credentials. Returns {id,status:'queued'} once Amp has stored the ticket, not when work is done. Do not resend after success or an unconfirmed delivery; that files a duplicate.",
+          inputSchema: mcpSchema(
+            Schema.Struct({
+              request: trimmed(AgentFeedbackInputSchema.fields.request).annotate({
+                description: "The feedback, 1–4,000 characters.",
+              }),
+            }),
+          ),
+          outputSchema: mcpSchema(
+            Schema.Struct({ id: AgentFeedbackInputSchema.fields.id, status: Schema.Literal("queued") }),
+          ),
+          annotations: {
+            readOnlyHint: false,
+            destructiveHint: false,
+            idempotentHint: false,
+            openWorldHint: true,
+          },
+        },
+        ({ request }, context) =>
+          result(
+            "feedback",
+            context,
+            Effect.gen(function* () {
+              const ticket = { schemaVersion: 2, source: "mcp", id: crypto.randomUUID(), request } as const;
+
+              const outcome = yield* Effect.promise(() =>
+                deliverFeedback({ ...feedback, DB: db }, ticket.id, JSON.stringify(ticket), {
+                  ...ticket,
+                  delivery: {
+                    receivedAt: new Date().toISOString(),
+                    environment: feedback.TELEMETRY_ENVIRONMENT ?? "local",
+                    build: feedback.TELEMETRY_VERSION ?? "unversioned",
+                    // OAuth grants carry no verified Access email/name for the envelope.
+                    identity: null,
+                    correlation: {
+                      operationId: observation?.operationId ?? crypto.randomUUID(),
+                      requestId: observation?.requestId ?? crypto.randomUUID(),
+                      traceId: observation?.traceId ?? crypto.randomUUID().replaceAll("-", ""),
+                    },
+                  },
+                }),
+              );
+
+              if (outcome === "queued") return { id: ticket.id, status: outcome };
+
+              return yield* new FeedbackUnavailable({
+                message: {
+                  unconnected: "Feedback intake isn’t connected yet. Nothing was sent; try again later.",
+                  busy: "Several tickets just came in. Nothing was sent; try again in ten minutes.",
+                  conflict: "Feedback could not be filed. Nothing was sent; try again.",
+                  rejected: "Amp didn’t accept this ticket. It was not queued; try again later.",
+                  uncertain:
+                    "Delivery couldn’t be confirmed and the ticket may already be queued. Don’t resend unless the user asks.",
+                }[outcome],
+              });
+            }),
+          ),
+      );
 
       server.registerTool(
         "add_demo_data",

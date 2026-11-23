@@ -112,25 +112,35 @@ export const FeedbackIdentitySchema = Schema.Struct({
   name: Schema.optional(Schema.String.check(Schema.isLengthBetween(1, 200))),
 });
 
-/** Signed intake envelope adds immutable server receipt, identity and correlation metadata to browser input. */
-export const FeedbackSchema = Schema.Struct({
-  ...FeedbackInputSchema.fields,
-  delivery: Schema.Struct({
-    receivedAt: timestamp,
-    environment: Schema.String.check(Schema.isLengthBetween(1, 100)),
-    build: Schema.String.check(Schema.isLengthBetween(1, 100)),
-    identity: Schema.NullOr(FeedbackIdentitySchema),
-    correlation: Schema.Struct({
-      operationId: Schema.String.check(
-        Schema.isPattern(/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/),
-      ),
-      requestId: Schema.String.check(
-        Schema.isPattern(/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/),
-      ),
-      traceId: Schema.String.check(Schema.isPattern(/^[a-f0-9]{32}$/)),
-    }),
+/** Server-created ticket from an authenticated MCP agent; it has no browser or page context. */
+export const AgentFeedbackInputSchema = Schema.Struct({
+  schemaVersion: fields.schemaVersion,
+  source: Schema.Literal("mcp"),
+  id: fields.id,
+  request: fields.request,
+});
+
+const delivery = Schema.Struct({
+  receivedAt: timestamp,
+  environment: Schema.String.check(Schema.isLengthBetween(1, 100)),
+  build: Schema.String.check(Schema.isLengthBetween(1, 100)),
+  identity: Schema.NullOr(FeedbackIdentitySchema),
+  correlation: Schema.Struct({
+    operationId: Schema.String.check(
+      Schema.isPattern(/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/),
+    ),
+    requestId: Schema.String.check(
+      Schema.isPattern(/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/),
+    ),
+    traceId: Schema.String.check(Schema.isPattern(/^[a-f0-9]{32}$/)),
   }),
 });
+
+/** Signed intake envelope adds immutable server receipt, identity and correlation metadata to browser or agent input. */
+export const FeedbackSchema = Schema.Union([
+  Schema.Struct({ ...FeedbackInputSchema.fields, delivery }),
+  Schema.Struct({ ...AgentFeedbackInputSchema.fields, delivery }),
+]);
 
 /** Tab-local request/context preserved until delivery; its timestamp is absent before the first attempt. */
 export type FeedbackDraft = typeof FeedbackDraftSchema.Type;

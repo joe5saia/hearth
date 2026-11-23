@@ -18,6 +18,8 @@ export interface McpEnv extends TelemetryEnv {
   MCP_ORIGIN: string;
   ACCESS_AUD: string;
   PREVIEW_CLIENT_ID?: string;
+  FEEDBACK_WEBHOOK_URL?: string;
+  FEEDBACK_SIGNING_KEY?: string;
 }
 
 const issuer = "https://saiaai.cloudflareaccess.com";
@@ -133,7 +135,7 @@ export default {
 
             if (!auth.scope.includes("recipes")) return insufficientScope(auth, ["recipes"]);
 
-            return recipeMcp(env.DB, env.AI, observation, tracer, ctx).fetch(request, {
+            return recipeMcp(env.DB, env.AI, observation, tracer, ctx, env).fetch(request, {
               authInfo: {
                 token: auth.token,
                 clientId: auth.clientId ?? "",

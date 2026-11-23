@@ -4,6 +4,8 @@ import { rolldown } from "rolldown";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { generateKeyPair, exportJWK, SignJWT } from "jose";
 import { Option, Schema } from "effect";
+import { createHmac } from "node:crypto";
+import { FeedbackSchema } from "../src/feedback-contract";
 import {
   RecipeSchema,
   RecipeFields,
@@ -35,6 +37,10 @@ let signingKey: CryptoKey;
 const telemetryPayloads: string[] = [];
 
 const telemetryEvents: Record<string, string | number | boolean>[] = [];
+
+const intake: { body: string; signature: string | null }[] = [];
+
+let intakeStatus = 200;
 
 const origin = "https://mcp.example.com";
 
@@ -246,6 +252,7 @@ const outputs = {
   delete_shopping_list: okOutput,
   set_shopping_order: Schema.Struct({ ...okOutput.fields, revision: Schema.String }),
   add_demo_data: okOutput,
+  feedback: Schema.Struct({ id: Schema.String, status: Schema.Literal("queued") }),
 };
 
 async function listTools(bearer = token) {
@@ -466,8 +473,16 @@ beforeAll(async () => {
             AXIOM_TOKEN: "disposable-mcp-ingestion",
             AXIOM_EVENTS_DATASET: "mcp-smoke-events",
             AXIOM_TRACES_DATASET: "mcp-smoke-traces",
+            FEEDBACK_WEBHOOK_URL: "https://intake.example.test/tickets",
+            FEEDBACK_SIGNING_KEY: "disposable-mcp-feedback-signing-key",
           },
           outboundService: async (req) => {
+            if (req.url === "https://intake.example.test/tickets") {
+              intake.push({ body: await req.text(), signature: req.headers.get("X-Hearth-Signature") });
+
+              return new Response(null, { status: intakeStatus });
+            }
+
             if (["api.axiom.co", "us-east-1.aws.edge.axiom.co"].includes(new URL(req.url).hostname)) {
               const body = await req.text();
               telemetryPayloads.push(body);
@@ -532,6 +547,7 @@ beforeAll(async () => {
     "0006_meal_notes.sql",
     "0007_shopping_membership.sql",
     "0008_grocery_delete_unlink.sql",
+    "0009_feedback.sql",
     "0010_shopping_packages.sql",
     "0011_meal_recipes.sql",
     "0012_entity_revisions.sql",
@@ -564,7 +580,7 @@ it("allows OAuth grants for only the configured preview service and rejects unre
       .sign(signingKey);
 
   const preview = await login(scopes, false, await sign({ sub: "", common_name: "preview-test.access" }));
-  expect(await listTools(preview)).toHaveLength(26);
+  expect(await listTools(preview)).toHaveLength(27);
 
   for (const claims of [
     { sub: "", common_name: "other.access" },
@@ -603,7 +619,7 @@ it("advertises CIMD and resource discovery; denies anonymous and forged tokens",
   await login(scopes, true);
 });
 
-it("publishes all 26 code-mode-friendly schemas with the single recipes scope", async () => {
+it("publishes all 27 code-mode-friendly schemas with the single recipes scope", async () => {
   const tools = await listTools();
   expect(tools.map((t) => t.name).sort()).toEqual([
     "add_demo_data",
@@ -615,6 +631,7 @@ it("publishes all 26 code-mode-friendly schemas with the single recipes scope", 
     "delete_meal",
     "delete_recipe",
     "delete_shopping_list",
+    "feedback",
     "get_recipes",
     "get_shopping_list",
     "import_recipe",
@@ -2179,4 +2196,41 @@ it("exports MCP tool failures even under HTTP 200 and never exports OAuth creden
     expect(exported).not.toContain(secret);
   expect(exported).toContain("oauth.dispatch");
   expect(exported).toContain("mcp.delete_recipe");
+});
+
+it("files agent feedback as a signed MCP ticket for the Amp intake and reports undelivered tickets", async () => {
+  intake.length = 0;
+  const db = await worker.getD1Database("DB");
+  const before = await db.prepare("SELECT COUNT(*) AS count FROM recipes").first();
+  const filed = await success("feedback", { request: "  Search misses recipes by ingredient plural.  " });
+  expect(intake).toHaveLength(1);
+  const [{ body, signature }] = intake;
+  expect(signature).toBe(
+    createHmac("sha256", "disposable-mcp-feedback-signing-key").update(body).digest("hex"),
+  );
+  const ticket = Schema.decodeUnknownSync(FeedbackSchema, { onExcessProperty: "error" })(JSON.parse(body));
+  expect(ticket).toMatchObject({
+    schemaVersion: 2,
+    source: "mcp",
+    id: filed.id,
+    request: "Search misses recipes by ingredient plural.",
+    delivery: { identity: null },
+  });
+  expect(await db.prepare("SELECT queued FROM feedback WHERE id=?").bind(filed.id).first()).toEqual({
+    queued: 1,
+  });
+
+  intakeStatus = 503;
+  const rejected = await call("feedback", { request: "Second ticket" });
+  intakeStatus = 200;
+  expect(rejected.isError).toBe(true);
+  expect(rejected.content[0].text).toContain("Amp didn’t accept this ticket");
+  expect(intake).toHaveLength(2);
+
+  const blank = await call("feedback", { request: "   " });
+  expect(blank.isError).toBe(true);
+  expect(intake).toHaveLength(2);
+  // Feedback never touches household records.
+  expect(await db.prepare("SELECT COUNT(*) AS count FROM recipes").first()).toEqual(before);
+  await db.prepare("DELETE FROM feedback").run();
 });

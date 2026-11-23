@@ -206,6 +206,15 @@ export default Alchemy.Stack(
 
     const mcp = dev ? undefined : yield* Mcp;
 
+    // The MCP feedback tool delivers through the same intake; values are provisioned per Worker.
+    if (mcp)
+      yield* mcp.bind`feedback-secrets`({
+        bindings: [
+          { type: "inherit", name: "FEEDBACK_WEBHOOK_URL" },
+          { type: "inherit", name: "FEEDBACK_SIGNING_KEY" },
+        ],
+      });
+
     return { url: website.url, mcp: mcp ? "https://hearth-mcp.joesaia.trade/mcp" : undefined };
   }),
 );
