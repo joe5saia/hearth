@@ -336,7 +336,7 @@ export async function up(
     // Precreation above must retain ignore_base_config=true: cf has no equivalent CLI flag.
     runCommand(
       "npx",
-      ["cf", "previews", "deploy", name, "--mode", "cf-preview"],
+      ["cf", "previews", "deploy", "--preview-name", name, "--mode", "cf-preview"],
       true,
       { HEARTH_PREVIEW_CONFIG: configPath },
     );

@@ -150,9 +150,10 @@ const { recipes: [matching] } = await call("create_recipes", { recipes: [{ ...fi
 ] }] });
 assert.equal(matching.ingredients[0].groceryItemId, undefined, "Typo is not an exact save-time match");
 const { report: matchingReport } = await call("match_groceries", {});
-assert.ok(matchingReport.matched >= 1, "AI matched an ingredient");
+// create_recipes also starts background matching; whichever run persists first wins, and
+// the other reports the same link as a conflict. The recipe check below proves the outcome.
+assert.equal(matchingReport.matched + matchingReport.conflicts, 1, "AI matched the typo ingredient once");
 assert.equal(matchingReport.failed, 0);
-assert.equal(matchingReport.conflicts, 0);
 assert.ok(matchingReport.normalizationCalls >= 1 && matchingReport.selectionCalls >= 1, "Both real models were invoked");
 assert.equal(typeof matchingReport.totalMs, "number");
 const matched = (await call("get_recipes", { ids: [matching.id] })).recipes[0];

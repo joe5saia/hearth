@@ -54,17 +54,17 @@ export function feedbackURL(value: string): string {
 const fields = {
   schemaVersion: Schema.Literal(2),
   id: Schema.String.check(
-    Schema.isPattern(/^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/),
+    Schema.isPattern(/^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/u),
   ),
-  request: Schema.String.check(Schema.isLengthBetween(1, 4000), Schema.isPattern(/\S/)),
+  request: Schema.String.check(Schema.isBetweenLength(1, 4000), Schema.isPattern(/\S/)),
   context: Schema.Struct({
     app: Schema.Struct({
       name: Schema.Literal("Hearth"),
-      build: Schema.String.check(Schema.isLengthBetween(1, 100)),
+      build: Schema.String.check(Schema.isBetweenLength(1, 100)),
     }),
     page: Schema.Struct({
       name: Schema.Literals(["plan", "recipes", "shopping", "groceries", "recipe-checklist"]),
-      url: Schema.String.check(Schema.isLengthBetween(1, 4096), Schema.isPattern(/^https?:\/\//)),
+      url: Schema.String.check(Schema.isBetweenLength(1, 4096), Schema.isPattern(/^https?:\/\//)),
       detail: contextText(300),
       view: Schema.Struct({
         week: Schema.String.check(Schema.isPattern(/^\d{4}-\d{2}-\d{2}$/)),
@@ -105,11 +105,11 @@ export const FeedbackInputSchema = Schema.Struct({ ...fields, clientSubmittedAt:
 /** Verified household claims only; the authenticated server, never the browser, supplies these fields. */
 export const FeedbackIdentitySchema = Schema.Struct({
   source: Schema.Literal("cloudflare-access"),
-  subject: Schema.String.check(Schema.isLengthBetween(1, 256)),
+  subject: Schema.String.check(Schema.isBetweenLength(1, 256)),
   email: Schema.optional(
-    Schema.String.check(Schema.isLengthBetween(1, 254), Schema.isPattern(/^[^\s@]+@[^\s@]+\.[^\s@]+$/)),
+    Schema.String.check(Schema.isBetweenLength(1, 254), Schema.isPattern(/^[^\s@]+@[^\s@]+\.[^\s@]+$/)),
   ),
-  name: Schema.optional(Schema.String.check(Schema.isLengthBetween(1, 200))),
+  name: Schema.optional(Schema.String.check(Schema.isBetweenLength(1, 200))),
 });
 
 /** Server-created ticket from an authenticated MCP agent; it has no browser or page context. */
@@ -122,8 +122,8 @@ export const AgentFeedbackInputSchema = Schema.Struct({
 
 const delivery = Schema.Struct({
   receivedAt: timestamp,
-  environment: Schema.String.check(Schema.isLengthBetween(1, 100)),
-  build: Schema.String.check(Schema.isLengthBetween(1, 100)),
+  environment: Schema.String.check(Schema.isBetweenLength(1, 100)),
+  build: Schema.String.check(Schema.isBetweenLength(1, 100)),
   identity: Schema.NullOr(FeedbackIdentitySchema),
   correlation: Schema.Struct({
     operationId: Schema.String.check(

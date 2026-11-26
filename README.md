@@ -28,12 +28,10 @@ Package scripts are implementation primitives, not the documented workflow. Pass
 `--`, for example `npx task test -- tests/api.test.ts`.
 
 `dev:web` enables Vite's experimental bundled dev mode to avoid module-request waterfalls over orb portals.
-It uses the `vite-dev` alias with Rolldown 1.2.9, matching Vite 8.3.1's embedded HMR runtime; Rolldown
-1.2.10+ changed that runtime interface. Production keeps the original Vite and Rolldown versions.
-Use `npx task build`: both Vite packages export the same CLI name, so its underlying build
-script explicitly selects the production package.
+Vite serves the bundled-dev HMR runtime from the installed Rolldown, so development and production
+share one Vite and Rolldown version.
 
-Alchemy beta.79 resolves cloud credential configuration even for local resources. `dev:worker` supplies deliberately invalid local-only credential placeholders to satisfy that configuration check. Both resources run in **local** mode; these placeholders cannot access a Cloudflare account and are not used by the deployment task. Development uses Vite's standard HTTP proxy. Production uses one Worker serving both assets and API, with D1 provisioned and bound by Alchemy.
+Alchemy resolves cloud credential configuration even for local resources. `dev:worker` supplies deliberately invalid local-only credential placeholders to satisfy that configuration check. Both resources run in **local** mode; these placeholders cannot access a Cloudflare account and are not used by the deployment task. Development uses Vite's standard HTTP proxy. Production uses one Worker serving both assets and API, with D1 provisioned and bound by Alchemy.
 
 In an Amp orb, `.agents/setup` installs the pinned Node version and dependencies, without exporting data or authenticating. `.agents/resume` prepares this thread's private seed on initial activation (including exact snapshot reuse) and on wake. Use `amp orb services ensure` to start both local processes and create the Hearth portal. Worker startup repeats the ownership gate under a lock, so a slow resume export cannot race service startup. Neither lifecycle script deploys or applies remote migrations. Do not expose either unauthenticated development port directly to the public internet.
 
@@ -692,8 +690,8 @@ npx task preview -- gc                # Delete managed previews past their clean
 ```
 
 The website and MCP workflows call `cf d1 migrations apply <database-id>` with the existing
-`d1_migrations` history table, then `cf previews deploy <name>` in their respective `cf-preview` and
-`cf-mcp-preview` modes. Vite builds the Worker and website assets into `.cloudflare/output/v0/`;
+`d1_migrations` history table, then `cf previews deploy --preview-name <name>` in their respective `cf-preview` and
+`cf-mcp-preview` modes. Vite builds the Worker and website assets into `.cloudflare/output/v1/`;
 MCP builds omit client assets. Serialize website and MCP builds within one checkout because they share
 that output directory. Normal production asset builds and local dev do not enable the Cloudflare plugin.
 Provisioning writes the isolated bindings to private `worker.json` files and passes their path only to

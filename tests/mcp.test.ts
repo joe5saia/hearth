@@ -749,6 +749,11 @@ it("publishes all 27 code-mode-friendly schemas with the single recipes scope", 
     "properties.lists.items.properties.checked",
   );
   expect(tool("create_shopping_list").inputSchema.required).toEqual(["date"]);
+  // Effect exports regex checks only for Unicode-flagged patterns; clients rely on this one.
+  expect(tool("create_shopping_list").inputSchema).toHaveProperty(
+    "properties.date.pattern",
+    "^\\d{4}-\\d{2}-\\d{2}$",
+  );
   expect(tool("create_shopping_list").annotations?.idempotentHint).toBe(false);
   expect(tool("add_shopping_items").inputSchema).toHaveProperty(
     "properties.items.items.properties.checked.type",

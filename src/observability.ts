@@ -1,6 +1,6 @@
 import { Context, Effect, Exit, Layer, Logger, Option, References, Schema, Scope, Tracer } from "effect";
-import { FetchHttpClient, HttpClient } from "effect/unstable/http";
-import { OtlpExporter, OtlpSerialization, OtlpTracer } from "effect/unstable/observability";
+import { FetchHttpClient, HttpClient } from "effect/http";
+import { OtlpExporter, OtlpSerialization, OtlpTracer } from "effect/observability";
 
 /** Per-invocation export configuration; credentials never belong in telemetry fields. */
 export interface TelemetryEnv {

@@ -25,6 +25,8 @@ export default defineConfig(({ mode }) => ({
             // MCP has no website assets; do not upload the React client or public directory.
             for (const [name, environment] of Object.entries(builder.environments)) {
               if (name !== "client") await builder.build(environment);
+              // The Cloudflare plugin's post-order buildApp builds any unbuilt client with index.html.
+              else environment.isBuilt = true;
             }
           },
         }

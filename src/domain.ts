@@ -20,7 +20,7 @@ export const units = [
 ] as const;
 
 /** Shared identifier length constraint; whitespace is allowed unless refined by its owner. */
-export const IdSchema = Schema.String.check(Schema.isLengthBetween(1, 100));
+export const IdSchema = Schema.String.check(Schema.isBetweenLength(1, 100));
 
 /** Recipe identifiers retain the shared identifier contract. */
 export const RecipeId = IdSchema.pipe(Schema.brand("RecipeId"));
@@ -83,7 +83,7 @@ const PhotoSchema = Schema.String.check(
 
 /** Validates real calendar dates in zero-padded YYYY-MM-DD form. */
 export const DateSchema = Schema.String.check(
-  Schema.isPattern(/^\d{4}-\d{2}-\d{2}$/),
+  Schema.isPattern(/^\d{4}-\d{2}-\d{2}$/u),
   Schema.makeFilter(validDate, { expected: "a real YYYY-MM-DD date" }),
 ).pipe(Schema.brand("CalendarDate"));
 
@@ -124,9 +124,9 @@ export const RecipeFields = Schema.Struct({
   photo: PhotoSchema,
   source: SourceSchema,
   rating: Schema.Literals(["up", "down", "neutral"]),
-  ingredients: Schema.Array(IngredientSchema).check(Schema.isLengthBetween(1, 100)),
+  ingredients: Schema.Array(IngredientSchema).check(Schema.isBetweenLength(1, 100)),
   instructions: Schema.Array(Schema.String.check(nonblank, Schema.isMaxLength(10000))).check(
-    Schema.isLengthBetween(1, 100),
+    Schema.isBetweenLength(1, 100),
   ),
 });
 
@@ -245,7 +245,7 @@ export const ShoppingAdditionSchema = Schema.Struct({
 
 /** Bulk additions to one list, with unique groceries. */
 export const ShoppingAdditionsSchema = Schema.Array(ShoppingAdditionSchema).check(
-  Schema.isLengthBetween(1, 500),
+  Schema.isBetweenLength(1, 500),
   Schema.makeFilter((items) => new Set(items.map((item) => item.groceryId)).size === items.length, {
     expected: "each grocery at most once",
   }),

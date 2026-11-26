@@ -78,7 +78,7 @@ const recipesOutput = Schema.Struct({ recipes: Schema.Array(recipe) });
 const getOutput = Schema.Struct({ ...recipesOutput.fields, missingIds: Schema.Array(id) });
 
 const batch = <S extends Schema.Constraint>(item: S) =>
-  Schema.Array(item).check(Schema.isLengthBetween(1, 25));
+  Schema.Array(item).check(Schema.isBetweenLength(1, 25));
 
 const date = DateSchema;
 
@@ -726,7 +726,7 @@ export function recipeMcp(
             Schema.Struct({
               listId: id,
               items: Schema.Array(shoppingAddition).check(
-                Schema.isLengthBetween(1, 500),
+                Schema.isBetweenLength(1, 500),
                 unique((item: typeof shoppingAddition.Type) => item.groceryId, "each grocery at most once"),
               ),
             }),
@@ -822,7 +822,7 @@ export function recipeMcp(
             Schema.Struct({
               listId: id,
               groceryIds: Schema.Array(GroceryId).check(
-                Schema.isLengthBetween(1, 500),
+                Schema.isBetweenLength(1, 500),
                 unique((groceryId: GroceryId) => groceryId, "each grocery at most once"),
               ),
             }),

@@ -95,7 +95,15 @@ export const BrowserEventSchema = Schema.Struct({
   value: Schema.optional(duration),
   rating: Schema.optional(Schema.Literals(["good", "needs-improvement", "poor"])),
   navigationType: Schema.optional(
-    Schema.Literals(["navigate", "reload", "back-forward", "back-forward-cache", "prerender", "restore"]),
+    Schema.Literals([
+      "navigate",
+      "reload",
+      "back-forward",
+      "back-forward-cache",
+      "prerender",
+      "restore",
+      "soft-navigation",
+    ]),
   ),
 });
 
@@ -106,4 +114,4 @@ export type BrowserEvent = typeof BrowserEventSchema.Type;
 export type BrowserMeasurement = Omit<BrowserEvent, "event" | "page" | "device">;
 
 /** Ingestion accepts one to twenty independently validated browser events per request. */
-export const BrowserBatchSchema = Schema.Array(BrowserEventSchema).check(Schema.isLengthBetween(1, 20));
+export const BrowserBatchSchema = Schema.Array(BrowserEventSchema).check(Schema.isBetweenLength(1, 20));

@@ -137,7 +137,7 @@ async function main() {
   if (pendingSeed && option === "--empty") throw new Error("Preview seed is incomplete; retry up or tear down before empty-fixture testing.");
   if (option === "--reseed" || pendingSeed || (newDatabase && option !== "--empty")) await seedPreview(api, state.db, `hearth-${name}`);
   // Keep REST precreation with ignore_base_config=true; cf does not expose that option.
-  run(["previews", "deploy", name, "--mode", "cf-mcp-preview"], { HEARTH_PREVIEW_CONFIG: configPath });
+  run(["previews", "deploy", "--preview-name", name, "--mode", "cf-mcp-preview"], { HEARTH_PREVIEW_CONFIG: configPath });
   console.log(JSON.stringify({ url: state.url, mcp: `${state.url}/mcp`, eval: `${state.url}/eval/mcp`, name,
     note: "Isolated D1/KV. Eval orbs use npx task mcp:eval -- connect <eval URL>, then reload MCP. Clean up with npx task mcp:preview -- down." }));
 }

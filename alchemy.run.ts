@@ -1,5 +1,5 @@
 import * as Alchemy from "alchemy";
-import * as Cloudflare from "alchemy/Cloudflare";
+import * as Cloudflare from "@alchemy.run/cloudflare";
 import { AlchemyContext } from "alchemy/AlchemyContext";
 import * as Namespace from "alchemy/Namespace";
 import { Effect, Layer, Redacted } from "effect";

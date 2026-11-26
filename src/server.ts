@@ -233,7 +233,7 @@ function api(request: Request, db: D1Database, ai?: Ai, ctx?: ExecutionContext) 
       } else if (method === "DELETE" && items === "items" && groceryPart === undefined) {
         const { groceryIds } = yield* readJson(
           request,
-          Schema.Struct({ groceryIds: Schema.Array(GroceryId).check(Schema.isLengthBetween(1, 500)) }),
+          Schema.Struct({ groceryIds: Schema.Array(GroceryId).check(Schema.isBetweenLength(1, 500)) }),
           "Choose between 1 and 500 groceries to remove.",
         );
 

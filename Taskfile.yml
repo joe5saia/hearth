@@ -55,8 +55,7 @@ tasks:
       - npx alchemy dev --stage "fixture-$(node -e 'console.log(crypto.randomUUID())')"
   dev:web:
     desc: Start the React development server
-    # Bundled dev's HMR runtime needs Rolldown 1.2.9; leave production Vite unchanged.
-    cmds: [node node_modules/vite-dev/bin/vite.js --experimental-bundle]
+    cmds: [node node_modules/vite/bin/vite.js --experimental-bundle]
   build:
     desc: Build production assets
     cmds: [npm run build]
@@ -230,7 +229,7 @@ tasks:
     desc: Provision shared Alchemy state infrastructure (requires explicit approval)
     env:
       CI: "true"
-    cmds: [npx alchemy provider cloudflare bootstrap]
+    cmds: [npx alchemy state bootstrap --backend cloudflare]
   plan:
     desc: Preview production changes; bootstrap remote state separately first
     env:
