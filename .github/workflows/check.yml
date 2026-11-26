@@ -1,0 +1,35 @@
+name: Check pull request
+
+# Checks each pull request, including Dependabot's, before it merges. Pull
+# requests get no secrets, so this runs only the local checks; the review skill
+# (.agents/skills/reviewing-dependency-updates/SKILL.md) adds the Preview smoke test.
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: check-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      # The same actions the deploy job uses, so a GitHub Actions update is exercised here.
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version-file: .node-version
+          package-manager-cache: false
+      - name: Install dependencies
+        run: npm ci
+      - name: Type check, lint, format check, and integration smoke tests
+        run: npx task check
+      - name: Build production assets
+        run: npx task build

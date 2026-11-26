@@ -1,0 +1,36 @@
+# Weekly version updates for each ecosystem in the repository. The minor and
+# patch updates of an ecosystem come together in one pull request; each major
+# update gets its own. Each pull request starts an Amp orb that reviews, corrects
+# and lands it (.agents/skills/reviewing-dependency-updates/SKILL.md).
+version: 2
+
+updates:
+  # The root package.json and package-lock.json, the only npm project. Versions
+  # stay pinned exactly (`npx task deps:add` uses --save-exact).
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: America/New_York
+    # npm has no minimum release age configured here, so this cooldown is the
+    # only delay before a new release reaches the lockfile. If one is added
+    # later, keep this cooldown longer than it.
+    cooldown:
+      default-days: 3
+    groups:
+      non-major:
+        update-types: [minor, patch]
+
+  # The workflows under .github/workflows and any composite actions.
+  - package-ecosystem: github-actions
+    directories: [/, /.github/actions/*]
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: America/New_York
+    groups:
+      non-major:
+        update-types: [minor, patch]
